@@ -33,11 +33,12 @@ pre_consume_qr.py     — Schweizer QR-Rechnung parsen (IBAN, Betrag, Referenz, 
 post_consume.py       — Haupt-Pipeline (läuft nach jedem erfolgreichen Scan)
   ├─ Vision LLM       — Analysiert Dokument als Bild: Absender, Datum, Betrag,
   │                     Kennzeichen, handschriftliche Notizen ("bez. 6.2.26" → bezahlt)
+  │                     Haushaltkontext injiziert: Mitglieder (nie Absender) + Arbeitgeber
   ├─ RAG              — Embeddings (bge-m3) gleichen Dokument mit bekannten Ordnern ab
   ├─ LLM              — Klassifiziert Dokumenttyp, Tags, Speicherpfad
   ├─ Sanitiser        — Validiert gegen Manifest, Ausschluss-Keywords
-  ├─ Deterministisch  — Kennzeichen aus family.json umgehen das LLM vollständig
-  │   Routing           (schneller + zuverlässiger für bekannte Muster)
+  ├─ Deterministisch  — Kennzeichen + Beziehungen (Arbeitgeber, Bank, Krankenversicherung,
+  │   Routing           Arzt) aus family.json umgehen das LLM vollständig (~100% treffsicher)
   └─ Paperless API    — Setzt Korrespondent, Tags, Pfad, benutzerdefinierte Felder
   ↓
 paper.manager         — Browser-UI zum Reviewen unsicherer Dokumente,
@@ -84,7 +85,17 @@ Automatisch extrahiert und befüllt:
 
 ### Deterministisches Routing
 
-Fahrzeugkennzeichen in `family.json` konfigurieren. Wenn das Vision-Modell `XX 000001` auf einem Dokument erkennt, geht es direkt zu `Person/Auto` — kein LLM-Aufruf nötig.
+Beziehungen in `family.json` konfigurieren: Fahrzeugkennzeichen, Arbeitgeber, Banken, Krankenversicherungen und Ärzte. Wenn das Vision-Modell einen bekannten Absender identifiziert, wird das Dokument direkt weitergeleitet — kein LLM-Aufruf nötig.
+
+| Auslöser | Bedingung | Weiterleitung |
+|---|---|---|
+| Kennzeichen | Kennzeichen im Bild erkannt | `Person/Auto` |
+| Arbeitgeber | Absender = bekannter Arbeitgeber von Person X | `Person/Arbeit` |
+| Bank | Absender = bekannte Bank von Person X | `Person/Finanzen` |
+| Krankenversicherung | Absender = bekannte KK von Person X | `Person/Gesundheit` |
+| Arzt | Absender = bekannter Arzt von Person X | `Person/Gesundheit` |
+
+Haushaltsmitglieder und Arbeitgebernamen werden ausserdem in jeden Vision-Prompt injiziert, damit das Modell weiss, dass diese nie der Dokumentabsender sind.
 
 ### Benutzerdefinierte Felder — automatisch befüllt
 
@@ -109,7 +120,7 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Dokumenttypen** — Synonyme und Ausschluss-Keywords verwalten
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
-- **Familie** — Personen, Fahrzeuge, Haushaltsname (keine Hardcodierung im Code)
+- **Familie** — Personen, Fahrzeuge, Beziehungen (Arbeitgeber, Bank, Krankenversicherung, Arzt), Haushaltsname (keine Hardcodierung im Code)
 - **Versionsanzeige** — zeigt aktive Versionen aller Komponenten in der Seitenleiste
 
 ---
@@ -121,7 +132,7 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 | Absendererkennung | Nur OCR-Textabgleich | Vision + Fuzzy-Matching + Lernen |
 | Dokumenttyp | Manuell oder einfache Regeln | LLM + Synonymauflösung + Ausschlüsse |
 | Handschrift | Nicht möglich | Erkannt und geparst |
-| Kennzeichen-Routing | Manuelle Regel pro Kennzeichen | In UI konfiguriert, deterministisch |
+| Deterministisches Routing | Manuelle Regel pro Dokument | Kennzeichen + Beziehungen (Arbeitgeber/Bank/Arzt) — in UI konfiguriert, ~100% treffsicher |
 | Benutzerdefinierte Felder | Manuell | Automatisch (QR-Rechnung + Vision) |
 | Unbekannte Absender | Stille Fehler | Review-Warteschlange mit Vorschlägen |
 | Korrekturen | Verloren | Fliessen in nächste Klassifizierung zurück |
@@ -186,7 +197,7 @@ nano /opt/paperless/.env
 
 | Datei | Funktion |
 |---|---|
-| `family.json` | Haushalt: Personen und Fahrzeuge (Basis für Ordnerstruktur + deterministisches Routing) |
+| `family.json` | Haushalt: Personen, Fahrzeuge und Beziehungen — Basis für Ordnerstruktur, deterministisches Routing und Vision-Prompt-Kontext |
 | `correspondents.json` | Bekannte Absender mit Fuzzy-Match-Regeln und Extraktionsmustern |
 | `document_types.json` | Dokumenttypen mit Synonymen und Ausschluss-Keywords |
 | `manifest.json` | Speicherordner-Struktur mit erlaubten Tags und Dokumenttypen |
@@ -244,7 +255,7 @@ Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
 | Document Types | Synonyme + Ausschluss-Keywords |
 | Tags | Ausschluss-Keywords pro Tag |
 | Speicherpfade | Ordnerkonfiguration |
-| Familie | Haushaltsname, Personen, Fahrzeuge |
+| Familie | Haushaltsname, Personen, Fahrzeuge, Beziehungen |
 
 ---
 
