@@ -58,9 +58,11 @@ _PERM_CHANGE_GROUP_IDS = [int(g) for g in os.environ.get("PAPERLESS_CHANGE_GROUP
 
 
 def _default_permissions() -> dict:
-    """Zentrale Permissions — einzige Stelle wo Gruppen-IDs gesetzt werden."""
+    """Zentrale Permissions — einzige Stelle wo Gruppen-IDs gesetzt werden.
+    WICHTIG: owner wird NICHT gesetzt (null) — nur Gruppen.
+    owner gesetzt = andere Benutzer sehen das Objekt nicht.
+    """
     return {
-        "owner": PAPERLESS_OWNER_ID,
         "set_permissions": {
             "view":   {"users": [], "groups": _PERM_VIEW_GROUP_IDS},
             "change": {"users": [], "groups": _PERM_CHANGE_GROUP_IDS},
@@ -422,21 +424,14 @@ def get_correspondent_id_by_name(name: str) -> Optional[int]:
 
 def create_correspondent(name: str, match_strings: list[str],
                          is_insensitive: bool = True) -> int:
-    view_ids   = resolve_group_ids(PAPERLESS_VIEW_GROUPS)
-    change_ids = resolve_group_ids(PAPERLESS_CHANGE_GROUPS)
     match_str  = "|".join(match_strings)
-    _owner_id = int(os.environ.get("PAPERLESS_OWNER_ID", "3"))
     payload = {
         "name": name,
         "match": match_str,
         "matching_algorithm": 0,
         "is_insensitive": is_insensitive,
-        "owner": _owner_id,
-        "set_permissions": {
-            "view":   {"users": [], "groups": view_ids},
-            "change": {"users": [], "groups": change_ids},
-        },
     }
+    payload.update(_default_permissions())
     result = pl_post("/correspondents/", payload)
     return result["id"]
 
@@ -606,14 +601,9 @@ def _ensure_storage_path(pfad: str) -> None:
         if existing.get("count", 0) > 0:
             return
         template = pfad + "/{created_year}/{correspondent}/{title}"
-        result = pl_post("/storage_paths/", {
-            "name": pfad,
-            "path": template,
-            "set_permissions": {
-                "view":   {"users": [], "groups": [1, 2]},
-                "change": {"users": [], "groups": [2]},
-            }
-        })
+        payload = {"name": pfad, "path": template}
+        payload.update(_default_permissions())
+        result = pl_post("/storage_paths/", payload)
         log.info("Storage Path angelegt: '%s' (ID %s)", pfad, result.get("id"))
     except Exception as e:
         log.warning("Storage Path '%s' anlegen fehlgeschlagen: %s", pfad, e)
