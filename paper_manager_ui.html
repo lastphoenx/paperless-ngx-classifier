@@ -200,147 +200,160 @@
   <!-- PENDING VIEW -->
   <!-- HOME / LANDING PAGE -->
   <div id="view-home" style="display:none">
-    <div style="max-width:860px">
+    <div style="max-width:900px">
 
       <div style="margin-bottom:32px">
         <h2 style="font-size:24px;margin-bottom:8px">paper<span style="color:var(--accent)">.</span>manager</h2>
         <p style="color:var(--muted);font-size:14px;line-height:1.7">
           Intelligente Dokumentklassifizierung für <strong>Paperless-NGX</strong> —
-          mit lokalen KI-Modellen, Lernkreislauf und vollständiger Datenschutzkontrolle.
-          Kein Cloud-Zwang, keine API-Kosten, keine fremden Server.
+          lokale KI, deterministisches Routing, Lernkreislauf, Swiss QR-Bill.
+          100% lokal, kein Cloud-Zwang, keine API-Kosten.
         </p>
       </div>
 
-      <!-- Was ist paper.manager -->
+      <!-- Versionen -->
       <div class="card" style="margin-bottom:16px">
-        <div class="card-header"><span class="card-title">Was ist paper.manager?</span></div>
-        <p style="color:var(--muted);font-size:13px;line-height:1.8;margin-top:8px">
-          paper.manager ist eine Review- und Verwaltungsoberfläche die <strong>Paperless-NGX aufbohrt</strong>:
-          Nach jedem Scan analysiert ein lokales KI-System (Vision-Modell + LLM) das Dokument vollständig
-          als Bild — erkennt Absender, Datum, Betrag, Kennzeichen und sogar handschriftliche Notizen.
-          Das Ergebnis wird automatisch in Paperless übernommen.
-          Unsichere Klassifizierungen landen in der Review-Queue zur manuellen Prüfung.
-          Korrekturen fliessen zurück ins System und verbessern die nächste Klassifizierung.
-        </p>
-      </div>
-
-      <!-- Welche Schwächen von Paperless werden adressiert -->
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-header"><span class="card-title">Adressierte Schwächen von Paperless-NGX</span></div>
-        <div style="margin-top:8px">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:12px">
-              <div style="font-size:11px;color:#f87171;font-weight:bold;margin-bottom:6px">OHNE paper.manager</div>
-              <div style="font-size:12px;color:var(--muted);line-height:1.7">
-                ✗ Nur OCR-Text als Grundlage — keine Bildanalyse<br>
-                ✗ Keine Handschrift-Erkennung<br>
-                ✗ Kein deterministisches Routing (Kennzeichen → Ordner)<br>
-                ✗ Keine automatischen Custom Fields<br>
-                ✗ Unbekannte Absender = manuelles Anlegen<br>
-                ✗ Kein Lernkreislauf aus Korrekturen<br>
-                ✗ Keine lokale KI-Integration
-              </div>
-            </div>
-            <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:6px;padding:12px">
-              <div style="font-size:11px;color:var(--success);font-weight:bold;margin-bottom:6px">MIT paper.manager</div>
-              <div style="font-size:12px;color:var(--muted);line-height:1.7">
-                ✓ Vision-KI analysiert Dokument als Bild (immer)<br>
-                ✓ Handschrift «bez. 6.2.26» → Status=Bezahlt<br>
-                ✓ Kennzeichen → Ordner deterministisch (kein LLM)<br>
-                ✓ Custom Fields automatisch (Betrag, Status, Datum…)<br>
-                ✓ Neue Absender in Review-Queue, einmal freigeben<br>
-                ✓ Korrekturen verbessern zukünftige Klassifizierung<br>
-                ✓ 100% lokal — kein Cloud-Zwang
-              </div>
-            </div>
+        <div class="card-header"><span class="card-title">Aktive Versionen</span></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px;font-size:12px">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:4px">UI</div>
+            <div style="color:var(--accent);font-weight:bold">v<span id="home-ui-version">—</span></div>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:4px">BACKEND</div>
+            <div style="color:var(--accent);font-weight:bold">v<span id="home-be-version">—</span></div>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:4px">PIPELINE</div>
+            <div style="color:var(--accent);font-weight:bold">v<span id="home-pipe-version">—</span></div>
           </div>
         </div>
-      </div>
-
-      <!-- Lokale KI -->
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-header"><span class="card-title">Lokale KI — Stärken und Grenzen</span></div>
-        <p style="color:var(--muted);font-size:13px;line-height:1.8;margin-top:8px">
-          paper.manager ist für <strong>lokale Ollama-Modelle</strong> optimiert (z.B. auf einem GMKtec EVO mit AMD Ryzen AI Max+).
-          Lokale Modelle sind langsamer als Cloud-APIs (~1-2 Min pro Dokument) und initial weniger präzise —
-          aber sie werden durch den <strong>Lernkreislauf</strong> mit jeder Korrektur besser:
-          Korrekturen im Dokument-Review fliessen als Feedback ins Manifest,
-          bekannte Absender landen nie mehr in der Review-Queue,
-          deterministisches Routing umgeht den LLM komplett wo möglich.
-          Mit der Zeit: mehr deterministisch, weniger LLM, schneller, präziser.
-        </p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
           <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">Vision: qwen2.5vl:7b</span>
           <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">LLM: llama3.3:70b</span>
           <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">Embeddings: bge-m3</span>
           <span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa">100% lokal</span>
-          <span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa">Kein Cloud-Zwang</span>
+        </div>
+      </div>
+
+      <!-- Vor/Nachher -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">Vorher / Nachher</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+          <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:12px">
+            <div style="font-size:11px;color:#f87171;font-weight:bold;margin-bottom:8px">OHNE paper.manager</div>
+            <div style="font-size:12px;color:var(--muted);line-height:1.9">
+              ✗ Nur OCR-Text — keine Bildanalyse<br>
+              ✗ Keine Handschrift-Erkennung<br>
+              ✗ Keine Swiss QR-Bill Verarbeitung<br>
+              ✗ Kein deterministisches Routing<br>
+              ✗ Keine automatischen Custom Fields<br>
+              ✗ Unbekannte Absender = manuelle Arbeit<br>
+              ✗ Kein Lernkreislauf aus Korrekturen<br>
+              ✗ Paperless-Classifier stört eigene Pipeline
+            </div>
+          </div>
+          <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:6px;padding:12px">
+            <div style="font-size:11px;color:var(--success);font-weight:bold;margin-bottom:8px">MIT paper.manager</div>
+            <div style="font-size:12px;color:var(--muted);line-height:1.9">
+              ✓ Vision-KI analysiert Dokument als Bild<br>
+              ✓ Handschrift «bez. 6.2.26» → Status=Bezahlt<br>
+              ✓ Swiss QR-Bill → Custom Fields automatisch<br>
+              ✓ Kennzeichen + Beziehungen → Ordner (kein LLM)<br>
+              ✓ Custom Fields automatisch befüllt<br>
+              ✓ Review-Queue → einmal freigeben, nie wieder<br>
+              ✓ Manifest lernt automatisch bei jedem Scan<br>
+              ✓ Paperless-Classifier deaktiviert — wir entscheiden
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pipeline -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">Pipeline-Ablauf</span></div>
+        <div style="display:grid;grid-template-columns:140px 1fr;gap:4px 12px;font-size:12px;color:var(--muted);line-height:1.9;margin-top:8px">
+          <span style="color:var(--accent)">pre_consume.sh</span>
+          <span>OCR-Optimierung (ocrmypdf), Barcode-Split, Swiss QR-Bill Extraktion</span>
+          <span style="color:var(--accent)">Vision (qwen2.5vl)</span>
+          <span>Dokument als Bild analysieren — Absender, Datum, Betrag, Kennzeichen, Handschrift. Mit Haushalt-Kontext (Arbeitgeber ≠ Empfänger)</span>
+          <span style="color:var(--accent)">Deterministisch</span>
+          <span>Kennzeichen → Ordner, Beziehungen (Arbeitgeber/Bank/Arzt) → Ordner — kein LLM-Aufruf nötig</span>
+          <span style="color:var(--accent)">RAG (bge-m3)</span>
+          <span>Embeddings finden ähnliche Manifest-Einträge als Kontext für LLM</span>
+          <span style="color:var(--accent)">LLM (llama3.3)</span>
+          <span>Dokumenttyp, Tags, Ordner, Titel — mit Manifest-Constraints</span>
+          <span style="color:var(--accent)">Sanitizer</span>
+          <span>Typ/Tags gegen Manifest validieren. Unbekannter Typ aber in document_types.json → Manifest automatisch ergänzen (Lernkreislauf)</span>
+          <span style="color:var(--accent)">Paperless API</span>
+          <span>Korrespondent, Dokumenttyp, Tags, Ordner, Custom Fields setzen</span>
         </div>
       </div>
 
       <!-- Custom Fields -->
       <div class="card" style="margin-bottom:16px">
-        <div class="card-header"><span class="card-title">Neue Möglichkeiten durch Custom Fields</span></div>
-        <p style="color:var(--muted);font-size:12px;margin:8px 0 10px">
-          Paperless-NGX unterstützt Custom Fields — paper.manager befüllt diese automatisch bei jedem Scan:
-        </p>
-        <div style="display:grid;grid-template-columns:auto auto 1fr;gap:4px 16px;font-size:12px">
+        <div class="card-header"><span class="card-title">Custom Fields — automatisch befüllt</span></div>
+        <div style="display:grid;grid-template-columns:auto auto 1fr;gap:4px 16px;font-size:12px;margin-top:8px">
           <div style="color:var(--muted);font-weight:bold">FELD</div>
           <div style="color:var(--muted);font-weight:bold">TYP</div>
-          <div style="color:var(--muted);font-weight:bold">NEUE MÖGLICHKEIT</div>
-
-          <div style="color:var(--accent)">Status</div>
-          <div style="color:var(--muted)">Auswahl</div>
-          <div style="color:var(--muted)">Offen/Bezahlt — filter auf alle offenen Rechnungen</div>
-
-          <div style="color:var(--accent)">Bezahlt am</div>
-          <div style="color:var(--muted)">Datum</div>
-          <div style="color:var(--muted)">Aus Handschrift «bez. 6.2.26» — Abgleich mit Zahllauf im E-Banking</div>
-
-          <div style="color:var(--accent)">Gescannt am</div>
-          <div style="color:var(--muted)">Datum</div>
-          <div style="color:var(--muted)">Physisches Scan-Datum — unabhängig vom Dokumentdatum</div>
-
-          <div style="color:var(--accent)">Fällig am</div>
-          <div style="color:var(--muted)">Datum</div>
-          <div style="color:var(--muted)">Aus Swiss QR-Bill — filter auf bald fällige Rechnungen</div>
-
-          <div style="color:var(--accent)">CHF</div>
-          <div style="color:var(--muted)">Monetär</div>
-          <div style="color:var(--muted)">Rechnungsbetrag aus QR-Bill</div>
-
-          <div style="color:var(--accent)">QR-Referenz</div>
-          <div style="color:var(--muted)">Text</div>
-          <div style="color:var(--muted)">Eindeutige Zahlungsreferenz aus Swiss QR-Bill</div>
-
-          <div style="color:var(--accent)">Auto-Kennzeichen</div>
-          <div style="color:var(--muted)">Auswahl</div>
-          <div style="color:var(--muted)">Fahrzeug identifiziert aus Dokumentbild</div>
-
-          <div style="color:var(--accent)">Policennummer</div>
-          <div style="color:var(--muted)">Text</div>
-          <div style="color:var(--muted)">Versicherungspolice direkt aus Vision erkannt</div>
+          <div style="color:var(--muted);font-weight:bold">QUELLE / NUTZEN</div>
+          <div style="color:var(--accent)">CHF</div><div style="color:var(--muted)">Monetär</div><div style="color:var(--muted)">QR-Bill / Vision</div>
+          <div style="color:var(--accent)">Status</div><div style="color:var(--muted)">Auswahl</div><div style="color:var(--muted)">Offen/Bezahlt — alle offenen Rechnungen filtern</div>
+          <div style="color:var(--accent)">Bezahlt am</div><div style="color:var(--muted)">Datum</div><div style="color:var(--muted)">Aus Handschrift «bez. 6.2.26» — Abgleich mit E-Banking</div>
+          <div style="color:var(--accent)">Gescannt am</div><div style="color:var(--muted)">Datum</div><div style="color:var(--muted)">Immer = heute — unabhängig vom Dokumentdatum</div>
+          <div style="color:var(--accent)">Fällig am</div><div style="color:var(--muted)">Datum</div><div style="color:var(--muted)">Aus QR-Bill — bald fällige Rechnungen filtern</div>
+          <div style="color:var(--accent)">Rechnungs-Nr.</div><div style="color:var(--muted)">Text</div><div style="color:var(--muted)">QR-Bill / Vision</div>
+          <div style="color:var(--accent)">QR-Referenz</div><div style="color:var(--muted)">Text</div><div style="color:var(--muted)">27-stellige QR-Referenz aus QR-Bill</div>
+          <div style="color:var(--accent)">Auto-Kennzeichen</div><div style="color:var(--muted)">Auswahl</div><div style="color:var(--muted)">Fahrzeug aus Dokumentbild erkannt (deterministisch)</div>
+          <div style="color:var(--accent)">Policennummer</div><div style="color:var(--muted)">Text</div><div style="color:var(--muted)">Versicherungspolice aus Vision</div>
         </div>
       </div>
 
-      <!-- Was paper.manager NICHT ist -->
+      <!-- Deterministisches Routing -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">Deterministisches Routing — kein LLM nötig</span></div>
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:4px 12px;font-size:12px;color:var(--muted);line-height:1.9;margin-top:8px">
+          <span style="color:var(--accent)">Kennzeichen</span>
+          <span>Vision erkennt «AG 169141» → direkt Person/Auto — konfiguriert unter Familie → Fahrzeuge</span>
+          <span style="color:var(--accent)">Arbeitgeber</span>
+          <span>«Reformierte Kirche» = Arbeitgeber von Monika → Monika/Kirchgemeinde/Lohnabrechnung</span>
+          <span style="color:var(--accent)">Bank / Arzt</span>
+          <span>Bekannte Beziehungen direkt zur richtigen Person geroutet — konfiguriert unter Familie → Beziehungen</span>
+        </div>
+        <p style="color:var(--muted);font-size:11px;margin-top:8px">
+          Vision-Prompt wird automatisch angereichert: «Haushaltsmitglieder sind niemals der Absender».
+        </p>
+      </div>
+
+      <!-- Kritische Konfiguration -->
       <div class="card" style="margin-bottom:16px;border-left:3px solid var(--warn)">
-        <div class="card-header"><span class="card-title" style="color:var(--warn)">Abgrenzung — was paper.manager nicht ist</span></div>
+        <div class="card-header"><span class="card-title" style="color:var(--warn)">⚠ Kritische Konfiguration</span></div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.9;margin-top:8px">
+          <strong style="color:var(--text)">Paperless-NGX eigenen Classifier deaktivieren</strong> — zwingend erforderlich:<br>
+          Paperless weist Korrespondenten/Tags <em>vor</em> unserem Script zu und beeinflusst den Dateinamen → falsche LLM-Entscheidungen.<br>
+          <code style="background:var(--surface);padding:2px 6px;border-radius:3px">PAPERLESS_TRAIN_TASK_CRON=disable</code> in .env +
+          alle Objekte auf <code style="background:var(--surface);padding:2px 6px;border-radius:3px">matching_algorithm=0</code> setzen.<br>
+          Neue Objekte via paper.manager werden automatisch mit <code>matching_algorithm=0</code> angelegt.
+        </div>
+      </div>
+
+      <!-- Abgrenzung -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">Abgrenzung</span></div>
         <div style="font-size:12px;color:var(--muted);line-height:1.8;margin-top:8px">
-          ✗ <strong>Kein Ersatz für Paperless-NGX</strong> — paper.manager ergänzt Paperless, ersetzt es nicht.<br>
-          ✗ <strong>Kein Dokumenten-Viewer</strong> — PDFs werden in Paperless geöffnet (Link «In Paperless öffnen»).<br>
+          ✗ <strong>Kein Ersatz für Paperless-NGX</strong> — paper.manager ergänzt, ersetzt nicht.<br>
+          ✗ <strong>Kein Dokumenten-Viewer</strong> — PDFs öffnen via «In Paperless öffnen».<br>
           ✗ <strong>Keine Buchhaltung</strong> — Status=Bezahlt ist eine Markierung, kein Buchungssystem.<br>
-          ✗ <strong>Kein Backup-System</strong> — Dokumente liegen in Paperless, Backup läuft separat.<br>
+          ✗ <strong>Kein Backup-System</strong> — Backup läuft separat.<br>
           ✗ <strong>Kein Echtzeitmonitor</strong> — Review-Queue nach dem Scan manuell öffnen.
         </div>
       </div>
 
       <div style="text-align:center;padding:16px 0;color:var(--muted);font-size:11px">
-        paper.manager v<span id="home-ui-version">—</span> · Paperless-NGX · Ollama · lokal · privat
+        paper.manager v<span id="home-ui-version2">—</span> · Paperless-NGX · Ollama · lokal · privat
       </div>
     </div>
   </div>
-
   <div id="view-pending">
     <h2>Korrespondenten Review</h2>
     <div class="stats-row" id="stats-row"></div>
@@ -726,8 +739,21 @@ function showView(name) {
   document.getElementById('view-' + name).style.display = '';
   document.getElementById('nav-' + name).classList.add('active');
   if (name === 'home') {
-    const el = document.getElementById('home-ui-version');
-    if (el) el.textContent = UI_VERSION;
+    ['home-ui-version','home-ui-version2'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = UI_VERSION;
+    });
+    // Backend + Pipeline Version laden
+    fetch(`${API_BASE}/config`).then(r=>r.json()).then(d => {
+      ['home-be-version'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = d.versions?.backend || d.be_version || '—';
+      });
+      ['home-pipe-version'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = d.versions?.pipeline || d.pipe_version || '—';
+      });
+    }).catch(()=>{});
   }
   if (name === 'correspondents') loadCorrMap();
   if (name === 'docreview') { loadDocReview(); loadDocReviewMeta(); }
@@ -935,11 +961,12 @@ function renderPanelNeu(entry, i, docContent, docIds) {
             (wird als Default-DokTyp bei neuen Dokumenten dieses Korrespondenten verwendet)
           </span>
         </label>
-        <input type="text" id="f-typ" list="doctype-list" value="${e.default_dokumenttyp||e.typ||''}"
-               placeholder="Dokumenttyp wählen oder eingeben...">
-        <datalist id="doctype-list">
-          ${allDocTypes.map(t => `<option value="${t.name}">`).join('')}
-        </datalist>
+        <select id="f-typ">
+          <option value="">— kein Standard-Typ —</option>
+          ${(window._allDocTypes||allDocTypes||[]).map(t =>
+            `<option value="${t.name}" ${(e.default_dokumenttyp||e.typ||'')=== t.name?'selected':''}>${t.name}</option>`
+          ).join('')}
+        </select>
       </div>
       <div class="field-group">
         <label>Varianten (Enter zum Hinzufügen)</label>
@@ -962,19 +989,16 @@ function renderPanelNeu(entry, i, docContent, docIds) {
       <div class="field-group">
         <label>Typische Ordner
           <span style="font-weight:400;color:var(--muted);font-size:10px;margin-left:6px">
-            Aus Liste wählen oder neuen Pfad mit Enter erfassen (Format: Hauptordner/Unterordner)
+            Nur bestehende Speicherpfade — aus Liste wählen
           </span>
         </label>
         <div class="tags-input" id="tags-ordner" data-tags='${JSON.stringify(e.typische_ordner||[])}'>
           ${(e.typische_ordner||[]).map(o => tagChip(o, 'tags-ordner')).join('')}
-          <input type="text" id="f-ordner-input" list="ordner-list"
-            placeholder="z.B. Vorname/Arbeit — Enter zum Hinzufügen"
-            onkeydown="addTag(event,'tags-ordner')"
-            oninput="handleOrdnerInput(this)">
+          <select id="f-ordner-select" onchange="addTagDirect('tags-ordner',this.value);this.value=''">
+            <option value="">— Ordner aus Liste hinzufügen —</option>
+            ${allStoragePaths.map(sp => `<option value="${sp.name}">${sp.name}</option>`).join('')}
+          </select>
         </div>
-        <datalist id="ordner-list">
-          ${allStoragePaths.map(sp => `<option value="${sp.name}">`).join('')}
-        </datalist>
       </div>
       <div class="field-group">
         <label>Notiz</label>
@@ -1088,7 +1112,7 @@ function renderPanelMerge(entry, i, docContent, docIds) {
       </div>
       <div class="btn-row">
         <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Merge durchführen</button>
-        <button class="btn btn-ghost"   onclick="submitReview(${i},'approve_neu_statt_merge')">Als NEU anlegen statt Merge</button>
+        <button class="btn btn-ghost"   onclick="switchMergeToNeu(${i})">Als NEU anlegen statt Merge</button>
         <button class="btn btn-danger"  onclick="submitReview(${i},'reject')">✗ Ablehnen</button>
       </div>
     </div>`;
@@ -1097,6 +1121,25 @@ function renderPanelMerge(entry, i, docContent, docIds) {
 // ──────────────────────────────────────────────
 // TAGS INPUT LOGIC
 // ──────────────────────────────────────────────
+function switchMergeToNeu(i) {
+  // Merge-Eintrag temporär als "neu" behandeln — zeigt das Neu-Formular
+  const entry = pendingEntries[i];
+  if (!entry) return;
+  // entry.aktion auf "neu" setzen damit renderPanelNeu verwendet wird
+  const fakeEntry = Object.assign({}, entry, {
+    aktion: 'neu',
+    vorgeschlagener_eintrag: Object.assign({},
+      entry.vorgeschlagener_eintrag || {},
+      { name: entry.vorgeschlagener_eintrag?.name || entry.ziel_name || '' }
+    )
+  });
+  const wrapper = document.getElementById('review-panel-wrapper');
+  const docContent = entry._docContent || '';
+  const docIds     = entry._docIds     || [];
+  wrapper.innerHTML = renderPanelNeu(fakeEntry, i, docContent, docIds);
+  // Varianten-Vorschläge laden
+  setTimeout(() => loadVariantenSuggestions(fakeEntry.vorgeschlagener_eintrag?.name || ''), 100);
+}
 function tagChip(value, containerId, color, bg) {
   const style = (color || bg)
     ? ` style="${bg ? 'background:'+bg+';' : ''}${color ? 'color:'+color+';' : ''}"`
@@ -1128,6 +1171,24 @@ function addTagVal(val, containerId) {
   chip.innerHTML = `${val}<span class="remove" onclick="removeTag(this,'${containerId}')">×</span>`;
   const input = container.querySelector('input');
   container.insertBefore(chip, input);
+}
+
+function addTagDirect(containerId, value) {
+  if (!value) return;
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const tags = JSON.parse(container.dataset.tags || '[]');
+  if (tags.includes(value)) return;
+  tags.push(value);
+  container.dataset.tags = JSON.stringify(tags);
+  const chip = document.createElement('span');
+  chip.className = 'tag-chip';
+  chip.innerHTML = `${value} <span onclick="this.parentElement.remove();
+    const c=document.getElementById('${containerId}');
+    const t=JSON.parse(c.dataset.tags||'[]');
+    c.dataset.tags=JSON.stringify(t.filter(x=>x!=='${value.replace(/'/g,"\\'")}'));">&times;</span>`;
+  const sel = container.querySelector('select');
+  container.insertBefore(chip, sel || null);
 }
 
 function addTag(event, containerId) {
@@ -1355,8 +1416,12 @@ function toggleCorrEdit(idx, entry) {
     <div style="margin-top:12px">
       <div class="field-group">
         <label>Standard-Dokumenttyp</label>
-        <input type="text" id="ce-typ-${idx}" list="doctype-list" value="${entry.default_dokumenttyp||entry.typ||''}"
-               placeholder="Dokumenttyp wählen...">
+        <select id="ce-typ-${idx}">
+          <option value="">— kein Standard-Typ —</option>
+          ${(window._allDocTypes||[]).map(t =>
+            `<option value="${t.name}" ${(entry.default_dokumenttyp||entry.typ||'')===t.name?'selected':''}>${t.name}</option>`
+          ).join('')}
+        </select>
       </div>
       <div class="field-group">
         <label>Varianten</label>
@@ -1373,17 +1438,13 @@ function toggleCorrEdit(idx, entry) {
         </div>
       </div>
       <div class="field-group">
-        <label>Typische Ordner
-          <span style="font-weight:400;color:var(--muted);font-size:10px;margin-left:6px">
-            Format: Hauptordner/Unterordner — aus Liste wählen oder Enter zum freien Erfassen
-          </span>
-        </label>
+        <label>Typische Ordner</label>
         <div class="tags-input" id="ce-ord-${idx}" data-tags='${JSON.stringify(entry.typische_ordner||[])}'>
           ${(entry.typische_ordner||[]).map(v => tagChip(v, `ce-ord-${idx}`)).join('')}
-          <input type="text" list="ordner-list"
-            placeholder="z.B. Vorname/Auto — aus Liste oder Enter zum Erfassen"
-            oninput="handleOrdnerInput(this, 'ce-ord-${idx}')"
-            onkeydown="addTag(event,'ce-ord-${idx}')">
+          <select onchange="addTagDirect('ce-ord-${idx}',this.value);this.value=''">
+            <option value="">— Ordner aus Liste hinzufügen —</option>
+            ${allStoragePaths.map(sp => `<option value="${sp.name}">${sp.name}</option>`).join('')}
+          </select>
         </div>
       </div>
       <div class="field-group">
@@ -1427,7 +1488,15 @@ function toggleCorrEdit(idx, entry) {
   edit.style.display = '';
 }
 
-function openCorrEdit(idx) {
+async function openCorrEdit(idx) {
+  // Dokumenttypen laden falls noch nicht vorhanden
+  if (!window._allDocTypes || !window._allDocTypes.length) {
+    try {
+      const r = await fetch(`${API_BASE}/paperless/document_types`);
+      const d = await r.json();
+      window._allDocTypes = d.results || [];
+    } catch(e) {}
+  }
   // Trigger durch Edit-Button — Entry ist bereits im DOM
   const entry = allCorrEntries ? allCorrEntries[idx] : null;
   if (entry) toggleCorrEdit(idx, entry);

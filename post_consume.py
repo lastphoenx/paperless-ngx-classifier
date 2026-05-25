@@ -1357,10 +1357,29 @@ def _normalize_firma(text: str) -> str:
     return t.strip()
 
 
+# Wörter die beim Token-Overlap NICHT zählen (zu generisch/geografisch)
+_TOKEN_OVERLAP_STOPWORDS = {
+    # Kantone + Städte
+    "aargau", "zurich", "zürich", "bern", "basel", "luzern", "zürich",
+    "winterthur", "biel", "thun", "solothurn", "zug", "schaffhausen",
+    "frauenfeld", "aarau", "liestal", "herisau", "stans", "appenzell",
+    "glarus", "schwyz", "altdorf", "sarnen", "bellinzona", "sion", "chur",
+    "lausanne", "genf", "genève", "lugano", "st.gallen", "gallen",
+    # Geografische Zusätze
+    "schweiz", "swiss", "suisse", "svizzera",
+    # Generische Begriffe
+    "ag", "gmbh", "sa", "sarl", "ltd",
+    "nord", "sud", "ost", "west", "zentral", "mittel",
+    "region", "regional",
+}
+
+
 def _token_overlap(a: str, b: str) -> float:
-    """Token-Overlap-Score: Anteil gemeinsamer Tokens. 0.0–1.0."""
-    tokens_a = set(a.split())
-    tokens_b = set(b.split())
+    """Token-Overlap-Score: Anteil gemeinsamer Tokens. 0.0–1.0.
+    Geografische und generische Wörter werden ignoriert.
+    """
+    tokens_a = {t for t in a.split() if t not in _TOKEN_OVERLAP_STOPWORDS}
+    tokens_b = {t for t in b.split() if t not in _TOKEN_OVERLAP_STOPWORDS}
     if not tokens_a or not tokens_b:
         return 0.0
     overlap = tokens_a & tokens_b
