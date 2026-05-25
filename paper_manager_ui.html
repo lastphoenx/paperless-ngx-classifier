@@ -1,0 +1,2549 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>paper.manager</title>
+<style>
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --border:    #2a2d3a;
+    --accent:    #4f9cf9;
+    --accent2:   #7c3aed;
+    --success:   #22c55e;
+    --warn:      #f59e0b;
+    --danger:    #ef4444;
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --radius:    8px;
+    --font:      'JetBrains Mono', 'Fira Code', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+
+  /* Layout */
+  .shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 20px 0; }
+  .main { padding: 32px; overflow-y: auto; }
+
+  /* Sidebar */
+  .logo { padding: 0 20px 24px; font-size: 16px; font-weight: 700; letter-spacing: -0.5px; }
+  .logo span { color: var(--accent); }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 20px;
+    cursor: pointer; color: var(--muted); transition: all .15s; border-left: 3px solid transparent; }
+  .nav-item:hover { color: var(--text); background: rgba(79,156,249,.07); }
+  .nav-item.active { color: var(--accent); border-left-color: var(--accent);
+    background: rgba(79,156,249,.1); }
+  .nav-badge { margin-left: auto; background: var(--danger); color: #fff;
+    border-radius: 10px; padding: 1px 7px; font-size: 11px; }
+
+  /* Cards */
+  .card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .card-title { font-weight: 700; font-size: 14px; }
+
+  /* Badges */
+  .badge { display: inline-block; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
+  .badge-neu      { background: rgba(79,156,249,.2); color: var(--accent); }
+  .badge-erg      { background: rgba(124,58,237,.2); color: #a78bfa; }
+  .badge-merge    { background: rgba(245,158,11,.2); color: var(--warn); }
+  .badge-pending  { background: rgba(245,158,11,.15); color: var(--warn); }
+  .badge-approved { background: rgba(34,197,94,.15);  color: var(--success); }
+  .badge-rejected { background: rgba(239,68,68,.15);  color: var(--danger); }
+
+  /* Pending list */
+  .pending-item { border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 10px; cursor: pointer; transition: border-color .15s; }
+  .pending-item:hover { border-color: var(--accent); }
+  .pending-item.selected { border-color: var(--accent); background: rgba(79,156,249,.05); }
+  .pending-meta { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  .confidence-bar { height: 3px; background: var(--border); border-radius: 2px; margin-top: 8px; }
+  .confidence-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--danger), var(--warn), var(--success)); }
+
+  /* Review Form */
+  .review-panel { position: sticky; top: 0; }
+  .field-group { margin-bottom: 14px; }
+  label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
+  input[type=text], textarea, select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 8px 10px;
+    font-family: var(--font); font-size: 13px; transition: border-color .15s;
+  }
+  input[type=text]:focus, textarea:focus, select:focus {
+    outline: none; border-color: var(--accent);
+  }
+  textarea { resize: vertical; min-height: 70px; }
+
+  /* Tags input */
+  .tags-input { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); min-height: 42px; }
+  .tag-chip { background: rgba(79,156,249,.2); color: var(--accent); border-radius: 4px;
+    padding: 2px 8px; display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+  .tag-chip .remove {
+    cursor: pointer; color: var(--muted);
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%;
+    font-size: 14px; line-height: 1;
+    pointer-events: all;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .tag-chip .remove:hover { color: var(--danger); background: rgba(239,68,68,.15); }
+  .tags-input input { border: none; background: transparent; outline: none;
+    color: var(--text); font-family: var(--font); font-size: 13px; flex: 1; min-width: 100px; }
+
+  /* Buttons */
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px;
+    border-radius: var(--radius); border: none; cursor: pointer; font-family: var(--font);
+    font-size: 13px; font-weight: 600; transition: all .15s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #3b82f6; }
+  .btn-success { background: var(--success); color: #fff; }
+  .btn-success:hover { background: #16a34a; }
+  .btn-danger  { background: var(--danger);  color: #fff; }
+  .btn-danger:hover  { background: #dc2626; }
+  .btn-ghost   { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-ghost:hover   { color: var(--text); border-color: var(--text); }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+
+  /* Split layout for review */
+  .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 1100px) { .review-grid { grid-template-columns: 1fr; } }
+
+  /* Doc preview */
+  .doc-preview { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px; max-height: 400px; overflow-y: auto; line-height: 1.7; color: var(--muted); font-size: 12px; }
+
+  /* Stats row */
+  .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; text-align: center; }
+  .stat-num { font-size: 28px; font-weight: 700; }
+  .stat-label { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+  /* Toast */
+  #toast { position: fixed; bottom: 24px; right: 24px; z-index: 999;
+    padding: 12px 20px; border-radius: var(--radius); font-weight: 600;
+    transform: translateY(80px); opacity: 0; transition: all .3s; }
+  #toast.show { transform: translateY(0); opacity: 1; }
+  #toast.success { background: var(--success); color: #fff; }
+  #toast.error   { background: var(--danger);  color: #fff; }
+
+  /* Empty state */
+  .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .empty .icon { font-size: 48px; margin-bottom: 12px; }
+
+  /* Divider */
+  .divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+  h2 { font-size: 18px; margin-bottom: 20px; }
+  h3 { font-size: 14px; margin-bottom: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="logo" onclick="navigateTo('home')" style="cursor:pointer">paper<span>.</span>manager</div>
+  <div id="version-bar" style="padding:3px 16px 8px;border-bottom:1px solid var(--border);margin-bottom:2px">
+    <div id="version-text" style="font-size:9px;color:var(--muted);font-family:monospace;line-height:1.7">…</div>
+  </div>
+  <div style="padding:10px 16px 10px;border-bottom:1px solid var(--border);margin-bottom:8px">
+    <div style="font-size:10px;color:var(--muted);margin-bottom:8px;letter-spacing:1px">QS-MODUS</div>
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer" title="QS-Modus: Alle Dokumente zur Prüfung vorlegen">
+      <div id="qs-toggle-track" onclick="toggleQsMode()"
+        style="width:44px;height:24px;border-radius:12px;background:var(--border);position:relative;transition:background 0.2s;cursor:pointer;flex-shrink:0">
+        <div id="qs-toggle-thumb"
+          style="width:20px;height:20px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:left 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.4)"></div>
+      </div>
+      <div>
+        <div id="qs-toggle-label" style="font-size:13px;font-weight:600;color:var(--muted)">Nur unsichere</div>
+        <div id="qs-toggle-sub" style="font-size:10px;color:var(--muted);margin-top:1px">LLM-Fehler → Review</div>
+      </div>
+    </label>
+  </div>
+  <div class="nav-item active" onclick="showView('pending')" id="nav-pending">
+    <span>!</span> Korrespondenten Review
+    <span class="nav-badge" id="pending-count">0</span>
+  </div>
+  <div class="nav-item" onclick="showView('correspondents')" id="nav-correspondents">
+    <span>#</span> Korrespondenten
+  </div>
+  <div class="nav-item" onclick="showView('docreview')" id="nav-docreview">
+    <span>D</span> Dokument-Review
+    <span class="nav-badge" id="docreview-count">0</span>
+  </div>
+  <div class="nav-item" onclick="showView('doctypes')" id="nav-doctypes">
+    <span>T</span> Dokumenttypen
+  </div>
+  <div class="nav-item" onclick="showView('tags')" id="nav-tags">
+    <span>~</span> Tags
+  </div>
+  <div class="nav-item" onclick="showView('manifest')" id="nav-manifest">
+    <span>S</span> Speicherpfade
+  </div>
+  <div class="nav-item" onclick="showView('family')" id="nav-family">
+    <span>👪</span> Familie
+  </div>
+</nav>
+
+<!-- MAIN -->
+<main class="main">
+
+  <!-- PENDING VIEW -->
+  <!-- HOME / LANDING PAGE -->
+  <div id="view-home" style="display:none">
+    <div style="max-width:860px">
+
+      <div style="margin-bottom:32px">
+        <h2 style="font-size:24px;margin-bottom:8px">paper<span style="color:var(--accent)">.</span>manager</h2>
+        <p style="color:var(--muted);font-size:14px;line-height:1.7">
+          Intelligente Dokumentklassifizierung für <strong>Paperless-NGX</strong> —
+          mit lokalen KI-Modellen, Lernkreislauf und vollständiger Datenschutzkontrolle.
+          Kein Cloud-Zwang, keine API-Kosten, keine fremden Server.
+        </p>
+      </div>
+
+      <!-- Was ist paper.manager -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">Was ist paper.manager?</span></div>
+        <p style="color:var(--muted);font-size:13px;line-height:1.8;margin-top:8px">
+          paper.manager ist eine Review- und Verwaltungsoberfläche die <strong>Paperless-NGX aufbohrt</strong>:
+          Nach jedem Scan analysiert ein lokales KI-System (Vision-Modell + LLM) das Dokument vollständig
+          als Bild — erkennt Absender, Datum, Betrag, Kennzeichen und sogar handschriftliche Notizen.
+          Das Ergebnis wird automatisch in Paperless übernommen.
+          Unsichere Klassifizierungen landen in der Review-Queue zur manuellen Prüfung.
+          Korrekturen fliessen zurück ins System und verbessern die nächste Klassifizierung.
+        </p>
+      </div>
+
+      <!-- Welche Schwächen von Paperless werden adressiert -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">Adressierte Schwächen von Paperless-NGX</span></div>
+        <div style="margin-top:8px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:12px">
+              <div style="font-size:11px;color:#f87171;font-weight:bold;margin-bottom:6px">OHNE paper.manager</div>
+              <div style="font-size:12px;color:var(--muted);line-height:1.7">
+                ✗ Nur OCR-Text als Grundlage — keine Bildanalyse<br>
+                ✗ Keine Handschrift-Erkennung<br>
+                ✗ Kein deterministisches Routing (Kennzeichen → Ordner)<br>
+                ✗ Keine automatischen Custom Fields<br>
+                ✗ Unbekannte Absender = manuelles Anlegen<br>
+                ✗ Kein Lernkreislauf aus Korrekturen<br>
+                ✗ Keine lokale KI-Integration
+              </div>
+            </div>
+            <div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:6px;padding:12px">
+              <div style="font-size:11px;color:var(--success);font-weight:bold;margin-bottom:6px">MIT paper.manager</div>
+              <div style="font-size:12px;color:var(--muted);line-height:1.7">
+                ✓ Vision-KI analysiert Dokument als Bild (immer)<br>
+                ✓ Handschrift «bez. 6.2.26» → Status=Bezahlt<br>
+                ✓ Kennzeichen → Ordner deterministisch (kein LLM)<br>
+                ✓ Custom Fields automatisch (Betrag, Status, Datum…)<br>
+                ✓ Neue Absender in Review-Queue, einmal freigeben<br>
+                ✓ Korrekturen verbessern zukünftige Klassifizierung<br>
+                ✓ 100% lokal — kein Cloud-Zwang
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lokale KI -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">Lokale KI — Stärken und Grenzen</span></div>
+        <p style="color:var(--muted);font-size:13px;line-height:1.8;margin-top:8px">
+          paper.manager ist für <strong>lokale Ollama-Modelle</strong> optimiert (z.B. auf einem GMKtec EVO mit AMD Ryzen AI Max+).
+          Lokale Modelle sind langsamer als Cloud-APIs (~1-2 Min pro Dokument) und initial weniger präzise —
+          aber sie werden durch den <strong>Lernkreislauf</strong> mit jeder Korrektur besser:
+          Korrekturen im Dokument-Review fliessen als Feedback ins Manifest,
+          bekannte Absender landen nie mehr in der Review-Queue,
+          deterministisches Routing umgeht den LLM komplett wo möglich.
+          Mit der Zeit: mehr deterministisch, weniger LLM, schneller, präziser.
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">Vision: qwen2.5vl:7b</span>
+          <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">LLM: llama3.3:70b</span>
+          <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">Embeddings: bge-m3</span>
+          <span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa">100% lokal</span>
+          <span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa">Kein Cloud-Zwang</span>
+        </div>
+      </div>
+
+      <!-- Custom Fields -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><span class="card-title">Neue Möglichkeiten durch Custom Fields</span></div>
+        <p style="color:var(--muted);font-size:12px;margin:8px 0 10px">
+          Paperless-NGX unterstützt Custom Fields — paper.manager befüllt diese automatisch bei jedem Scan:
+        </p>
+        <div style="display:grid;grid-template-columns:auto auto 1fr;gap:4px 16px;font-size:12px">
+          <div style="color:var(--muted);font-weight:bold">FELD</div>
+          <div style="color:var(--muted);font-weight:bold">TYP</div>
+          <div style="color:var(--muted);font-weight:bold">NEUE MÖGLICHKEIT</div>
+
+          <div style="color:var(--accent)">Status</div>
+          <div style="color:var(--muted)">Auswahl</div>
+          <div style="color:var(--muted)">Offen/Bezahlt — filter auf alle offenen Rechnungen</div>
+
+          <div style="color:var(--accent)">Bezahlt am</div>
+          <div style="color:var(--muted)">Datum</div>
+          <div style="color:var(--muted)">Aus Handschrift «bez. 6.2.26» — Abgleich mit Zahllauf im E-Banking</div>
+
+          <div style="color:var(--accent)">Gescannt am</div>
+          <div style="color:var(--muted)">Datum</div>
+          <div style="color:var(--muted)">Physisches Scan-Datum — unabhängig vom Dokumentdatum</div>
+
+          <div style="color:var(--accent)">Fällig am</div>
+          <div style="color:var(--muted)">Datum</div>
+          <div style="color:var(--muted)">Aus Swiss QR-Bill — filter auf bald fällige Rechnungen</div>
+
+          <div style="color:var(--accent)">CHF</div>
+          <div style="color:var(--muted)">Monetär</div>
+          <div style="color:var(--muted)">Rechnungsbetrag aus QR-Bill</div>
+
+          <div style="color:var(--accent)">QR-Referenz</div>
+          <div style="color:var(--muted)">Text</div>
+          <div style="color:var(--muted)">Eindeutige Zahlungsreferenz aus Swiss QR-Bill</div>
+
+          <div style="color:var(--accent)">Auto-Kennzeichen</div>
+          <div style="color:var(--muted)">Auswahl</div>
+          <div style="color:var(--muted)">Fahrzeug identifiziert aus Dokumentbild</div>
+
+          <div style="color:var(--accent)">Policennummer</div>
+          <div style="color:var(--muted)">Text</div>
+          <div style="color:var(--muted)">Versicherungspolice direkt aus Vision erkannt</div>
+        </div>
+      </div>
+
+      <!-- Was paper.manager NICHT ist -->
+      <div class="card" style="margin-bottom:16px;border-left:3px solid var(--warn)">
+        <div class="card-header"><span class="card-title" style="color:var(--warn)">Abgrenzung — was paper.manager nicht ist</span></div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.8;margin-top:8px">
+          ✗ <strong>Kein Ersatz für Paperless-NGX</strong> — paper.manager ergänzt Paperless, ersetzt es nicht.<br>
+          ✗ <strong>Kein Dokumenten-Viewer</strong> — PDFs werden in Paperless geöffnet (Link «In Paperless öffnen»).<br>
+          ✗ <strong>Keine Buchhaltung</strong> — Status=Bezahlt ist eine Markierung, kein Buchungssystem.<br>
+          ✗ <strong>Kein Backup-System</strong> — Dokumente liegen in Paperless, Backup läuft separat.<br>
+          ✗ <strong>Kein Echtzeitmonitor</strong> — Review-Queue nach dem Scan manuell öffnen.
+        </div>
+      </div>
+
+      <div style="text-align:center;padding:16px 0;color:var(--muted);font-size:11px">
+        paper.manager v<span id="home-ui-version">—</span> · Paperless-NGX · Ollama · lokal · privat
+      </div>
+    </div>
+  </div>
+
+  <div id="view-pending">
+    <h2>Korrespondenten Review</h2>
+    <div class="stats-row" id="stats-row"></div>
+    <div class="review-grid">
+      <!-- Liste -->
+      <div>
+        <h3>Warteschlange</h3>
+        <div id="pending-list"></div>
+      </div>
+      <!-- Review Panel -->
+      <div id="review-panel-wrapper">
+        <div class="empty">
+          <div class="icon">👈</div>
+          <div>Eintrag links auswählen</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CORRESPONDENTS VIEW -->
+  <div id="view-correspondents" style="display:none">
+    <h2>Korrespondenten</h2>
+    <div style="margin-bottom:12px">
+      <input type="text" id="corr-search" placeholder="🔍 Name, Variante, Ordner suchen…"
+        style="width:100%;box-sizing:border-box"
+        oninput="filterCorrespondents(this.value)">
+    </div>
+    <div id="corr-list"></div>
+  </div>
+
+  <!-- DOCUMENT REVIEW VIEW -->
+  <div id="view-docreview" style="display:none">
+    <h2>Dokument-Review Queue</h2>
+    <div class="stats-row" id="docreview-stats"></div>
+    <div class="review-grid">
+      <div>
+        <h3>Offene Dokumente</h3>
+        <div id="docreview-list"></div>
+      </div>
+      <div id="docreview-panel">
+        <div class="empty"><div class="icon">👈</div><div>Dokument links auswählen</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DOKUMENTTYPEN VIEW -->
+  <div id="view-doctypes" style="display:none">
+    <h2>Dokumenttypen</h2>
+    <div style="margin-bottom:12px">
+      <input type="text" id="dt-search" placeholder="🔍 Suchen nach Name, Synonym, Ausschluss-Keyword…"
+        style="width:100%;box-sizing:border-box"
+        oninput="filterDoctypes(this.value)">
+    </div>
+    <div style="margin-bottom:16px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <div>
+        <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">NAME</label>
+        <input type="text" id="new-doctype-input" placeholder="z.B. Mietvertrag" style="max-width:220px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">SYNONYME (Komma-getrennt)</label>
+        <input type="text" id="new-doctype-synonyme" placeholder="z.B. Mietzinsabrechnung, Mietrechnung" style="max-width:340px">
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">BESCHREIBUNG</label>
+        <input type="text" id="new-doctype-beschreibung" placeholder="Kurzbeschreibung" style="max-width:220px">
+      </div>
+      <button class="btn btn-primary" onclick="createDocType()">+ Anlegen</button>
+    </div>
+    <div id="doctypes-list"></div>
+  </div>
+
+  <!-- TAGS VIEW -->
+  <div id="view-tags" style="display:none">
+    <h2>Tags</h2>
+    <div style="margin-bottom:12px">
+      <input type="text" id="tag-search" placeholder="🔍 Tag suchen…"
+        style="width:100%;box-sizing:border-box"
+        oninput="filterTags(this.value)">
+    </div>
+    <div style="margin-bottom:16px;display:flex;gap:8px">
+      <input type="text" id="new-tag-input" placeholder="Neuer Tag..." style="max-width:300px">
+      <button class="btn btn-primary" onclick="createTag()">+ Anlegen</button>
+    </div>
+    <div id="tags-list"></div>
+  </div>
+
+  <!-- MANIFEST VIEW -->
+  <div id="view-manifest" style="display:none">
+    <h2>Speicherpfade</h2>
+    <div style="margin-bottom:12px">
+      <input type="text" id="manifest-search" placeholder="🔍 Ordner, Tag, Dokumenttyp suchen…"
+        style="width:100%;box-sizing:border-box"
+        oninput="filterManifest(this.value)">
+    </div>
+    <div style="margin-bottom:16px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:6px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;letter-spacing:1px">NEUEN ORDNER ANLEGEN</div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">PFAD</label>
+          <input type="text" id="new-manifest-pfad"
+            placeholder="z.B. Vorname/Sonstiges oder Familie/Versicherung/Policen"
+            style="width:100%;box-sizing:border-box"
+            title="Format: Hauptordner/Unterordner — z.B. Vorname/Auto, Familie/Behörde, Vorname/Gesundheit">
+          <div style="font-size:10px;color:var(--muted);margin-top:3px">Format: Hauptordner/Unterordner · Gross/klein beachten · Keine Sonderzeichen ausser /</div>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">BESCHREIBUNG (optional)</label>
+          <input type="text" id="new-manifest-beschreibung" placeholder="z.B. Arbeitsbezogene Dokumente für Vorname">
+        </div>
+        <button class="btn btn-primary" onclick="createManifestOrdner()">+ Anlegen</button>
+      </div>
+    </div>
+    <div id="manifest-list"></div>
+  </div>
+
+  <!-- FAMILIE VIEW -->
+  <div id="view-family" style="display:none">
+    <h2>Familie</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
+      Zentrale Haushaltskonfiguration — wird von der Klassifizierungs-Pipeline beim Start geladen.
+      Änderungen sind beim nächsten Scan aktiv (kein Restart nötig).
+    </p>
+
+    <!-- BEREICH 1: Haushalt + Personen -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><span class="card-title">1 — Haushalt &amp; Personen</span></div>
+      <p style="color:var(--muted);font-size:11px;margin:8px 0 12px;line-height:1.7">
+        Der <strong>Haushaltsname</strong> erscheint im LLM-Prompt (z.B. «Klassifiziere dieses Dokument für Haushalt Muster, Schweiz»).<br>
+        <strong>Personen</strong> definieren den Ordner-Namensraum: der <em>Ordner-Prefix</em> ist der erste Teil aller Ablage-Pfade
+        (z.B. «Vorname» → <code>Vorname/Auto</code>, <code>Vorname/Steuern</code>).
+        Die <em>ID</em> ist ein interner Schlüssel — Kleinbuchstaben, keine Leerzeichen, eindeutig.
+        <strong>Personen zuerst speichern</strong> bevor Fahrzeuge erfasst werden.
+      </p>
+
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+        <div class="field-group" style="flex:1;min-width:160px">
+          <label>Haushaltsname <span style="color:var(--muted);font-weight:normal">(im KI-Prompt)</span></label>
+          <input type="text" id="fam-name" placeholder="z.B. Muster">
+        </div>
+        <div class="field-group" style="flex:0 0 80px">
+          <label>Land</label>
+          <input type="text" id="fam-land" placeholder="CH" maxlength="2">
+        </div>
+        <div class="field-group" style="flex:0 0 80px">
+          <label>Sprache</label>
+          <input type="text" id="fam-sprache" placeholder="de" maxlength="5">
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ID <span style="font-weight:normal">(intern, eindeutig, z.B. vorname)</span></div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ANZEIGENAME <span style="font-weight:normal">(z.B. Anna)</span></div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ORDNER-PREFIX <span style="font-weight:normal">(z.B. Anna</span></div>
+        <div></div>
+      </div>
+      <div id="family-personen"></div>
+      <button class="btn btn-primary" style="margin-top:8px;font-size:11px" onclick="addFamilyPerson()">+ Person hinzufügen</button>
+
+      <div id="family-personen-error" style="display:none;color:#f87171;font-size:12px;margin-top:8px"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <button class="btn btn-success" onclick="saveFamilyPersonen()">✓ Haushalt &amp; Personen speichern</button>
+        <span style="color:var(--muted);font-size:11px">Danach können Fahrzeuge den Personen zugewiesen werden.</span>
+      </div>
+    </div>
+
+    <!-- BEREICH 2: Fahrzeuge -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><span class="card-title">2 — Fahrzeuge</span></div>
+      <p style="color:var(--muted);font-size:11px;margin:8px 0 12px;line-height:1.7">
+        Kennzeichen ermöglichen <strong>deterministisches Routing</strong> ohne LLM-Aufruf —
+        erkennt die Vision-KI ein bekanntes Kennzeichen, wird das Dokument direkt in den konfigurierten
+        <strong>Ziel-Ordner</strong> abgelegt. Schneller und zuverlässiger als LLM-Klassifizierung.<br>
+        Jedes Kennzeichen darf nur <strong>einmal</strong> vorkommen.
+        Als <strong>Person</strong> sind nur bereits gespeicherte Personen wählbar.
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">KENNZEICHEN <span style="font-weight:normal">(z.B. AG 123456)</span></div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">PERSON <span style="font-weight:normal">(nur gespeicherte Personen)</span></div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ZIEL-ORDNER <span style="font-weight:normal">(z.B. Vorname/Auto)</span></div>
+        <div></div>
+      </div>
+      <div id="family-fahrzeuge"></div>
+      <button class="btn btn-primary" style="margin-top:8px;font-size:11px" onclick="addFamilyFahrzeug()">+ Fahrzeug hinzufügen</button>
+
+      <div id="family-fahrzeuge-error" style="display:none;color:#f87171;font-size:12px;margin-top:8px"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <button class="btn btn-success" onclick="saveFamilyFahrzeuge()">✓ Fahrzeuge speichern</button>
+        <span style="color:var(--muted);font-size:11px">Aktiv beim nächsten Scan.</span>
+      </div>
+    </div>
+  </div>
+
+</main>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script>
+// ──────────────────────────────────────────────
+// STATE
+// ──────────────────────────────────────────────
+// API-Basis dynamisch — /corr-manager/api/ via nginx, /api/ direkt via IP
+const API_BASE = window.location.pathname.startsWith('/corr-manager') 
+  ? '/corr-manager/api' 
+  : '/api';
+
+let pendingEntries = [];
+let allKorrTypen = [];
+let allDocTypes = [];
+let allCorrEntries = [];
+let selectedIndex = null;
+let plCorrespondents = [];
+
+// ──────────────────────────────────────────────
+// INIT
+// ──────────────────────────────────────────────
+let _qsModeActive = false;
+
+async function toggleQsMode() {
+  const newMode = _qsModeActive ? 'uncertain' : 'always';
+  try {
+    await fetch(`${API_BASE}/pending-mode`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode: newMode})
+    });
+    _qsModeActive = !_qsModeActive;
+    updatePendingModeUI(newMode);
+    showToast(_qsModeActive ? 'QS-Modus aktiv — alle Dokumente zur Prüfung' : 'QS-Modus aus — nur unsichere Dokumente', _qsModeActive ? 'warn' : 'success');
+  } catch(e) { showToast('Fehler beim Setzen des Modus', 'error'); }
+}
+
+async function setPendingMode(mode) {
+  try {
+    await fetch(`${API_BASE}/pending-mode`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode})
+    });
+    updatePendingModeUI(mode);
+  } catch(e) {}
+}
+
+function updatePendingModeUI(mode) {
+  _qsModeActive = (mode === 'always');
+  // Mit kurzer Verzögerung falls DOM noch nicht vollständig bereit
+  const _apply = () => {
+    const track = document.getElementById('qs-toggle-track');
+    const thumb = document.getElementById('qs-toggle-thumb');
+    const label = document.getElementById('qs-toggle-label');
+    const sub   = document.getElementById('qs-toggle-sub');
+    if (!track) { setTimeout(_apply, 50); return; }  // DOM noch nicht bereit → retry
+    track.style.background = _qsModeActive ? 'var(--success)' : 'var(--border)';
+    thumb.style.left = _qsModeActive ? '22px' : '2px';
+    if (label) { label.textContent = _qsModeActive ? 'QS-Modus aktiv' : 'Nur unsichere'; label.style.color = _qsModeActive ? 'var(--success)' : 'var(--muted)'; }
+    if (sub)   sub.textContent = _qsModeActive ? 'Alle Dokumente → Review' : 'LLM-Fehler → Review';
+  };
+  _apply();
+}
+
+// ── URL-Hash Navigation ──────────────────────────────────────────
+const VALID_VIEWS = ['home','pending','correspondents','docreview','doctypes','tags','manifest','family'];
+
+function getViewFromHash() {
+  const hash = window.location.hash.replace('#','');
+  return VALID_VIEWS.includes(hash) ? hash : 'pending';
+}
+
+function navigateTo(view) {
+  if (!VALID_VIEWS.includes(view)) return;
+  window.history.pushState(null, '', '#' + view);
+  showView(view);
+}
+
+// Nav-Items auf navigateTo umleiten
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[onclick^="showView"]').forEach(el => {
+    const match = el.getAttribute('onclick').match(/showView\(['"](\w+)['"]\)/);
+    if (match) {
+      el.setAttribute('onclick', `navigateTo('${match[1]}')`);
+    }
+  });
+});
+
+// Browser Back/Forward
+window.addEventListener('popstate', () => {
+  showView(getViewFromHash());
+});
+
+// init() erst nach vollständigem DOM laden
+document.addEventListener('DOMContentLoaded', () => { init(); });
+
+async function init() {
+  // Config zuerst laden — pending_mode direkt in DOM schreiben
+  try {
+    const cfg = await (await fetch(`${API_BASE}/config`)).json();
+    window.PAPERLESS_URL = cfg.paperless_url || '';
+    if (cfg.versions) {
+      const v = cfg.versions;
+      const el = document.getElementById('version-text');
+      if (el) el.innerHTML = `UI&nbsp;v2.2 | be&nbsp;v${v.backend||'?'} | pipe&nbsp;v${v.post_consume||'?'}`;
+    }
+    if (cfg.pending_mode) {
+      // Direkt setzen ohne Umweg über updatePendingModeUI
+      _qsModeActive = (cfg.pending_mode === 'always');
+      // DOM direkt manipulieren — kein setTimeout
+      const track = document.getElementById('qs-toggle-track');
+      const thumb = document.getElementById('qs-toggle-thumb');
+      const label = document.getElementById('qs-toggle-label');
+      const sub   = document.getElementById('qs-toggle-sub');
+      if (track) {
+        track.style.background = _qsModeActive ? 'var(--success)' : 'var(--border)';
+        thumb.style.left = _qsModeActive ? '22px' : '2px';
+        if (label) { label.textContent = _qsModeActive ? 'QS-Modus aktiv' : 'Nur unsichere'; label.style.color = _qsModeActive ? 'var(--success)' : 'var(--muted)'; }
+        if (sub) sub.textContent = _qsModeActive ? 'Alle Dokumente → Review' : 'LLM-Fehler → Review';
+      }
+    }
+  } catch(e) { window.PAPERLESS_URL = ''; }
+  await loadPending();
+  await loadPlCorrespondents();
+  await loadAllStoragePaths();
+  await loadKorrTypen();
+  await loadAllDocTypes();
+  try {
+    const dr = await (await fetch(`${API_BASE}/document-review`)).json();
+    document.getElementById('docreview-count').textContent = dr.count;
+  } catch(e) {}
+  renderStats();
+  renderPendingList();
+  // Nach dem Laden: korrekte View aus Hash wiederherstellen
+  const savedView = getViewFromHash();
+  if (savedView !== 'pending') showView(savedView);
+}
+// init() wird via DOMContentLoaded aufgerufen (siehe oben)
+
+// ──────────────────────────────────────────────
+// DATA LOADING
+// ──────────────────────────────────────────────
+async function loadPending() {
+  const r = await fetch(`${API_BASE}/pending`);
+  const d = await r.json();
+  pendingEntries = d.entries;
+  document.getElementById('pending-count').textContent = d.count;
+}
+
+async function loadPlCorrespondents() {
+  try {
+    const r = await fetch(`${API_BASE}/paperless/correspondents`);
+    const d = await r.json();
+    plCorrespondents = d.results || [];
+  } catch(e) { plCorrespondents = []; }
+}
+
+// ──────────────────────────────────────────────
+// VIEWS
+// ──────────────────────────────────────────────
+function showView(name) {
+  document.querySelectorAll('[id^="view-"]').forEach(el => el.style.display = 'none');
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('view-' + name).style.display = '';
+  document.getElementById('nav-' + name).classList.add('active');
+  if (name === 'home') {
+    const el = document.getElementById('home-ui-version');
+    if (el) el.textContent = UI_VERSION;
+  }
+  if (name === 'correspondents') loadCorrMap();
+  if (name === 'docreview') { loadDocReview(); loadDocReviewMeta(); }
+  if (name === 'doctypes') loadDocTypes();
+  if (name === 'tags') loadTags();
+  if (name === 'manifest') loadManifest();
+  if (name === 'family') loadFamilyConfig();
+}
+
+// ──────────────────────────────────────────────
+// STATS
+// ──────────────────────────────────────────────
+function renderStats() {
+  const total    = pendingEntries.length;
+  const neu      = pendingEntries.filter(e => e.aktion === 'neu').length;
+  const erg      = pendingEntries.filter(e => e.aktion === 'ergaenzung').length;
+  const merge    = pendingEntries.filter(e => e.aktion === 'merge_into').length;
+
+// Dokument-Review Queue nach pending-Typ
+async function loadDocReviewByType() {
+  try {
+    const r = await fetch(`${API_BASE}/document-review`);
+    const d = await r.json();
+    const qs    = (d.entries||[]).filter(e => e.pending_type === 'pending_qs').length;
+    const llm   = (d.entries||[]).filter(e => e.pending_type === 'pending_review').length;
+    const corr  = (d.entries||[]).filter(e => e.pending_type === 'pending_new_correspondent').length;
+    const el = document.getElementById('docreview-breakdown');
+    if (el) el.innerHTML =
+      (qs   ? '<span style="color:var(--success)">QS: '+qs+'</span> ' : '') +
+      (llm  ? '<span style="color:var(--warn)">LLM: '+llm+'</span> ' : '') +
+      (corr ? '<span style="color:var(--danger)">Neu: '+corr+'</span>' : '');
+  } catch(e) {}
+}
+  document.getElementById('stats-row').innerHTML = `
+    <div class="stat-card"><div class="stat-num" style="color:var(--accent)">${total}</div><div class="stat-label">Total Pending</div></div>
+    <div class="stat-card"><div class="stat-num" style="color:var(--accent)">${neu}</div><div class="stat-label">Neu</div></div>
+    <div class="stat-card"><div class="stat-num" style="color:#a78bfa">${erg}</div><div class="stat-label">Ergänzungen</div></div>
+    <div class="stat-card"><div class="stat-num" style="color:var(--warn)">${merge}</div><div class="stat-label">Merge</div></div>
+  `;
+}
+
+// ──────────────────────────────────────────────
+// PENDING LIST
+// ──────────────────────────────────────────────
+function renderPendingList() {
+  const container = document.getElementById('pending-list');
+  if (!pendingEntries.length) {
+    container.innerHTML = '<div class="empty"><div class="icon">✅</div><div>Keine offenen Einträge</div></div>';
+    return;
+  }
+
+  // Duplikate erkennen: gleicher Name → Merge-Button anzeigen
+  const nameCount = {};
+  pendingEntries.forEach((e, i) => {
+    const name = (e.aktion === 'ergaenzung' ? e.ziel_name : e.vorgeschlagener_eintrag?.name || '').toLowerCase();
+    if (!nameCount[name]) nameCount[name] = [];
+    nameCount[name].push(i);
+  });
+
+  container.innerHTML = pendingEntries.map((e, i) => {
+    const name     = e.aktion === 'ergaenzung' ? e.ziel_name : (e.vorgeschlagener_eintrag?.name || '?');
+    const raw      = e.llm_raw || '';
+    const conf     = Math.round((e.llm_confidence || 0) * 100);
+    const aktionBadge = {
+      'neu':        '<span class="badge badge-neu">NEU</span>',
+      'ergaenzung': '<span class="badge badge-erg">ERGÄNZUNG</span>',
+      'merge_into': '<span class="badge badge-merge">MERGE</span>',
+    }[e.aktion] || '';
+    const docCount = (e.source_document_ids || []).length;
+    // Merge-Button wenn gleicher Name bei anderem Index vorhanden
+    const dupes = nameCount[name.toLowerCase()] || [];
+    const mergePartner = dupes.find(j => j !== i);
+    const mergeBtn = mergePartner !== undefined
+      ? `<button class="btn btn-ghost" style="padding:2px 8px;font-size:10px;margin-left:auto"
+           onclick="event.stopPropagation();mergePending(${i},${mergePartner})">⇔ Merge</button>`
+      : '';
+    return `
+      <div class="pending-item ${selectedIndex === i ? 'selected' : ''}" onclick="selectEntry(${i})">
+        <div style="display:flex;align-items:center;gap:8px">
+          ${aktionBadge}
+          <strong>${name}</strong>
+          ${mergeBtn}
+        </div>
+        <div class="pending-meta">
+          LLM: "${raw}" · Confidence: ${conf}% · ${docCount} Dok.
+          · ${new Date(e.created_at).toLocaleDateString('de-CH')}
+        </div>
+        <div class="confidence-bar">
+          <div class="confidence-fill" style="width:${conf}%"></div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function mergePending(indexA, indexB) {
+  const nameA = pendingEntries[indexA]?.vorgeschlagener_eintrag?.name || '?';
+  const nameB = pendingEntries[indexB]?.vorgeschlagener_eintrag?.name || '?';
+  const idsA = pendingEntries[indexA]?.source_document_ids || [];
+  const idsB = pendingEntries[indexB]?.source_document_ids || [];
+  if (!confirm(`"${nameA}" (Dok ${idsA.join(',')}) mit "${nameB}" (Dok ${idsB.join(',')}) zusammenführen?`)) return;
+  const r = await fetch(`${API_BASE}/review/merge`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({index_a: indexA, index_b: indexB})
+  });
+  if (r.ok) {
+    const d = await r.json();
+    showToast(`Merged — ${d.count} Dokumente zusammengeführt`, 'success');
+    await loadPending();
+    renderStats();
+    renderPendingList();
+    selectedIndex = null;
+    document.getElementById('review-panel-wrapper').innerHTML =
+      '<div class="empty"><div class="icon">👈</div><div>Eintrag links auswählen</div></div>';
+  } else {
+    const err = await r.json().catch(() => ({}));
+    showToast('Fehler: ' + (err.detail || 'Unbekannt'), 'error');
+  }
+}
+
+
+// ──────────────────────────────────────────────
+// SELECT + RENDER REVIEW PANEL
+// ──────────────────────────────────────────────
+async function selectEntry(i) {
+  selectedIndex = i;
+  renderPendingList();
+  const entry = pendingEntries[i];
+  const wrapper = document.getElementById('review-panel-wrapper');
+
+  // Dokument-Inhalt laden (erstes source_document)
+  let docContent = '';
+  const docIds = entry.source_document_ids || [];
+  if (docIds.length) {
+    try {
+      const r = await fetch(`${API_BASE}/document/${docIds[0]}`);
+      const d = await r.json();
+      docContent = (d.content || '').slice(0, 800);
+    } catch(e) {}
+  }
+
+  if (entry.aktion === 'neu')        wrapper.innerHTML = renderPanelNeu(entry, i, docContent, docIds);
+  if (entry.aktion === 'ergaenzung') wrapper.innerHTML = renderPanelErgaenzung(entry, i, docContent, docIds);
+  if (entry.aktion === 'merge_into') wrapper.innerHTML = renderPanelMerge(entry, i, docContent, docIds);
+
+  // Varianten-Vorschläge aus LLM-Raw generieren
+  if (entry.aktion === 'neu') {
+    const raw = entry.llm_raw || '';
+    const suggestions = generateVariantSuggestions(raw);
+    const sugDiv = document.getElementById('varianten-suggestions');
+    if (sugDiv && suggestions.length) {
+      sugDiv.innerHTML = '<span style="color:var(--muted);font-size:11px">Vorschläge: </span>' +
+        suggestions.map(s => `<span class="badge badge-neu" style="cursor:pointer" onclick="addTagVal('${s}','tags-varianten')">${s}</span>`).join('');
+    }
+  }
+}
+
+// ──────────────────────────────────────────────
+// REVIEW PANELS
+// ──────────────────────────────────────────────
+function docPreview(content, docIds) {
+  const links = docIds.map(id =>
+    `<a href="${window.PAPERLESS_URL || ''}/documents/${id}" target="_blank" style="color:var(--accent)">Dok #${id}</a>`
+  ).join(' ');
+  return `
+    <div class="field-group">
+      <label>Quelldokumente ${links}</label>
+      <div class="doc-preview">${content || '<em>Kein Textinhalt verfügbar</em>'}</div>
+    </div>`;
+}
+
+function renderPanelNeu(entry, i, docContent, docIds) {
+  const e = entry.vorgeschlagener_eintrag || {};
+  const varianten = e.varianten || [];
+  const match     = e.match || [];
+  const korrTypen = allKorrTypen.length ? allKorrTypen : ['Behörde','Bank','Versicherung','Arzt','Arbeitgeber','Kundenservice','Verein','Online-Shop','Händler','Handwerk','Telekommunikation','Energie','Transport','Sonstiges'];
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Neuer Korrespondent</span>
+        <span class="badge badge-neu">NEU</span>
+      </div>
+      ${docPreview(docContent, docIds)}
+      <hr class="divider">
+      <div class="field-group">
+        <label>Kanonischer Name *</label>
+        <input type="text" id="f-name" value="${e.name || ''}">
+      </div>
+      <div class="field-group">
+        <label>Standard-Dokumenttyp
+          <span style="color:var(--muted);font-size:10px;font-weight:400">
+            (wird als Default-DokTyp bei neuen Dokumenten dieses Korrespondenten verwendet)
+          </span>
+        </label>
+        <input type="text" id="f-typ" list="doctype-list" value="${e.default_dokumenttyp||e.typ||''}"
+               placeholder="Dokumenttyp wählen oder eingeben...">
+        <datalist id="doctype-list">
+          ${allDocTypes.map(t => `<option value="${t.name}">`).join('')}
+        </datalist>
+      </div>
+      <div class="field-group">
+        <label>Varianten (Enter zum Hinzufügen)</label>
+        <div id="varianten-suggestions" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px"></div>
+        <div class="tags-input" id="tags-varianten" data-tags='${JSON.stringify(varianten)}'>
+          ${varianten.map(v => tagChip(v, 'tags-varianten')).join('')}
+          <input type="text" id="f-variante-input" placeholder="Variante eingeben..."
+            onkeydown="addTagWithCheck(event,'tags-varianten')"
+            oninput="checkVariantDupe(this.value)">
+        </div>
+        <div id="variant-dupe-warn" style="color:var(--danger);font-size:11px;margin-top:4px;display:none"></div>
+      </div>
+      <div class="field-group">
+        <label>Match-Strings (Paperless Matching, Enter zum Hinzufügen)</label>
+        <div class="tags-input" id="tags-match" data-tags='${JSON.stringify(match)}'>
+          ${match.map(v => tagChip(v, 'tags-match')).join('')}
+          <input type="text" placeholder="match string..." onkeydown="addTag(event,'tags-match')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Typische Ordner
+          <span style="font-weight:400;color:var(--muted);font-size:10px;margin-left:6px">
+            Aus Liste wählen oder neuen Pfad mit Enter erfassen (Format: Hauptordner/Unterordner)
+          </span>
+        </label>
+        <div class="tags-input" id="tags-ordner" data-tags='${JSON.stringify(e.typische_ordner||[])}'>
+          ${(e.typische_ordner||[]).map(o => tagChip(o, 'tags-ordner')).join('')}
+          <input type="text" id="f-ordner-input" list="ordner-list"
+            placeholder="z.B. Vorname/Arbeit — Enter zum Hinzufügen"
+            onkeydown="addTag(event,'tags-ordner')"
+            oninput="handleOrdnerInput(this)">
+        </div>
+        <datalist id="ordner-list">
+          ${allStoragePaths.map(sp => `<option value="${sp.name}">`).join('')}
+        </datalist>
+      </div>
+      <div class="field-group">
+        <label>Notiz</label>
+        <textarea id="f-notiz">${e.notiz || ''}</textarea>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Freigeben & in Paperless anlegen</button>
+        <button class="btn btn-danger"  onclick="submitReview(${i},'reject')">✗ Ablehnen</button>
+      </div>
+    </div>`;
+}
+
+function renderPanelErgaenzung(entry, i, docContent, docIds) {
+  const vorschlag = entry.vorgeschlagener_eintrag || {};
+  const neueVar   = entry.neue_varianten || vorschlag.varianten || [];
+  const neueMatch = entry.neue_match     || vorschlag.match     || [];
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Ergänzung: ${entry.ziel_name}</span>
+        <span class="badge badge-erg">ERGÄNZUNG</span>
+      </div>
+      ${docPreview(docContent, docIds)}
+      <hr class="divider">
+      <p style="color:var(--muted);margin-bottom:14px">
+        LLM hat neue Varianten für den bestehenden Korrespondenten <strong>${entry.ziel_name}</strong> erkannt.
+      </p>
+      <div class="field-group">
+        <label>Neue Varianten (bearbeiten/ergänzen)</label>
+        <div class="tags-input" id="tags-varianten" data-tags='${JSON.stringify(neueVar)}'>
+          ${neueVar.map(v => tagChip(v, 'tags-varianten')).join('')}
+          <input type="text" placeholder="Variante..." onkeydown="addTag(event,'tags-varianten')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Neue Match-Strings</label>
+        <div class="tags-input" id="tags-match" data-tags='${JSON.stringify(neueMatch)}'>
+          ${neueMatch.map(v => tagChip(v, 'tags-match')).join('')}
+          <input type="text" placeholder="match string..." onkeydown="addTag(event,'tags-match')">
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Ergänzung übernehmen</button>
+        <button class="btn btn-danger"  onclick="submitReview(${i},'reject')">✗ Ablehnen</button>
+      </div>
+    </div>`;
+}
+
+function renderPanelMerge(entry, i, docContent, docIds) {
+  const e = entry.vorgeschlagener_eintrag || {};
+  const match = e.match || [];
+  const optionen = plCorrespondents.map(c =>
+    `<option value="${c.name}" ${c.name===entry.merge_ziel_name?'selected':''}>${c.name}</option>`
+  ).join('');
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Merge-Vorschlag</span>
+        <span class="badge badge-merge">MERGE</span>
+      </div>
+      ${docPreview(docContent, docIds)}
+      <hr class="divider">
+      <p style="color:var(--muted);margin-bottom:14px">
+        LLM-Erkennung "<strong>${entry.llm_raw}</strong>" soll einem bestehenden Korrespondenten zugeordnet werden.
+      </p>
+      <div class="field-group">
+        <label>Merge in Korrespondent</label>
+        <select id="f-merge-ziel">${optionen}</select>
+      </div>
+      <div class="field-group">
+        <label>Match-Strings die übernommen werden</label>
+        <div class="tags-input" id="tags-match" data-tags='${JSON.stringify(match)}'>
+          ${match.map(v => tagChip(v, 'tags-match')).join('')}
+          <input type="text" placeholder="match string..." onkeydown="addTag(event,'tags-match')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Begründung LLM</label>
+        <div style="color:var(--muted);font-size:12px;padding:8px">${entry.merge_begruendung || '—'}</div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Merge durchführen</button>
+        <button class="btn btn-ghost"   onclick="submitReview(${i},'approve_neu_statt_merge')">Als NEU anlegen statt Merge</button>
+        <button class="btn btn-danger"  onclick="submitReview(${i},'reject')">✗ Ablehnen</button>
+      </div>
+    </div>`;
+}
+
+// ──────────────────────────────────────────────
+// TAGS INPUT LOGIC
+// ──────────────────────────────────────────────
+function tagChip(value, containerId, color, bg) {
+  const style = (color || bg)
+    ? ` style="${bg ? 'background:'+bg+';' : ''}${color ? 'color:'+color+';' : ''}"`
+    : '';
+  return `<span class="tag-chip"${style}>${value}<span class="remove" onclick="removeTag(this,'${containerId}')">×</span></span>`;
+}
+
+function handleOrdnerInput(input, containerId) {
+  const val = input.value.trim();
+  if (!val) return;
+  const opts = Array.from(document.querySelectorAll('#ordner-list option')).map(o => o.value);
+  const targetId = containerId || 'tags-ordner';
+  if (opts.includes(val)) {
+    addTagVal(val, targetId);
+    input.value = '';
+  }
+}
+
+function addTagVal(val, containerId) {
+  val = val.trim();
+  if (!val) return;
+  const container = document.getElementById(containerId);
+  const existing = getTagsFromContainer(containerId);
+  if (existing.includes(val)) return;
+  const newTags = [...existing, val];
+  container.setAttribute('data-tags', JSON.stringify(newTags));
+  const chip = document.createElement('span');
+  chip.className = 'tag-chip';
+  chip.innerHTML = `${val}<span class="remove" onclick="removeTag(this,'${containerId}')">×</span>`;
+  const input = container.querySelector('input');
+  container.insertBefore(chip, input);
+}
+
+function addTag(event, containerId) {
+  if (event.key === 'Backspace' && event.target.value === '') {
+    const container = document.getElementById(containerId);
+    const chips = container.querySelectorAll('.tag-chip');
+    if (chips.length > 0) {
+      const last = chips[chips.length - 1];
+      const val = last.childNodes[0].textContent.trim();
+      last.remove();
+      const tags = getTagsFromContainer(containerId).filter(t => t !== val);
+      container.setAttribute('data-tags', JSON.stringify(tags));
+    }
+    return;
+  }
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  const input = event.target;
+  const val = input.value.trim();
+  if (!val) return;
+  const container = document.getElementById(containerId);
+  const existing = getTagsFromContainer(containerId);
+  if (existing.includes(val)) { input.value = ''; return; }
+  const newTags = [...existing, val];
+  container.setAttribute('data-tags', JSON.stringify(newTags));
+  const chip = document.createElement('span');
+  chip.className = 'tag-chip';
+  chip.innerHTML = `${val}<span class="remove" onclick="removeTag(this,'${containerId}')">×</span>`;
+  container.insertBefore(chip, input);
+  input.value = '';
+}
+
+function removeTag(el, containerId) {
+  // el kann der .remove span sein oder das tag-chip selbst
+  const chip = el.classList.contains('tag-chip') ? el : el.closest('.tag-chip');
+  if (!chip) return;
+  const val = chip.childNodes[0].textContent.trim();
+  chip.remove();
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const tags = getTagsFromContainer(containerId).filter(t => t !== val);
+  container.setAttribute('data-tags', JSON.stringify(tags));
+}
+
+function getTagsFromContainer(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return [];
+  // getAttribute liest das HTML-Attribut zuverlässig auch nach innerHTML-Rendering
+  try {
+    const raw = container.getAttribute('data-tags');
+    if (raw) return JSON.parse(raw);
+  } catch(e) {}
+  // Fallback: DOM-Chips lesen
+  return Array.from(container.querySelectorAll('.tag-chip'))
+    .map(c => c.childNodes[0].textContent.trim())
+    .filter(Boolean);
+}
+
+// ──────────────────────────────────────────────
+// SUBMIT REVIEW
+// ──────────────────────────────────────────────
+async function submitReview(index, action) {
+  const entry = pendingEntries[index];
+  let payload = { action, reviewed_by: 'admin' };
+
+  if (action !== 'reject') {
+    if (entry.aktion === 'neu') {
+      payload.canonical_name  = document.getElementById('f-name')?.value;
+      payload.typ             = document.getElementById('f-typ')?.value;
+      payload.varianten       = getTagsFromContainer('tags-varianten');
+      payload.match_strings   = getTagsFromContainer('tags-match');
+      payload.typische_ordner = getTagsFromContainer('tags-ordner');
+      payload.notiz           = document.getElementById('f-notiz')?.value;
+
+      // Validation VOR Freigeben
+      if (action === 'approve') {
+        const vr = await fetch(`${API_BASE}/validate-correspondent`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            name: payload.canonical_name,
+            match: payload.match_strings,
+            varianten: payload.varianten,
+            typische_ordner: payload.typische_ordner,
+          })
+        }).then(r=>r.json()).catch(()=>null);
+        if (vr && !vr.valid) {
+          showToast('Fehler: ' + vr.errors.join(' | '), 'error');
+          // Fehler im Panel anzeigen
+          let errDiv = document.getElementById('validation-errors');
+          if (!errDiv) {
+            errDiv = document.createElement('div');
+            errDiv.id = 'validation-errors';
+            errDiv.style.cssText = 'color:var(--danger);font-size:12px;padding:8px;margin:8px 0;border:1px solid var(--danger);border-radius:4px';
+            document.querySelector('.btn-row')?.before(errDiv);
+          }
+          errDiv.innerHTML = '<strong>Fehler:</strong><br>' + vr.errors.map(e=>`• ${e}`).join('<br>') +
+            (vr.warnings?.length ? '<br><strong style="color:var(--warn)">Hinweise:</strong><br>' + vr.warnings.map(w=>`• ${w}`).join('<br>') : '');
+          return;
+        }
+        if (vr?.warnings?.length) {
+          showToast('Hinweis: ' + vr.warnings.join(' | '), 'success');
+        }
+      }
+    } else if (entry.aktion === 'ergaenzung') {
+      payload.varianten     = getTagsFromContainer('tags-varianten');
+      payload.match_strings = getTagsFromContainer('tags-match');
+    } else if (entry.aktion === 'merge_into') {
+      payload.merge_ziel_name = document.getElementById('f-merge-ziel')?.value;
+      payload.match_strings   = getTagsFromContainer('tags-match');
+      if (action === 'approve_neu_statt_merge') {
+        // Als NEU behandeln — Server-seitig via approve_neu + merge_into
+        payload.action = 'approve_neu';
+        // entry.aktion bleibt "merge_into" — Backend erkennt Kombination
+      }
+    }
+  }
+
+  try {
+    const r = await fetch(`${API_BASE}/review/${index}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      showToast(d.message || 'Erledigt', 'success');
+      await loadPending();
+      renderStats();
+      renderPendingList();
+      document.getElementById('review-panel-wrapper').innerHTML =
+        '<div class="empty"><div class="icon">👈</div><div>Eintrag links auswählen</div></div>';
+      selectedIndex = null;
+    } else {
+      showToast(d.detail || 'Fehler', 'error');
+    }
+  } catch(e) {
+    showToast('Netzwerkfehler: ' + e.message, 'error');
+  }
+}
+
+// ──────────────────────────────────────────────
+// CORRESPONDENTS MAP VIEW
+// ──────────────────────────────────────────────
+let _corrAllEntries = [];
+
+async function loadCorrMap() {
+  const r = await fetch(`${API_BASE}/correspondents`);
+  const d = await r.json();
+  const container = document.getElementById('corr-list');
+  if (!d.eintraege?.length) {
+    container.innerHTML = '<div class="empty"><div class="icon">📭</div><div>Keine Einträge</div></div>';
+    return;
+  }
+  allCorrEntries = d.eintraege;
+  _corrAllEntries = d.eintraege;
+  renderCorrMap(_corrAllEntries);
+}
+
+function renderCorrMap(eintraege) {
+  const container = document.getElementById('corr-list');
+  if (!eintraege.length) { container.innerHTML = '<div class="empty">Keine Treffer</div>'; return; }
+  // Originalindex für Edit-Funktion beibehalten (allCorrEntries bleibt ungefiltert)
+  container.innerHTML = eintraege.map(e => {
+    const idx = allCorrEntries.indexOf(e);
+    return `
+    <div class="card" id="corr-card-${idx}">
+      <div class="card-header">
+        <span class="card-title">${e.name}</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="badge badge-${e._paperless?.id ? 'approved' : 'pending'}">
+            ${e._paperless?.id ? 'Paperless #' + e._paperless.id : 'Noch nicht in Paperless'}
+          </span>
+          <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px"
+            onclick="openCorrEdit(${idx})">✎ Edit</button>
+        </div>
+      </div>
+      <div id="corr-view-${idx}">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">${e.default_dokumenttyp || e.typ || '—'}</span>
+          ${(e.typische_ordner||[]).map(o=>`<span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa">${o}</span>`).join('')}
+        </div>
+        <div style="margin-bottom:8px">
+          <span style="color:var(--muted);font-size:11px">VARIANTEN: </span>
+          ${(e.varianten||[]).map(v=>`<span class="badge badge-neu" style="margin-right:4px">${v}</span>`).join('')}
+        </div>
+        <div>
+          <span style="color:var(--muted);font-size:11px">MATCH: </span>
+          <code style="color:var(--muted);font-size:11px">${(e.match||[]).join(' | ')}</code>
+        </div>
+        ${e.notiz ? `<div style="color:var(--muted);font-size:11px;margin-top:8px">💬 ${e.notiz}</div>` : ''}
+        ${Object.keys(e.extraktion_muster||{}).length ? `
+          <div style="margin-top:6px">
+            <span style="color:var(--muted);font-size:11px">MUSTER: </span>
+            ${Object.keys(e.extraktion_muster).map(k =>
+              `<span class="badge" style="background:rgba(16,185,129,.15);color:#10b981;margin-right:3px">${k}</span>`
+            ).join('')}
+          </div>` : ''}
+      </div>
+      <div id="corr-edit-${idx}" style="display:none"></div>
+    </div>`;
+  }).join('');
+}
+
+function filterCorrespondents(q) {
+  if (!q.trim()) { renderCorrMap(_corrAllEntries); return; }
+  const lq = q.toLowerCase();
+  renderCorrMap(_corrAllEntries.filter(e =>
+    e.name.toLowerCase().includes(lq) ||
+    (e.varianten||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.match||[]).some(m => m.toLowerCase().includes(lq)) ||
+    (e.typische_ordner||[]).some(o => o.toLowerCase().includes(lq)) ||
+    (e.notiz||'').toLowerCase().includes(lq)
+  ));
+}
+
+function toggleCorrEdit(idx, entry) {
+  const view = document.getElementById(`corr-view-${idx}`);
+  const edit = document.getElementById(`corr-edit-${idx}`);
+  if (edit.style.display !== 'none') {
+    edit.style.display = 'none'; view.style.display = ''; return;
+  }
+  view.style.display = 'none';
+  const typen = allKorrTypen.length ? allKorrTypen : ['Behörde','Bank','Versicherung','Arzt','Arbeitgeber','Kundenservice','Verein','Online-Shop','Händler','Handwerk','Telekommunikation','Energie','Transport','Sonstiges'];
+  edit.innerHTML = `
+    <div style="margin-top:12px">
+      <div class="field-group">
+        <label>Standard-Dokumenttyp</label>
+        <input type="text" id="ce-typ-${idx}" list="doctype-list" value="${entry.default_dokumenttyp||entry.typ||''}"
+               placeholder="Dokumenttyp wählen...">
+      </div>
+      <div class="field-group">
+        <label>Varianten</label>
+        <div class="tags-input" id="ce-var-${idx}" data-tags='${JSON.stringify(entry.varianten||[])}'>
+          ${(entry.varianten||[]).map(v => tagChip(v, `ce-var-${idx}`)).join('')}
+          <input type="text" placeholder="Variante..." onkeydown="addTag(event,'ce-var-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Match-Strings</label>
+        <div class="tags-input" id="ce-match-${idx}" data-tags='${JSON.stringify(entry.match||[])}'>
+          ${(entry.match||[]).map(v => tagChip(v, `ce-match-${idx}`)).join('')}
+          <input type="text" placeholder="match string..." onkeydown="addTag(event,'ce-match-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Typische Ordner
+          <span style="font-weight:400;color:var(--muted);font-size:10px;margin-left:6px">
+            Format: Hauptordner/Unterordner — aus Liste wählen oder Enter zum freien Erfassen
+          </span>
+        </label>
+        <div class="tags-input" id="ce-ord-${idx}" data-tags='${JSON.stringify(entry.typische_ordner||[])}'>
+          ${(entry.typische_ordner||[]).map(v => tagChip(v, `ce-ord-${idx}`)).join('')}
+          <input type="text" list="ordner-list"
+            placeholder="z.B. Vorname/Auto — aus Liste oder Enter zum Erfassen"
+            oninput="handleOrdnerInput(this, 'ce-ord-${idx}')"
+            onkeydown="addTag(event,'ce-ord-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Notiz</label>
+        <textarea id="ce-notiz-${idx}">${entry.notiz||''}</textarea>
+      </div>
+      <hr class="divider">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">
+        EXTRAKTIONS-MUSTER
+        <span style="font-size:10px">— Regex pro Custom Field für diesen Korrespondenten</span>
+      </div>
+      <div id="ce-muster-${idx}">
+        ${renderExtraktionsMusterEdit(entry.extraktion_muster||{}, idx)}
+      </div>
+      <button class="btn btn-ghost" style="margin-bottom:12px;font-size:11px"
+        onclick="addExtraktionsMuster(${idx})">+ Muster hinzufügen</button>
+      <hr class="divider">
+      <div class="field-group">
+        <label>Erwartungen</label>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;color:var(--text)">
+            <input type="checkbox" id="ce-qr-${idx}" ${(entry.erwartungen||{}).hat_qr_rechnung?'checked':''}>
+            Hat QR-Rechnung
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;color:var(--text)">
+            <input type="checkbox" id="ce-faellig-${idx}" ${(entry.erwartungen||{}).hat_faelligkeitsdatum?'checked':''}>
+            Hat Fälligkeitsdatum
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:400;color:var(--text)">
+            <input type="checkbox" id="ce-betrag-${idx}" ${(entry.erwartungen||{}).hat_betrag===false?'':' checked'}>
+            Hat Betrag
+          </label>
+        </div>
+      </div>
+        <button class="btn btn-success" onclick="saveCorrEdit(${idx})">✓ Speichern</button>
+        <button class="btn btn-ghost" onclick="closeCorrEdit(${idx})">Abbrechen</button>
+        <button class="btn btn-ghost" style="color:var(--warn);border-color:var(--warn)"
+          onclick="openMergePaperless(${idx})">⇔ Mit anderem zusammenführen</button>
+      </div>
+    </div>`;
+  edit.style.display = '';
+}
+
+function openCorrEdit(idx) {
+  // Trigger durch Edit-Button — Entry ist bereits im DOM
+  const entry = allCorrEntries ? allCorrEntries[idx] : null;
+  if (entry) toggleCorrEdit(idx, entry);
+}
+
+function closeCorrEdit(idx) {
+  const edit = document.getElementById(`corr-edit-${idx}`);
+  if (edit) edit.style.display = 'none';
+  const view = document.getElementById(`corr-view-${idx}`);
+  if (view) view.style.display = '';
+}
+
+async function openMergePaperless(idx) {
+  const entry = allCorrEntries[idx];
+  if (!entry) return;
+  const keepId = entry._paperless?.id;
+  const keepName = entry.name;
+  if (!keepId) { showToast('Kein Paperless-ID — erst freigeben', 'error'); return; }
+  const others = allCorrEntries.filter((e, i) => i !== idx && e._paperless?.id);
+  if (!others.length) { showToast('Keine anderen Korrespondenten vorhanden', 'error'); return; }
+  const options = others.map(e =>
+    `<option value="${e._paperless.id}">${e.name} (ID ${e._paperless.id})</option>`
+  ).join('');
+  const existing = document.getElementById(`merge-panel-${idx}`);
+  if (existing) { existing.remove(); return; }
+  const edit = document.getElementById(`corr-edit-${idx}`);
+  edit.insertAdjacentHTML('beforeend', `
+    <div id="merge-panel-${idx}" style="margin-top:12px;padding:12px;background:rgba(245,158,11,.05);border:1px solid var(--warn);border-radius:6px">
+      <div style="font-size:11px;color:var(--warn);margin-bottom:8px">
+        ⇔ "${keepName}" bleibt — gewählter Korrespondent wird gelöscht, Dokumente umgeschrieben
+      </div>
+      <select id="merge-select-${idx}" style="width:100%;margin-bottom:8px">
+        <option value="">— Korrespondent wählen der gelöscht wird —</option>
+        ${options}
+      </select>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="executeMergePaperless(${idx},${keepId})">⇔ Zusammenführen</button>
+        <button class="btn btn-ghost" onclick="document.getElementById('merge-panel-${idx}').remove()">Abbrechen</button>
+      </div>
+    </div>`);
+}
+
+async function executeMergePaperless(idx, keepId) {
+  const mergeId = parseInt(document.getElementById(`merge-select-${idx}`)?.value);
+  if (!mergeId) { showToast('Bitte Korrespondent wählen', 'error'); return; }
+  const mergeName = allCorrEntries.find(e => e._paperless?.id === mergeId)?.name || mergeId;
+  const keepName = allCorrEntries[idx]?.name || keepId;
+  if (!confirm(`"${mergeName}" in "${keepName}" aufgehen lassen?\nAlle Dokumente werden umgeschrieben, "${mergeName}" wird gelöscht.`)) return;
+  const r = await fetch(`${API_BASE}/correspondents/merge-paperless`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({keep_id: keepId, merge_id: mergeId})
+  });
+  if (r.ok) {
+    const d = await r.json();
+    showToast(`Merged — ${d.documents_reassigned} Dokumente umgeschrieben`, 'success');
+    closeCorrEdit(idx);
+    await loadCorrMap();
+  } else {
+    const err = await r.json().catch(() => ({}));
+    showToast('Fehler: ' + (err.detail || 'Unbekannt'), 'error');
+  }
+}
+
+async function saveCorrEdit(idx, nameParam) {
+  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-ord-${idx}`]);
+  // Name aus Parameter oder aus DOM lesen
+  const name = nameParam || document.getElementById(`corr-edit-${idx}`)?.dataset?.name;
+  const dtName = document.getElementById(`ce-typ-${idx}`)?.value || '';
+  const body = {
+    default_dokumenttyp:    dtName,
+    varianten:              getTagsFromContainer(`ce-var-${idx}`),
+    match:                  getTagsFromContainer(`ce-match-${idx}`),
+    typische_ordner:        getTagsFromContainer(`ce-ord-${idx}`),
+    notiz:                  document.getElementById(`ce-notiz-${idx}`)?.value || '',
+    extraktion_muster:      collectExtraktionsMuster(idx),
+    erwartungen: {
+      hat_qr_rechnung:       document.getElementById(`ce-qr-${idx}`)?.checked || false,
+      hat_faelligkeitsdatum: document.getElementById(`ce-faellig-${idx}`)?.checked || false,
+      hat_betrag:            document.getElementById(`ce-betrag-${idx}`)?.checked !== false,
+    },
+  };
+  try {
+    const r = await fetch(`${API_BASE}/correspondents/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      showToast('Gespeichert', 'success');
+      await loadCorrMap();
+    } else {
+      showToast(d.detail || 'Fehler', 'error');
+    }
+  } catch(e) {
+    showToast('Netzwerkfehler', 'error');
+  }
+}
+
+// ──────────────────────────────────────────────
+// EXTRAKTIONS-MUSTER EDITOR
+// ──────────────────────────────────────────────
+const CUSTOM_FIELD_OPTIONS = [
+  {id: 1,  name: "Betrag"},
+  {id: 5,  name: "Rechnungsnummer"},
+  {id: 6,  name: "Kundennummer"},
+  {id: 7,  name: "QR-Referenz"},
+  {id: 8,  name: "Fällig am"},
+  {id: 9,  name: "Status"},
+  {id: 10, name: "Policennummer"},
+  {id: 11, name: "Auto-Kennzeichen"},
+];
+
+function renderExtraktionsMusterEdit(muster, idx) {
+  if (!muster || !Object.keys(muster).length) return '';
+  return Object.entries(muster).map(([key, m]) => `
+    <div class="card" style="margin-bottom:8px;padding:10px" id="muster-${idx}-${key}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <strong style="font-size:12px">${key}</strong>
+        <button class="btn btn-danger" style="padding:2px 8px;font-size:10px"
+          onclick="removeExtraktionsMuster('${idx}','${key}')">✕</button>
+      </div>
+      <div class="field-group">
+        <label>Custom Field</label>
+        <select id="muster-cf-${idx}-${key}">
+          ${CUSTOM_FIELD_OPTIONS.map(f => `<option value="${f.id}" ${m.custom_field_id===f.id?'selected':''}>${f.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field-group" style="display:flex;gap:8px;align-items:flex-end">
+        <div style="flex:1">
+          <label>Regex-Pattern</label>
+          <input type="text" id="muster-regex-${idx}-${key}" value="${m.regex||''}" 
+                 placeholder="z.B. LV[_ ]?[0-9]{3}[.][0-9]{3}" style="font-family:monospace">
+        </div>
+        <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px;white-space:nowrap"
+          onclick="openRegexAssistent('${idx}','${key}','${m.beispiel||''}')">
+          ✨ Assistent
+        </button>
+      </div>
+      <div class="field-group">
+        <label>Label-Hints (Enter zum Hinzufügen)</label>
+        <div class="tags-input" id="muster-hints-${idx}-${key}" data-tags='${JSON.stringify(m.label_hints||[])}'>
+          ${(m.label_hints||[]).map(h => tagChip(h, `muster-hints-${idx}-${key}`)).join('')}
+          <input type="text" placeholder="z.B. Police Nr." onkeydown="addTag(event,'muster-hints-${idx}-${key}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Beispielwert</label>
+        <input type="text" id="muster-bsp-${idx}-${key}" value="${m.beispiel||''}" placeholder="z.B. XX_123.456">
+      </div>
+    </div>`).join('');
+}
+
+function collectExtraktionsMuster(idx) {
+  const result = {};
+  const container = document.getElementById(`ce-muster-${idx}`);
+  if (!container) return result;
+  container.querySelectorAll('[id^="muster-regex-" ]').forEach(el => {
+    const parts = el.id.split('-');
+    const key = parts.slice(3).join('-');
+    result[key] = {
+      custom_field_id: parseInt(document.getElementById(`muster-cf-${idx}-${key}`)?.value) || null,
+      regex:       el.value || null,
+      label_hints: getTagsFromContainer(`muster-hints-${idx}-${key}`),
+      beispiel:    document.getElementById(`muster-bsp-${idx}-${key}`)?.value || null,
+    };
+  });
+  return result;
+}
+
+function addExtraktionsMuster(idx) {
+  const key = prompt('Feldname für das Muster (z.B. "policennummer", "kundennummer"):');
+  if (!key || !key.trim()) return;
+  const container = document.getElementById(`ce-muster-${idx}`);
+  if (!container) return;
+  const div = document.createElement('div');
+  div.innerHTML = renderExtraktionsMusterEdit({[key.trim()]: {regex:null,label_hints:[],beispiel:null,custom_field_id:null}}, idx);
+  container.appendChild(div.firstElementChild);
+}
+
+function removeExtraktionsMuster(idx, key) {
+  document.getElementById(`muster-${idx}-${key}`)?.remove();
+}
+
+// ── Regex-Assistent Modal ─────────────────────────────────────────────────────
+let _regexAssiIdx = null, _regexAssiKey = null;
+
+function openRegexAssistent(idx, key, beispiel) {
+  _regexAssiIdx = idx; _regexAssiKey = key;
+  let modal = document.getElementById('regex-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'regex-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;display:flex;align-items:center;justify-content:center';
+    modal.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:24px;width:520px;max-width:95vw">
+        <h3 style="margin:0 0 16px">✨ Regex-Assistent</h3>
+        <div class="field-group"><label>Feldname</label>
+          <input type="text" id="ra-feldname" placeholder="z.B. Policennummer"></div>
+        <div class="field-group"><label>Beispielwert *</label>
+          <input type="text" id="ra-beispiel" placeholder="z.B. XX_123.456"></div>
+        <div class="field-group"><label>Weitere Beispiele (kommagetrennt)</label>
+          <input type="text" id="ra-weitere" placeholder="LV 123.456, LV-789.012"></div>
+        <div class="field-group"><label>Kontext (Absender)</label>
+          <input type="text" id="ra-kontext" placeholder="z.B. Zürich Versicherung"></div>
+        <div id="ra-result" style="display:none;margin-top:12px">
+          <div class="field-group"><label>Generierter Regex</label>
+            <input type="text" id="ra-regex-out" style="font-family:monospace" readonly></div>
+          <div style="color:var(--muted);font-size:12px" id="ra-erklaerung"></div>
+          <div style="margin-top:8px">
+            <span style="color:var(--success);font-size:11px" id="ra-matches"></span>
+          </div>
+        </div>
+        <div id="ra-loading" style="display:none;text-align:center;color:var(--muted);padding:16px">
+          Ollama generiert Regex...
+        </div>
+        <div class="btn-row" style="margin-top:16px">
+          <button class="btn btn-primary" onclick="runRegexAssistent()">Generieren</button>
+          <button class="btn btn-success" id="ra-uebernehmen" style="display:none" onclick="useRegexResult()">✓ Übernehmen</button>
+          <button class="btn btn-ghost" onclick="document.getElementById('regex-modal').remove()">Abbrechen</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  document.getElementById('ra-feldname').value = key || '';
+  document.getElementById('ra-beispiel').value = beispiel || '';
+  document.getElementById('ra-kontext').value = '';
+  document.getElementById('ra-result').style.display = 'none';
+  document.getElementById('ra-uebernehmen').style.display = 'none';
+  document.getElementById('ra-loading').style.display = 'none';
+  modal.style.display = 'flex';
+}
+
+async function runRegexAssistent() {
+  const body = {
+    feldname: document.getElementById('ra-feldname').value,
+    beispiel: document.getElementById('ra-beispiel').value,
+    kontext:  document.getElementById('ra-kontext').value,
+    weitere_beispiele: document.getElementById('ra-weitere').value
+      .split(',').map(s=>s.trim()).filter(Boolean),
+  };
+  if (!body.beispiel) { showToast('Beispielwert fehlt', 'error'); return; }
+  document.getElementById('ra-loading').style.display = 'block';
+  document.getElementById('ra-result').style.display = 'none';
+  try {
+    const r = await fetch(`${API_BASE}/regex-assistent`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    document.getElementById('ra-loading').style.display = 'none';
+    if (r.ok && d.regex) {
+      document.getElementById('ra-regex-out').value = d.regex;
+      document.getElementById('ra-erklaerung').textContent = d.erklaerung || '';
+      const matches = (d.test_matches||[]).join(', ');
+      document.getElementById('ra-matches').textContent = matches ? 'Matches: ' + matches : '';
+      document.getElementById('ra-result').style.display = 'block';
+      document.getElementById('ra-uebernehmen').style.display = 'inline-block';
+    } else {
+      showToast(d.detail || 'Fehler beim Generieren', 'error');
+    }
+  } catch(e) {
+    document.getElementById('ra-loading').style.display = 'none';
+    showToast('Netzwerkfehler: ' + e.message, 'error');
+  }
+}
+
+function useRegexResult() {
+  const regex = document.getElementById('ra-regex-out').value;
+  const beispiel = document.getElementById('ra-beispiel').value;
+  if (_regexAssiIdx !== null && _regexAssiKey) {
+    const regexInput = document.getElementById(`muster-regex-${_regexAssiIdx}-${_regexAssiKey}`);
+    const bspInput   = document.getElementById(`muster-bsp-${_regexAssiIdx}-${_regexAssiKey}`);
+    if (regexInput) regexInput.value = regex;
+    if (bspInput && beispiel) bspInput.value = beispiel;
+    showToast('Regex übernommen', 'success');
+  }
+  document.getElementById('regex-modal')?.remove();
+}
+
+// handleOrdnerInput mit optionalem containerId-Parameter
+function handleOrdnerInput(input, containerId) {
+  containerId = containerId || 'tags-ordner';
+  const val = input.value.trim();
+  if (!val) return;
+  const opts = Array.from(document.querySelectorAll('#ordner-list option')).map(o => o.value);
+  if (opts.includes(val)) {
+    addTagVal(val, containerId);
+    input.value = '';
+  }
+}
+
+// ──────────────────────────────────────────────
+// DOKUMENTTYPEN
+// ──────────────────────────────────────────────
+// Cache für Dokumenttypen (für Edit + Suche)
+let _dtEntries = {};
+let _dtAllResults = [];   // ungefilterte Liste für clientseitige Suche
+
+async function loadDocTypes() {
+  try {
+    const r = await fetch(`${API_BASE}/paperless/document_types`);
+    const d = await r.json();
+    const container = document.getElementById('doctypes-list');
+    if (!d.results?.length) {
+      container.innerHTML = '<div class="empty">Keine Dokumenttypen</div>'; return;
+    }
+    _dtEntries = {};
+    _dtAllResults = d.results;
+    d.results.forEach(t => { _dtEntries[t.id] = t; });
+    renderDoctypes(_dtAllResults);
+  } catch(e) { document.getElementById('doctypes-list').innerHTML = '<div class="empty">Fehler: '+e.message+'</div>'; }
+}
+
+function renderDoctypes(items) {
+  const container = document.getElementById('doctypes-list');
+  if (!items.length) { container.innerHTML = '<div class="empty">Keine Treffer</div>'; return; }
+  container.innerHTML = items.map(t => {
+    const hasSyns = t.synonyme?.length > 0;
+    const hasExcl = t.ausschliessen?.length > 0;
+    return `<div class="card" style="margin-bottom:10px">
+      <div class="card-header">
+        <span class="card-title">${t.name}</span>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px"
+          onclick="openDtEdit(${t.id})">✎ Edit</button>
+      </div>
+      <div id="dt-view-${t.id}">
+        ${t.beschreibung ? `<div style="color:var(--muted);font-size:12px;margin-bottom:6px">${t.beschreibung}</div>` : ''}
+        ${hasSyns
+          ? `<div style="margin-bottom:4px"><span style="color:var(--muted);font-size:11px">SYNONYME: </span>${t.synonyme.map(s=>`<span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa;margin-right:3px;font-size:11px">${s}</span>`).join('')}</div>`
+          : `<div style="color:var(--muted);font-size:11px;font-style:italic;margin-bottom:4px">Keine Synonyme — LLM muss exakten Namen treffen</div>`}
+        ${hasExcl
+          ? `<div><span style="color:var(--muted);font-size:11px">AUSSCHLIESSEN: </span>${t.ausschliessen.map(s=>`<span class="badge" style="background:rgba(239,68,68,.12);color:#f87171;margin-right:3px;font-size:11px">✗ ${s}</span>`).join('')}</div>`
+          : `<div style="color:var(--muted);font-size:11px;font-style:italic">Keine Ausschluss-Keywords</div>`}
+        <div style="margin-top:4px;font-size:11px;color:var(--muted)">Paperless-ID: ${t.id} | Dokumente: ${t.document_count ?? '?'}</div>
+      </div>
+      <div id="dt-edit-${t.id}" style="display:none"></div>
+    </div>`;
+  }).join('');
+}
+
+function filterDoctypes(q) {
+  if (!q.trim()) { renderDoctypes(_dtAllResults); return; }
+  const lq = q.toLowerCase();
+  const filtered = _dtAllResults.filter(t =>
+    t.name.toLowerCase().includes(lq) ||
+    (t.beschreibung||'').toLowerCase().includes(lq) ||
+    (t.synonyme||[]).some(s => s.toLowerCase().includes(lq)) ||
+    (t.ausschliessen||[]).some(s => s.toLowerCase().includes(lq))
+  );
+  renderDoctypes(filtered);
+}
+
+function openDtEdit(dtId) {
+  const t = _dtEntries[dtId];
+  if (!t) return;
+  const view = document.getElementById(`dt-view-${dtId}`);
+  const edit = document.getElementById(`dt-edit-${dtId}`);
+  view.style.display = 'none';
+  edit.innerHTML = `
+    <div style="margin-top:12px">
+      <div class="field-group">
+        <label>Synonyme <span style="color:var(--muted);font-size:10px">(ENTER zum Hinzufügen — müssen global einmalig sein)</span></label>
+        <div class="tags-input" id="dt-syns-${dtId}" data-tags='${JSON.stringify(t.synonyme||[])}'>
+          ${(t.synonyme||[]).map(s => tagChip(s, `dt-syns-${dtId}`)).join('')}
+          <input type="text" placeholder="Synonym..." onkeydown="addTag(event,'dt-syns-${dtId}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Ausschluss-Keywords
+          <span style="color:var(--muted);font-size:10px">(ENTER — wenn dieses Keyword im Dokument → Typ wird NICHT zugewiesen; nicht einmalig)</span>
+        </label>
+        <div class="tags-input" id="dt-excl-${dtId}" data-tags='${JSON.stringify(t.ausschliessen||[])}'>
+          ${(t.ausschliessen||[]).map(s => tagChip(s, `dt-excl-${dtId}`, '#f87171', 'rgba(239,68,68,.12)')).join('')}
+          <input type="text" placeholder="z.B. Strassenverkehrsamt…" onkeydown="addTag(event,'dt-excl-${dtId}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Beschreibung</label>
+        <textarea id="dt-desc-${dtId}" rows="2">${t.beschreibung||''}</textarea>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="saveDtEdit(${dtId})">✓ Speichern</button>
+        <button class="btn btn-ghost" onclick="closeDtEdit(${dtId})">Abbrechen</button>
+      </div>
+    </div>`;
+  edit.style.display = '';
+}
+
+function closeDtEdit(dtId) {
+  document.getElementById(`dt-view-${dtId}`).style.display = '';
+  document.getElementById(`dt-edit-${dtId}`).style.display = 'none';
+}
+
+function flushTagInputs(containerIds) {
+  // Offene Input-Werte als Tags übernehmen bevor gespeichert wird
+  // Verhindert Datenverlust wenn User tippt aber vergisst Enter zu drücken
+  for (const cid of containerIds) {
+    const container = document.getElementById(cid);
+    if (!container) continue;
+    const input = container.querySelector('input[type="text"]');
+    if (input && input.value.trim()) {
+      addTagVal(input.value.trim(), cid);
+      input.value = '';
+    }
+  }
+}
+
+async function saveDtEdit(dtId) {
+  flushTagInputs([`dt-syns-${dtId}`, `dt-excl-${dtId}`]);
+  const synonyme      = getTagsFromContainer(`dt-syns-${dtId}`);
+  const ausschliessen = getTagsFromContainer(`dt-excl-${dtId}`);
+  const beschreibung  = document.getElementById(`dt-desc-${dtId}`)?.value.trim() || '';
+  const r = await fetch(`${API_BASE}/paperless/document_types/${dtId}`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({synonyme, ausschliessen, beschreibung})
+  });
+  if (r.ok) {
+    showToast('Dokumenttyp gespeichert', 'success');
+    closeDtEdit(dtId);
+    loadDocTypes();
+  } else {
+    const err = await r.json().catch(()=>({}));
+    let msg = 'Unbekannter Fehler';
+    if (typeof err.detail === 'string') msg = err.detail;
+    else if (Array.isArray(err.detail)) msg = err.detail.map(e => e.msg || JSON.stringify(e)).join('; ');
+    else if (err.detail) msg = JSON.stringify(err.detail);
+    showToast('Fehler: ' + msg, 'error');
+    console.error('saveDtEdit Fehler:', err);
+  }
+}
+
+async function createDocType() {
+  const name = document.getElementById('new-doctype-input')?.value.trim();
+  if (!name) return;
+  const synonyme_raw = document.getElementById('new-doctype-synonyme')?.value.trim() || '';
+  const synonyme = synonyme_raw ? synonyme_raw.split(',').map(s=>s.trim()).filter(Boolean) : [];
+  const beschreibung = document.getElementById('new-doctype-beschreibung')?.value.trim() || '';
+  const r = await fetch(`${API_BASE}/paperless/document_types`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, synonyme, beschreibung})
+  });
+  if (r.ok) {
+    showToast(`Dokumenttyp "${name}" angelegt`, 'success');
+    document.getElementById('new-doctype-input').value = '';
+    document.getElementById('new-doctype-synonyme').value = '';
+    document.getElementById('new-doctype-beschreibung').value = '';
+    loadDocTypes();
+  } else {
+    const err = await r.json().catch(()=>({}));
+    showToast('Fehler: ' + (err.detail || 'Unbekannt'), 'error');
+  }
+}
+
+
+// ──────────────────────────────────────────────
+// TAGS
+// ──────────────────────────────────────────────
+// TAGS
+// ──────────────────────────────────────────────
+let _tagsAllResults = [];
+let _tagById = {};
+
+async function loadTags() {
+  try {
+    const r = await fetch(`${API_BASE}/paperless/tags`);
+    const d = await r.json();
+    const container = document.getElementById('tags-list');
+    if (!d.results?.length) { container.innerHTML = '<div class="empty">Keine Tags</div>'; return; }
+    _tagsAllResults = d.results;
+    _tagById = {};
+    d.results.forEach(t => { _tagById[t.id] = t; });
+    renderTags(_tagsAllResults);
+  } catch(e) { document.getElementById('tags-list').innerHTML = '<div class="empty">Fehler: '+e.message+'</div>'; }
+}
+
+function renderTags(items) {
+  const container = document.getElementById('tags-list');
+  if (!items.length) { container.innerHTML = '<div class="empty">Keine Treffer</div>'; return; }
+  container.innerHTML = items.map(t => {
+    const excl = t.ausschliessen||[];
+    return `<div class="card" style="margin-bottom:8px">
+      <div class="card-header">
+        <span class="card-title">${t.name} <span style="font-size:10px;color:var(--muted)">${t.document_count??''}×</span></span>
+        <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px" onclick="openTagEdit(${t.id})">✎ Edit</button>
+      </div>
+      <div id="tag-view-${t.id}">
+        ${excl.length
+          ? excl.map(s=>`<span class="badge" style="background:rgba(239,68,68,.12);color:#f87171;margin-right:3px;font-size:11px">✗ ${s}</span>`).join('')
+          : '<span style="color:var(--muted);font-size:11px;font-style:italic">Keine Ausschluss-Keywords</span>'}
+      </div>
+      <div id="tag-edit-${t.id}" style="display:none"></div>
+    </div>`;
+  }).join('');
+}
+
+function filterTags(q) {
+  if (!q.trim()) { renderTags(_tagsAllResults); return; }
+  const lq = q.toLowerCase();
+  renderTags(_tagsAllResults.filter(t =>
+    t.name.toLowerCase().includes(lq) ||
+    (t.ausschliessen||[]).some(s => s.toLowerCase().includes(lq))
+  ));
+}
+
+function openTagEdit(id) {
+  const t = _tagById[id]; if (!t) return;
+  document.getElementById(`tag-view-${id}`).style.display = 'none';
+  const edit = document.getElementById(`tag-edit-${id}`);
+  edit.innerHTML = `<div style="margin-top:10px">
+    <div class="field-group"><label>Umbenennen</label>
+      <input type="text" id="te-name-${id}" value="${t.name}" style="max-width:280px"></div>
+    <div class="field-group">
+      <label>Ausschluss-Keywords <span style="color:var(--muted);font-size:10px">(ENTER — wenn Keyword im Dok → Tag wird NICHT gesetzt)</span></label>
+      <div class="tags-input" id="te-excl-${id}" data-tags='${JSON.stringify(t.ausschliessen||[])}'>
+        ${(t.ausschliessen||[]).map(s=>tagChip(s,`te-excl-${id}`,'#f87171','rgba(239,68,68,.12)')).join('')}
+        <input type="text" placeholder="z.B. Strassenverkehrsamt…" onkeydown="addTag(event,'te-excl-${id}')">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-success" onclick="saveTagEdit(${id})">✓ Speichern</button>
+      <button class="btn btn-ghost" onclick="closeTagEdit(${id})">Abbrechen</button>
+    </div></div>`;
+  edit.style.display = '';
+}
+
+function closeTagEdit(id) {
+  document.getElementById(`tag-view-${id}`).style.display = '';
+  document.getElementById(`tag-edit-${id}`).style.display = 'none';
+}
+
+async function saveTagEdit(id) {
+  flushTagInputs([`te-excl-${id}`]);
+  const t = _tagById[id];
+  const newName = document.getElementById(`te-name-${id}`)?.value.trim() || '';
+  const ausschliessen = getTagsFromContainer(`te-excl-${id}`);
+  const body = { ausschliessen };
+  if (newName && newName !== t.name) body.name = newName;
+  const r = await fetch(`${API_BASE}/paperless/tags/${id}`, {
+    method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+  if (r.ok) { showToast('Tag gespeichert','success'); closeTagEdit(id); loadTags(); }
+  else {
+    const err = await r.json().catch(()=>({}));
+    const msg = typeof err.detail==='string' ? err.detail : JSON.stringify(err.detail||err);
+    showToast('Fehler: '+msg,'error');
+  }
+}
+
+async function createTag() {
+  const name = document.getElementById('new-tag-input')?.value.trim();
+  if (!name) return;
+  const r = await fetch(`${API_BASE}/paperless/tags`, {method:'POST',headers: {'Content-Type': 'application/json'},body:JSON.stringify({name})});
+  if (r.ok) { showToast(`Tag "${name}" angelegt`,'success'); document.getElementById('new-tag-input').value=''; loadTags(); allTags=[]; }
+  else showToast('Fehler','error');
+}
+
+// ──────────────────────────────────────────────
+// MANIFEST
+// ──────────────────────────────────────────────
+async function createManifestOrdner() {
+  const pfad = document.getElementById('new-manifest-pfad')?.value.trim();
+  const beschreibung = document.getElementById('new-manifest-beschreibung')?.value.trim() || '';
+  if (!pfad) { showToast('Pfad eingeben (z.B. Vorname/Sonstiges)', 'error'); return; }
+  if (!pfad.includes('/')) { showToast('Pfad muss mindestens einen / enthalten (z.B. Vorname/Auto)', 'error'); return; }
+  const r = await fetch(`${API_BASE}/manifest/ordner`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({pfad, beschreibung})
+  });
+  if (r.ok) {
+    showToast(`Ordner "${pfad}" angelegt — bitte in Speicherpfade ergänzen`, 'success');
+    document.getElementById('new-manifest-pfad').value = '';
+    document.getElementById('new-manifest-beschreibung').value = '';
+    loadManifest();
+  } else {
+    const err = await r.json().catch(() => ({}));
+    showToast('Fehler: ' + (err.detail || 'Unbekannt'), 'error');
+  }
+}
+
+// ──────────────────────────────────────────────
+// MANIFEST
+// ──────────────────────────────────────────────
+let _mfEntries = {};
+let _mfAllOrdner = [];
+
+async function loadManifest() {
+  try {
+    const r = await fetch(`${API_BASE}/manifest`);
+    const d = await r.json();
+    const container = document.getElementById('manifest-list');
+    if (!d.ordner?.length) { container.innerHTML = '<div class="empty">Kein Manifest</div>'; return; }
+    _mfEntries = {};
+    _mfAllOrdner = d.ordner;
+    d.ordner.forEach(e => {
+      const eid = e.pfad.replace(/[^a-z0-9]/gi,'_');
+      _mfEntries[eid] = e;
+    });
+    renderManifest(_mfAllOrdner);
+  } catch(e) { document.getElementById('manifest-list').innerHTML = '<div class="empty">Fehler: '+e.message+'</div>'; }
+}
+
+function renderManifest(ordner) {
+  const container = document.getElementById('manifest-list');
+  if (!ordner.length) { container.innerHTML = '<div class="empty">Keine Treffer</div>'; return; }
+  container.innerHTML = ordner.map(e => {
+    const eid = e.pfad.replace(/[^a-z0-9]/gi,'_');
+    const isPending = e.pending === true;
+    return `<div class="card" style="${isPending ? 'border-left:3px solid var(--warn)' : ''}">
+      <div class="card-header">
+        <span class="card-title">${e.pfad}${isPending ? ' <span style="font-size:10px;color:var(--warn);margin-left:6px">⚠ PENDING — bitte ergänzen</span>' : ''}</span>
+        <button class="btn ${isPending ? 'btn-success' : 'btn-ghost'}" style="padding:3px 10px;font-size:11px" onclick="openMfEdit('${eid}')">✎ ${isPending ? 'Jetzt ergänzen' : 'Edit'}</button>
+      </div>
+      <div id="mf-view-${eid}">
+        <div style="color:var(--muted);font-size:12px;margin-bottom:6px">${e.beschreibung||''}</div>
+        <div style="margin-bottom:4px"><span style="color:var(--muted);font-size:11px">ERLAUBTE TAGS: </span>${(e.erlaubte_tags||[]).map(t=>`<span class="badge badge-neu" style="margin-right:3px">${t}</span>`).join('')}</div>
+        <div><span style="color:var(--muted);font-size:11px">DOKUMENTTYPEN: </span>${(e.erlaubte_dokumenttypen||[]).map(t=>`<span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent);margin-right:3px">${t}</span>`).join('')}</div>
+        <div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">MAX TAGS: ${e.max_tags||4}</span></div>
+      </div>
+      <div id="mf-edit-${eid}" style="display:none"></div>
+    </div>`;
+  }).join('');
+}
+
+function filterManifest(q) {
+  if (!q.trim()) { renderManifest(_mfAllOrdner); return; }
+  const lq = q.toLowerCase();
+  renderManifest(_mfAllOrdner.filter(e =>
+    e.pfad.toLowerCase().includes(lq) ||
+    (e.beschreibung||'').toLowerCase().includes(lq) ||
+    (e.erlaubte_tags||[]).some(t => t.toLowerCase().includes(lq)) ||
+    (e.erlaubte_dokumenttypen||[]).some(t => t.toLowerCase().includes(lq))
+  ));
+}
+
+function openMfEdit(eid) {
+  const entry = _mfEntries[eid];
+  if (!entry) return;
+  const pfad = entry.pfad;
+  const view = document.getElementById(`mf-view-${eid}`);
+  const edit = document.getElementById(`mf-edit-${eid}`);
+  if (!edit) return;
+  view.style.display = 'none';
+  edit.innerHTML = `
+    <div style="margin-top:12px">
+      <div class="field-group"><label>Erlaubte Tags (Vorschläge)</label>
+        <div class="tags-input" id="mft-${eid}" data-tags='${JSON.stringify(entry.erlaubte_tags||[])}'>
+          ${(entry.erlaubte_tags||[]).map(t=>tagChip(t,`mft-${eid}`)).join('')}
+          <input type="text" placeholder="Tag..." onkeydown="addTag(event,'mft-${eid}')">
+        </div></div>
+      <div class="field-group"><label>Erlaubte Dokumenttypen</label>
+        <div class="tags-input" id="mfd-${eid}" data-tags='${JSON.stringify(entry.erlaubte_dokumenttypen||[])}'>
+          ${(entry.erlaubte_dokumenttypen||[]).map(t=>tagChip(t,`mfd-${eid}`)).join('')}
+          <input type="text" placeholder="Dokumenttyp..." onkeydown="addTag(event,'mfd-${eid}')">
+        </div></div>
+      <div class="field-group"><label>Max Tags</label>
+        <input type="number" id="mfmax-${eid}" value="${entry.max_tags||4}" min="1" max="8" style="max-width:80px"></div>
+      <div class="field-group"><label>Abgrenzung</label>
+        <textarea id="mfabgr-${eid}">${entry.abgrenzung||''}</textarea></div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="saveMfEdit('${pfad}','${eid}')">✓ Speichern</button>
+        <button class="btn btn-ghost" onclick="closeMfEdit('${eid}')">Abbrechen</button>
+      </div>
+    </div>`;
+  edit.style.display = '';
+}
+
+function closeMfEdit(eid) {
+  const view = document.getElementById(`mf-view-${eid}`);
+  const edit = document.getElementById(`mf-edit-${eid}`);
+  if (edit) edit.style.display = 'none';
+  if (view) view.style.display = '';
+}
+
+function toggleMfEdit(eid, pfad, entryJson) {
+  // Legacy-Wrapper — nicht mehr direkt aufgerufen
+  closeMfEdit(eid);
+}
+
+async function saveMfEdit(pfad, eid) {
+  flushTagInputs([`mft-${eid}`, `mfdt-${eid}`]);
+  const body = {
+    erlaubte_tags: getTagsFromContainer(`mft-${eid}`),
+    erlaubte_dokumenttypen: getTagsFromContainer(`mfd-${eid}`),
+    pending: false,  // pending-Status aufheben nach Speichern
+    max_tags: parseInt(document.getElementById(`mfmax-${eid}`)?.value)||4,
+    abgrenzung: document.getElementById(`mfabgr-${eid}`)?.value||'',
+  };
+  const r = await fetch(`${API_BASE}/manifest/ordner/${encodeURIComponent(pfad)}`,{method:'PATCH',headers: {'Content-Type': 'application/json'},body:JSON.stringify(body)});
+  if (r.ok) { showToast('Manifest gespeichert','success'); loadManifest(); }
+  else showToast('Fehler','error');
+}
+
+// ──────────────────────────────────────────────
+// TOAST
+// ──────────────────────────────────────────────
+function generateVariantSuggestions(raw) {
+  if (!raw) return [];
+  const suggestions = new Set();
+  // Original
+  suggestions.add(raw);
+  // Ohne Rechtsform-Suffix
+  const cleaned = raw
+    .replace(/[ ]+(AG|GmbH|SA|SARL|Gesellschaft|Genossenschaft)[ ]*$/i, '')
+    .trim();
+  if (cleaned && cleaned !== raw) suggestions.add(cleaned);
+  // Umlaut-Variante
+  const umlaut = raw.replace(/ü/g,'ue').replace(/ä/g,'ae').replace(/ö/g,'oe')
+                    .replace(/Ü/g,'Ue').replace(/Ä/g,'Ae').replace(/Ö/g,'Oe');
+  if (umlaut !== raw) suggestions.add(umlaut);
+  // Bindestriche normalisiert
+  const nodash = raw.replace(/-/g, ' ').replace(/[ ]+/g, ' ').trim();
+  if (nodash !== raw) suggestions.add(nodash);
+  // Original ohne Leading/Trailing whitespace
+  suggestions.delete(raw); // raw kommt als erstes
+  return [raw, ...Array.from(suggestions)].slice(0, 5);
+}
+
+async function checkVariantDupe(val) {
+  val = val.trim();
+  const warn = document.getElementById('variant-dupe-warn');
+  if (!warn) return;
+  if (!val || val.length < 3) { warn.style.display = 'none'; return; }
+  try {
+    const r = await fetch(`${API_BASE}/check-variant?name=${encodeURIComponent(val)}`);
+    const d = await r.json();
+    if (d.exists) {
+      warn.textContent = `Existiert bereits als Variante von "${d.match}"`;
+      warn.style.display = 'block';
+    } else {
+      warn.style.display = 'none';
+    }
+  } catch(e) { warn.style.display = 'none'; }
+}
+
+async function addTagWithCheck(event, containerId) {
+  if (event.key !== 'Enter') return;
+  const input = event.target;
+  const val = input.value.trim();
+  if (!val) return;
+  // Duplikat-Check
+  const r = await fetch(`${API_BASE}/check-variant?name=${encodeURIComponent(val)}`).catch(()=>null);
+  if (r) {
+    const d = await r.json();
+    if (d.exists) {
+      const warn = document.getElementById('variant-dupe-warn');
+      if (warn) { warn.textContent = `Warnung: "${val}" existiert bereits bei "${d.match}" — trotzdem Enter zum Überschreiben`; warn.style.display='block'; }
+      if (event.shiftKey) { /* Shift+Enter erzwingt */ } else return;
+    }
+  }
+  event.preventDefault();
+  addTagVal(val, containerId);
+  input.value = '';
+  const warn = document.getElementById('variant-dupe-warn');
+  if (warn) warn.style.display = 'none';
+}
+
+function showToast(msg, type='success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `show ${type}`;
+  t.style.cursor = 'pointer';
+  t.title = 'Klicken zum Schliessen';
+  t.onclick = () => { t.className = ''; };
+  // Fehler länger anzeigen als Erfolg
+  const duration = type === 'error' ? 8000 : 4500;
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.className = '', duration);
+}
+
+// ──────────────────────────────────────────────
+// DOCUMENT REVIEW QUEUE
+// ──────────────────────────────────────────────
+let docReviewEntries = [];
+let docReviewSelected = null;
+let allStoragePaths = [];
+let allTags = [];
+let allDocCorrespondents = [];
+
+async function loadAllDocTypes() {
+  try {
+    const r = await fetch(`${API_BASE}/paperless/document_types`);
+    const d = await r.json();
+    allDocTypes = d.results || [];
+  } catch(e) { allDocTypes = []; }
+}
+
+async function loadKorrTypen() {
+  try {
+    const r = await fetch(`${API_BASE}/korr-typen`);
+    const d = await r.json();
+    allKorrTypen = d.typen || [];
+  } catch(e) { allKorrTypen = []; }
+}
+
+async function loadAllStoragePaths() {
+  try {
+    const r = await fetch(`${API_BASE}/paperless/storage-paths`);
+    const d = await r.json();
+    allStoragePaths = d.results || [];
+  } catch(e) { allStoragePaths = []; }
+}
+
+async function loadDocReview() {
+  const r = await fetch(`${API_BASE}/document-review`);
+  const d = await r.json();
+  docReviewEntries = d.entries;
+  document.getElementById('docreview-count').textContent = d.count;
+  renderDocReviewStats();
+  renderDocReviewList();
+}
+
+async function loadDocReviewMeta() {
+  try {
+    const [sp, tg, co] = await Promise.all([
+      fetch(`${API_BASE}/paperless/storage-paths`).then(r=>r.json()),
+      fetch(`${API_BASE}/paperless/tags`).then(r=>r.json()),
+      fetch(`${API_BASE}/paperless/correspondents`).then(r=>r.json()),
+    ]);
+    allStoragePaths = sp.results || [];
+    allTags = tg.results || [];
+    allDocCorrespondents = co.results || [];
+  } catch(e) { console.warn('Meta laden fehlgeschlagen', e); }
+}
+
+function renderDocReviewStats() {
+  const total = docReviewEntries.length;
+  const gruende = {};
+  docReviewEntries.forEach(e => {
+    (e.grund || ['unbekannt']).forEach(g => { gruende[g] = (gruende[g]||0) + 1; });
+  });
+  const statsHtml = Object.entries(gruende)
+    .map(([g,n]) => `<div class="stat-card"><div class="stat-num" style="color:var(--warn)">${n}</div><div class="stat-label">${g}</div></div>`)
+    .join('');
+  document.getElementById('docreview-stats').innerHTML =
+    `<div class="stat-card"><div class="stat-num" style="color:var(--accent)">${total}</div><div class="stat-label">Total</div></div>` + statsHtml;
+}
+
+function renderDocReviewList() {
+  const container = document.getElementById('docreview-list');
+  if (!docReviewEntries.length) {
+    container.innerHTML = '<div class="empty"><div class="icon">✅</div><div>Keine offenen Dokumente</div></div>';
+    return;
+  }
+  container.innerHTML = docReviewEntries.map((e, i) => {
+    const grund = (e.grund || []).join(', ') || '—';
+    const conf  = e.confidence || '?';
+    const confColor = conf==='hoch'?'var(--success)':conf==='mittel'?'var(--warn)':'var(--danger)';
+    return `
+      <div class="pending-item ${docReviewSelected===i?'selected':''}" onclick="selectDocReview(${i})">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="badge badge-pending">DOC #${e.document_id}</span>
+          <strong style="font-size:12px">${(e.title||'—').slice(0,40)}</strong>
+        </div>
+        <div class="pending-meta">
+          Ordner: ${e.pfad||'?'} · Confidence: <span style="color:${confColor}">${conf}</span>
+        </div>
+        <div class="pending-meta">Grund: ${grund} · ${e.timestamp||''}</div>
+      </div>`;
+  }).join('');
+}
+
+async function selectDocReview(i) {
+  docReviewSelected = i;
+  renderDocReviewList();
+  const entry = docReviewEntries[i];
+  const panel = document.getElementById('docreview-panel');
+
+  // Dokument aus Paperless laden
+  let doc = null;
+  try {
+    const r = await fetch(`${API_BASE}/document/${entry.document_id}`);
+    doc = await r.json();
+  } catch(e) {}
+
+  const spOptions = allStoragePaths.map(sp =>
+    `<option value="${sp.id}" ${sp.name===entry.pfad?'selected':''}>
+      ${sp.name}
+    </option>`).join('');
+  const corrOptions = `<option value="">— kein Korrespondent —</option>` +
+    allDocCorrespondents.map(c =>
+      `<option value="${c.id}" ${c.id===doc?.correspondent?'selected':''}>
+        ${c.name}
+      </option>`).join('');
+  const currentTagIds = doc?.tags || [];
+  const tagOptions = allTags.map(t =>
+    `<option value="${t.id}" ${currentTagIds.includes(t.id)?'selected':''}>
+      ${t.name}
+    </option>`).join('');
+
+  panel.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Dok #${entry.document_id}</span>
+        <a href="${window.PAPERLESS_URL||''}/documents/${entry.document_id}" target="_blank"
+           style="color:var(--accent);font-size:12px">In Paperless öffnen ↗</a>
+      </div>
+      <div class="field-group">
+        <label>Titel</label>
+        <div style="color:var(--text);padding:6px">${doc?.title||'—'}</div>
+      </div>
+      <div class="field-group">
+        <label>Aktueller Ordner</label>
+        <div style="color:var(--warn);padding:6px">${entry.pfad||'—'}</div>
+      </div>
+      <div class="field-group">
+        <label>Confidence</label>
+        <div style="padding:6px">${entry.confidence||'?'}</div>
+      </div>
+      <div class="field-group">
+        <label>Review-Grund</label>
+        <div style="color:var(--muted);padding:6px">${(entry.grund||[]).join(', ')||'—'}</div>
+      </div>
+      <hr class="divider">
+      <div class="field-group">
+        <label>Storage Path (Ordner)</label>
+        <select id="dr-sp">${spOptions}</select>
+      </div>
+      <div class="field-group">
+        <label>Korrespondent</label>
+        <select id="dr-corr">${corrOptions}</select>
+      </div>
+      <div class="field-group">
+        <label>Tags (Mehrfachauswahl)</label>
+        <select id="dr-tags" multiple style="min-height:120px">${tagOptions}</select>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="submitDocReview(${i},'approve')">✓ Freigeben</button>
+        <button class="btn btn-primary"  onclick="submitDocReview(${i},'reclassify')">✎ Neu klassifizieren</button>
+        <button class="btn btn-danger"   onclick="submitDocReview(${i},'reject')">✗ Ignorieren</button>
+      </div>
+    </div>`;
+}
+
+async function submitDocReview(index, action) {
+  const entry = docReviewEntries[index];
+  const body = { action };
+
+  if (action === 'reclassify') {
+    const spEl   = document.getElementById('dr-sp');
+    const corrEl = document.getElementById('dr-corr');
+    const tagsEl = document.getElementById('dr-tags');
+    body.storage_path_id   = spEl ? parseInt(spEl.value) : null;
+    body.storage_path_name = spEl?.options[spEl.selectedIndex]?.text?.trim() || null;
+    body.correspondent_id  = corrEl?.value ? parseInt(corrEl.value) : null;
+    body.tag_ids           = tagsEl ? Array.from(tagsEl.selectedOptions).map(o => parseInt(o.value)) : [];
+    body.tag_names         = tagsEl ? Array.from(tagsEl.selectedOptions).map(o => o.text.trim()) : [];
+  }
+
+  try {
+    const r = await fetch(`${API_BASE}/document-review/${index}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      showToast(action==='reject'?'Ignoriert':'Erledigt', 'success');
+      await loadDocReview();
+      document.getElementById('docreview-panel').innerHTML =
+        '<div class="empty"><div class="icon">👈</div><div>Dokument links auswählen</div></div>';
+      docReviewSelected = null;
+    } else {
+      let msg = 'Fehler';
+      if (typeof d.detail === 'string') msg = d.detail;
+      else if (Array.isArray(d.detail)) msg = d.detail.map(e => e.msg || JSON.stringify(e)).join('; ');
+      else if (d.detail) msg = JSON.stringify(d.detail);
+      showToast(msg, 'error');
+      console.error('DocReview Fehler:', d);
+    }
+  } catch(e) {
+    showToast('Netzwerkfehler: ' + e.message, 'error');
+  }
+}
+// ──────────────────────────────────────────────
+// FAMILIE
+// ──────────────────────────────────────────────
+let _familyData = null;
+
+async function loadFamilyConfig() {
+  try {
+    const r = await fetch(`${API_BASE}/family`);
+    _familyData = await r.json();
+    renderFamilyPersonen(_familyData);
+    renderFamilyFahrzeuge(_familyData);
+    document.getElementById('fam-name').value    = _familyData.haushalt?.name    || '';
+    document.getElementById('fam-land').value    = _familyData.haushalt?.land    || 'CH';
+    document.getElementById('fam-sprache').value = _familyData.haushalt?.sprache || 'de';
+  } catch(e) { showToast('Fehler beim Laden: ' + e.message, 'error'); }
+}
+
+function renderFamilyPersonen(d) {
+  const pContainer = document.getElementById('family-personen');
+  if (!pContainer) return;
+  const list = d.personen || [];
+  if (!list.length) {
+    pContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;font-style:italic;padding:8px 0">Noch keine Personen erfasst.</div>';
+    return;
+  }
+  pContainer.innerHTML = list.map((p, i) => `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
+      <input type="text" placeholder="z.B. vorname" value="${p.id||''}"
+        style="font-family:monospace" oninput="_familyData.personen[${i}].id=this.value.toLowerCase().replace(/\\s/g,'')">
+      <input type="text" placeholder="z.B. Anna" value="${p.anzeigename||''}"
+        oninput="_familyData.personen[${i}].anzeigename=this.value">
+      <input type="text" placeholder="z.B. Anna" value="${p.ordner_prefix||''}"
+        oninput="_familyData.personen[${i}].ordner_prefix=this.value">
+      <button class="btn btn-ghost" style="padding:3px 8px;color:#f87171" onclick="removeFamilyPerson(${i})">×</button>
+    </div>`).join('');
+}
+
+function renderFamilyFahrzeuge(d) {
+  const fContainer = document.getElementById('family-fahrzeuge');
+  if (!fContainer) return;
+  const list = d.fahrzeuge || [];
+  const personen = d.personen || [];
+
+  if (!personen.length) {
+    fContainer.innerHTML = '<div style="color:var(--warn);font-size:12px;padding:8px 0">⚠ Zuerst Personen speichern — dann können Fahrzeuge zugewiesen werden.</div>';
+    return;
+  }
+  if (!list.length) {
+    fContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;font-style:italic;padding:8px 0">Noch keine Fahrzeuge erfasst.</div>';
+    return;
+  }
+  const personOpts = personen.map(p =>
+    `<option value="${p.id}">${p.anzeigename} (${p.id})</option>`).join('');
+
+  fContainer.innerHTML = list.map((fz, i) => `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
+      <input type="text" placeholder="z.B. AG 123456" value="${fz.kennzeichen||''}"
+        style="font-family:monospace;text-transform:uppercase"
+        oninput="_familyData.fahrzeuge[${i}].kennzeichen=this.value.toUpperCase()">
+      <select onchange="_familyData.fahrzeuge[${i}].person_id=this.value">
+        <option value="">Person wählen…</option>
+        ${personen.map(p =>
+          `<option value="${p.id}" ${p.id===fz.person_id?'selected':''}>${p.anzeigename}</option>`
+        ).join('')}
+      </select>
+      <input type="text" placeholder="z.B. Vorname/Auto" value="${fz.ordner||''}"
+        oninput="_familyData.fahrzeuge[${i}].ordner=this.value">
+      <button class="btn btn-ghost" style="padding:3px 8px;color:#f87171" onclick="removeFamilyFahrzeug(${i})">×</button>
+    </div>`).join('');
+}
+
+function _showFamilyError(elId, msg) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (msg) { el.textContent = msg; el.style.display = ''; }
+  else { el.style.display = 'none'; }
+}
+
+function addFamilyPerson() {
+  if (!_familyData) return;
+  _familyData.personen = _familyData.personen || [];
+  _familyData.personen.push({id: '', anzeigename: '', ordner_prefix: ''});
+  renderFamilyPersonen(_familyData);
+}
+function addFamilyFahrzeug() {
+  if (!_familyData) return;
+  if (!(_familyData.personen||[]).length) {
+    _showFamilyError('family-fahrzeuge-error', 'Zuerst Personen speichern.');
+    return;
+  }
+  _familyData.fahrzeuge = _familyData.fahrzeuge || [];
+  _familyData.fahrzeuge.push({kennzeichen: '', person_id: '', ordner: ''});
+  renderFamilyFahrzeuge(_familyData);
+}
+function removeFamilyPerson(i) {
+  const person = _familyData.personen[i];
+  if (!person) return;
+  // Prüfen ob noch Fahrzeuge mit dieser Person verknüpft sind
+  const verknuepft = (_familyData.fahrzeuge||[]).filter(f => f.person_id === person.id);
+  if (verknuepft.length > 0) {
+    const kz = verknuepft.map(f => f.kennzeichen).join(', ');
+    _showFamilyError('family-personen-error',
+      `Person «${person.anzeigename}» kann nicht gelöscht werden — noch ${verknuepft.length} Fahrzeug(e) verknüpft: ${kz}. Zuerst Fahrzeuge löschen oder neu zuweisen.`);
+    return;
+  }
+  _showFamilyError('family-personen-error', null);
+  _familyData.personen.splice(i, 1);
+  renderFamilyPersonen(_familyData);
+  renderFamilyFahrzeuge(_familyData);
+}
+function removeFamilyFahrzeug(i) {
+  _familyData.fahrzeuge.splice(i, 1);
+  renderFamilyFahrzeuge(_familyData);
+}
+
+async function saveFamilyPersonen() {
+  if (!_familyData) return;
+  _showFamilyError('family-personen-error', null);
+
+  // Haushalt aus DOM
+  const haushalt = {
+    name:    document.getElementById('fam-name').value.trim(),
+    land:    document.getElementById('fam-land').value.trim() || 'CH',
+    sprache: document.getElementById('fam-sprache').value.trim() || 'de',
+  };
+  if (!haushalt.name) {
+    _showFamilyError('family-personen-error', 'Haushaltsname darf nicht leer sein.'); return;
+  }
+
+  // Personen validieren
+  const personen = (_familyData.personen||[]).filter(p => p.id || p.anzeigename);
+  const ids = personen.map(p => p.id.trim().toLowerCase());
+  const dupId = ids.find((id, i) => ids.indexOf(id) !== i);
+  if (dupId) {
+    _showFamilyError('family-personen-error', `ID «${dupId}» ist doppelt — IDs müssen eindeutig sein.`); return;
+  }
+  for (const p of personen) {
+    if (!p.id.trim()) { _showFamilyError('family-personen-error', `ID fehlt bei Person «${p.anzeigename}».`); return; }
+    if (!p.anzeigename.trim()) { _showFamilyError('family-personen-error', `Anzeigename fehlt bei ID «${p.id}».`); return; }
+    if (!p.ordner_prefix.trim()) { _showFamilyError('family-personen-error', `Ordner-Prefix fehlt bei «${p.anzeigename}».`); return; }
+    if (/\s/.test(p.id)) { _showFamilyError('family-personen-error', `ID «${p.id}» darf keine Leerzeichen enthalten.`); return; }
+  }
+
+  const r = await fetch(`${API_BASE}/family`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ haushalt, personen })
+  });
+  if (r.ok) {
+    showToast('Haushalt & Personen gespeichert', 'success');
+    await loadFamilyConfig();
+  } else {
+    const err = await r.json().catch(()=>({}));
+    _showFamilyError('family-personen-error',
+      typeof err.detail==='string' ? err.detail : JSON.stringify(err.detail||err));
+  }
+}
+
+async function saveFamilyFahrzeuge() {
+  if (!_familyData) return;
+  _showFamilyError('family-fahrzeuge-error', null);
+
+  const personen = _familyData.personen || [];
+  if (!personen.length) {
+    _showFamilyError('family-fahrzeuge-error', 'Zuerst Personen speichern.'); return;
+  }
+  const validPersonIds = new Set(personen.map(p => p.id));
+  const fahrzeuge = (_familyData.fahrzeuge||[]).filter(f => f.kennzeichen || f.ordner);
+
+  // Validierungen
+  const kzList = fahrzeuge.map(f => f.kennzeichen.replace(/\s/g,'').toUpperCase());
+  const dupKz = kzList.find((k, i) => k && kzList.indexOf(k) !== i);
+  if (dupKz) {
+    _showFamilyError('family-fahrzeuge-error', `Kennzeichen «${dupKz}» ist doppelt.`); return;
+  }
+  for (const fz of fahrzeuge) {
+    if (!fz.kennzeichen.trim()) {
+      _showFamilyError('family-fahrzeuge-error', 'Kennzeichen darf nicht leer sein.'); return;
+    }
+    if (!fz.person_id) {
+      _showFamilyError('family-fahrzeuge-error', `Person fehlt bei Kennzeichen «${fz.kennzeichen}».`); return;
+    }
+    if (!validPersonIds.has(fz.person_id)) {
+      _showFamilyError('family-fahrzeuge-error', `Person «${fz.person_id}» nicht in gespeicherten Personen gefunden.`); return;
+    }
+    if (!fz.ordner.trim()) {
+      _showFamilyError('family-fahrzeuge-error', `Ziel-Ordner fehlt bei Kennzeichen «${fz.kennzeichen}».`); return;
+    }
+  }
+
+  const r = await fetch(`${API_BASE}/family`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ fahrzeuge })
+  });
+  if (r.ok) {
+    showToast('Fahrzeuge gespeichert', 'success');
+    await loadFamilyConfig();
+  } else {
+    const err = await r.json().catch(()=>({}));
+    _showFamilyError('family-fahrzeuge-error',
+      typeof err.detail==='string' ? err.detail : JSON.stringify(err.detail||err));
+  }
+}
+
+
+</script>
+</body>
+</html>

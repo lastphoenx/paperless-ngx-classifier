@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "beschreibung": "Haushaltskonfiguration — Personen und Fahrzeuge. Wird von post_consume.py und paper.manager gelesen. Pflegbar via paper.manager → Familie-Tab.",
+  "haushalt": {
+    "name": "Muster",
+    "land": "CH",
+    "sprache": "de"
+  },
+  "personen": [
+    {
+      "id": "person1",
+      "anzeigename": "Person1",
+      "ordner_prefix": "Person1"
+    },
+    {
+      "id": "person2",
+      "anzeigename": "Person2",
+      "ordner_prefix": "Person2"
+    }
+  ],
+  "fahrzeuge": [
+    {
+      "kennzeichen": "XX 000001",
+      "person_id": "person1",
+      "ordner": "Person1/Auto",
+      "beschreibung": "Fahrzeug Person 1"
+    },
+    {
+      "kennzeichen": "XX 000002",
+      "person_id": "person2",
+      "ordner": "Person2/Auto",
+      "beschreibung": "Fahrzeug Person 2"
+    }
+  ]
+}

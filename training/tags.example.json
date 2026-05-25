@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "beschreibung": "Tag-Ausschluss-Keywords. Wenn ein Keyword im Dokument vorkommt, wird der Tag nicht gesetzt. Nicht Unique-pflichtig. Pflegbar via paper.manager → Tags → Edit.",
+  "tags": [
+    {
+      "name": "Rechnung",
+      "ausschliessen": [],
+      "_paperless_id": null
+    },
+    {
+      "name": "Auto",
+      "ausschliessen": [],
+      "_paperless_id": null
+    },
+    {
+      "name": "Service",
+      "ausschliessen": [
+        "Strassenverkehrsamt",
+        "Verkehrssteuer"
+      ],
+      "_paperless_id": null
+    },
+    {
+      "name": "Steuern",
+      "ausschliessen": [],
+      "_paperless_id": null
+    },
+    {
+      "name": "Versicherung",
+      "ausschliessen": [],
+      "_paperless_id": null
+    },
+    {
+      "name": "Arbeit",
+      "ausschliessen": [],
+      "_paperless_id": null
+    },
+    {
+      "name": "Behörde",
+      "ausschliessen": [],
+      "_paperless_id": null
+    },
+    {
+      "name": "Familie",
+      "ausschliessen": [],
+      "_paperless_id": null
+    }
+  ]
+}
