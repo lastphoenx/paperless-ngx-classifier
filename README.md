@@ -227,41 +227,105 @@ Available at `http://SERVER_IP:8100` after installation.
 
 ---
 
-## ⚠️ Paperless-NGX Classifier deaktivieren (Pflicht)
+## ⚠️ Critical: Disable Paperless-NGX Built-in Classifier
 
-Paperless-NGX has its own built-in ML classifier that assigns correspondents, tags, and document types **before** `post_consume.py` runs.
+This is the **most important configuration step**. Skip it and documents will be misclassified — even when Vision correctly identifies the sender.
 
-This causes a critical conflict:
-- Paperless assigns e.g. "Reformierte Kirche" to a document
-- The assigned correspondent ends up in the filename passed to `post_consume.py`
-- `post_consume.py` receives wrong context → the LLM makes a wrong routing decision
+### The Problem
 
-### Fix — two mandatory steps
+Paperless-NGX runs its own ML classifier that assigns correspondents, tags, and document types **before** `post_consume.py` runs. The result is embedded in the filename passed to our script — corrupting the LLM prompt even when Vision identified the correct sender.
 
-**1. Disable training** (in `/opt/paperless/.env`):
+**Symptom:** Document lands in wrong folder despite correct Vision recognition. Log shows e.g. `Datei=2026-05-25 Wrong Correspondent_document.pdf` even though the document is from a different sender.
+
+### Solution — Three steps required
+
+**1. Disable training** in `/opt/paperless/.env`:
 ```bash
 PAPERLESS_TRAIN_TASK_CRON=disable
 ```
 
-**2. Set all existing correspondents to "no auto-assignment":**
+**2. Restart Docker:**
 ```bash
-curl -s "http://localhost:8000/api/correspondents/?page_size=100" \
-  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
-  grep -o '[0-9]*' | while read id; do
-    curl -s -X PATCH "http://localhost:8000/api/correspondents/$id/" \
-      -H "Authorization: Token $TOKEN" \
-      -H "Content-Type: application/json" \
-      -d '{"matching_algorithm": 0}'
+cd /opt/paperless && docker compose down && docker compose up -d
+```
+
+**3. Set all correspondents, document types and tags to «No matching»:**
+```bash
+export TOKEN=$(grep "PAPERLESS_TOKEN=" /opt/paperless/.env | head -1 | cut -d= -f2)
+
+for endpoint in correspondents document_types tags; do
+  echo "Processing ${endpoint}..."
+  curl -s "http://localhost:8000/api/${endpoint}/?page_size=100" \
+    -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
+    grep -o '[0-9]*' | while read id; do
+      curl -s -X PATCH "http://localhost:8000/api/${endpoint}/$id/" \
+        -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
+        -d '{"matching_algorithm": 0}' > /dev/null
+      echo "  ${endpoint} $id → no matching ✓"
+  done
 done
 ```
 
-> **Why:** Paperless embeds the assigned correspondent into the filename passed to `post_consume.py`. Even if Vision correctly identifies the sender, a wrong filename confuses the LLM during routing.
+> New objects created via paper.manager are automatically set to `matching_algorithm=0`. This reset is a one-time operation for existing data.
 >
-> `correspondent_manager_app.py` creates new correspondents with `matching_algorithm=0` automatically — but existing ones must be reset once manually.
->
-> After this: **our script is the sole classifier** — no more conflicts.
+> Full step-by-step procedure → [INSTALL.md](INSTALL.md#schritt-9----paperless-built-in-classifier-deaktivieren-pflicht)
 
-See [INSTALL.md](INSTALL.md#schritt-7b----paperless-classifier-deaktivieren-pflicht) for the full step-by-step procedure.
+---
+
+## Recommendations: Document Types and Tags
+
+### Keep document types broad and stable
+
+The LLM reliably hits broad categories. Avoid creating a type for every edge case.
+
+**Recommended set (23 types):**
+
+| Type | Covers |
+|---|---|
+| Rechnung | General invoices |
+| Arztrechnung | Medical invoices |
+| Servicerechnung | Service/maintenance |
+| Reparaturrechnung | Repairs |
+| Versicherungsabrechnung | Insurance premiums |
+| Police | All insurance policies |
+| Lohnabrechnung | Monthly payslip |
+| Lohnausweis | Annual wage statement (tax-relevant) |
+| Steuerwertbescheinigung | Tax value certificates |
+| Steuerdokument | Tax returns, refunds |
+| Gesundheitsdossier | Medical reports, prescriptions, lab results |
+| Arbeitgeberdokument | Employment certificates, termination letters |
+| Auto | Vehicle documents, MFK, damage reports |
+| Banken | Bank statements, depot, securities |
+| Behördenpost | Official correspondence, ID documents |
+| Verfügung | Official decisions |
+| Vertrag | All contracts |
+| Korrespondenz | Letters, invitations, general correspondence |
+| Garantieschein | Warranties |
+| Betriebsanleitung | Manuals |
+| Quittung | Receipts, delivery notes |
+| Schulzeugnis | School documents |
+| Vermögensausweis | Asset/depot statements |
+
+### Use tags for cross-cutting concerns
+
+- `Steuerrelevant` — anything needed for the tax return
+- `Mahnung` — reminders regardless of document type or sender
+- Pending tags (`pending_review`, `pending_new_correspondent`, `pending_qs`) — set by pipeline only, do not assign via Paperless classifier
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| Wrong folder despite correct Vision | Paperless classifier not disabled — run the reset above |
+| `Arztbericht` or absurd type as fallback | Document type not in manifest for that folder — add it in Speicherpfade |
+| Confidence always mittel | Check `CONFIDENCE_IGNORE_TAG_PATTERNS` in `.env` |
+| `Scan_` titles, files as `0000xxx.pdf` | `post_consume.py` crashed — re-consume PDF after fixing the error |
+| `Field required` on document approve | Deploy `correspondent_manager_app.py` v2.2+ |
+| Login via IP redirects wrongly | Check `PAPERLESS_INTERNAL_URL` in `.env` (set to `http://localhost:8000`) |
+| Permissions wrong | `python3 fix_all_perms.py` |
+| Embeddings stale | `rm training/manifest_embeddings.json` |
 
 ---
 
