@@ -133,7 +133,7 @@ async def require_paperless_session(request: Request, call_next):
             pass
 
     # Login-Redirect: gleiche IP/Domain wie Request-Host, aber Port 8000 (Paperless)
-    # Beispiel: Request kommt von ipadresse_paperless_server:8100 → Login auf ipadresse_paperless_server:8000
+    # Beispiel: Request kommt von 192.168.131.31:8100 → Login auf 192.168.131.31:8000
     # Beispiel: Request kommt von paperless.santinel.li → Login auf paperless.santinel.li (Authentik)
     host = request.headers.get("host", "localhost:8100")
     proto = request.headers.get("x-forwarded-proto", "http")
@@ -429,7 +429,7 @@ def create_correspondent(name: str, match_strings: list[str],
     payload = {
         "name": name,
         "match": match_str,
-        "matching_algorithm": 6,
+        "matching_algorithm": 0,
         "is_insensitive": is_insensitive,
         "owner": _owner_id,
         "set_permissions": {
@@ -966,9 +966,41 @@ def api_correspondents():
 
 @app.get("/api/document/{doc_id}", response_class=JSONResponse)
 def api_document(doc_id: int):
-    """Dokument-Details aus Paperless."""
+    """Dokument-Details aus Paperless — mit aufgelösten Select-Feldern."""
     try:
-        return pl_get(f"/documents/{doc_id}/")
+        doc = pl_get(f"/documents/{doc_id}/")
+
+        # Select-Felder auflösen: interne Option-ID → lesbarer Wert
+        try:
+            cf_defs = pl_get("/custom_fields/").get("results", [])
+            cf_options = {}
+            for cf in cf_defs:
+                opts = cf.get("extra_data", {}).get("select_options", [])
+                if opts:
+                    cf_options[cf["id"]] = {o["id"]: o["label"] for o in opts}
+
+            resolved = []
+            for cf in doc.get("custom_fields", []):
+                field_id = cf.get("field")
+                value    = cf.get("value")
+                if field_id in cf_options and value:
+                    value = cf_options[field_id].get(value, value)
+                resolved.append({"field": field_id, "value": value})
+            doc["custom_fields"] = resolved
+        except Exception:
+            pass  # Fallback: originale Werte behalten
+
+        # Begründung aus Document Review Queue ergänzen
+        try:
+            entries = load_document_review_queue()
+            for e in entries:
+                if e.get("document_id") == doc_id and e.get("status") == "pending":
+                    doc["_begruendung"] = e.get("begruendung", "")
+                    break
+        except Exception:
+            pass
+
+        return doc
     except requests.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
 
@@ -1331,7 +1363,6 @@ def api_document_review():
     return {"count": len(pending), "entries": pending}
 
 
-@app.post("/api/document-review/{index}")
 def _learn_from_reclassification(
     doc_id: int,
     new_ordner: str,
@@ -1404,6 +1435,7 @@ def _learn_from_reclassification(
         log.warning("_learn_from_reclassification fehlgeschlagen: %s", e)
 
 
+@app.post("/api/document-review/{index}")
 def api_document_review_action(index: int, body: dict = Body(...)):
     """
     Aktionen auf Document Review Queue:

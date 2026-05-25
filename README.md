@@ -99,7 +99,7 @@ Configure vehicle licence plates in `family.json`. When the vision model spots `
 ### paper.manager UI
 A single-page browser UI (no framework, no build step) for:
 - **Correspondent review** — approve, reject, or merge unknown senders
-- **Document review** — confirm or correct uncertain classifications
+- **Document review** — document thumbnail, AI fields (title, correspondent, folder, type, date, colour-coded confidence, review reason, **LLM reasoning**), set tags as chips, custom fields, correction form (folder, correspondent, type, tags)
 - **Document types** — manage synonyms and exclusion keywords
 - **Tags** — manage exclusion keywords per tag
 - **Storage paths** — configure folders with allowed tags and document types
@@ -189,6 +189,16 @@ nano /opt/paperless/.env
 
 > These files are **not** included in the repo (they contain personal data). Example files with placeholder values are provided for each.
 
+### `.env` — notable variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CONFIDENCE_IGNORE_TAG_PATTERNS` | `^\d{4}$,^\d{1,2}\.\d{4}$` | Regex patterns for tags that do **not** lower confidence (year numbers, month.year). Comma-separated. Set empty to disable. |
+| `CF_BEZAHLT_AM_ID` | — | Paperless custom field ID for "paid on" date |
+| `CF_GESCANNT_AM_ID` | — | Paperless custom field ID for "scanned on" date |
+
+See `.env.example` for all variables with descriptions.
+
 ---
 
 ## Screenshots
@@ -209,7 +219,7 @@ Available at `http://SERVER_IP:8100` after installation.
 | Home | System overview, feature summary, component versions |
 | Correspondent Review | Approve / reject / merge unknown senders |
 | Correspondents | Edit known senders |
-| Document Review | Confirm or correct uncertain classifications |
+| Document Review | Thumbnail + AI fields + colour-coded confidence + LLM reasoning + correction form |
 | Document Types | Synonyms + exclusion keywords |
 | Tags | Exclusion keywords per tag |
 | Speicherpfade | Folder configuration |

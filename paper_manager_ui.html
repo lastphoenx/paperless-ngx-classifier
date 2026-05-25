@@ -491,7 +491,7 @@
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ID <span style="font-weight:normal">(intern, eindeutig, z.B. vorname)</span></div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ID <span style="font-weight:normal">(intern, eindeutig, z.B. person1)</span></div>
         <div style="font-size:10px;color:var(--muted);padding:0 4px">ANZEIGENAME <span style="font-weight:normal">(z.B. Anna)</span></div>
         <div style="font-size:10px;color:var(--muted);padding:0 4px">ORDNER-PREFIX <span style="font-weight:normal">(z.B. Anna</span></div>
         <div></div>
@@ -965,6 +965,37 @@ function renderPanelErgaenzung(entry, i, docContent, docIds) {
       <p style="color:var(--muted);margin-bottom:14px">
         LLM hat neue Varianten für den bestehenden Korrespondenten <strong>${entry.ziel_name}</strong> erkannt.
       </p>
+
+      <!-- Referenzierungs-Box: bestehender Korrespondent -->
+      ${(() => {
+        const existing = (allCorrEntries||[]).find(e => e.name === entry.ziel_name);
+        if (!existing) return `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#f87171">
+          ⚠ Korrespondent «${entry.ziel_name}» nicht in correspondents.json gefunden — Ergänzung kann fehlschlagen.
+        </div>`;
+        const plId = existing._paperless?.id;
+        const plLink = plId ? `<a href="${window.PAPERLESS_URL||''}/correspondents/?id=${plId}" target="_blank"
+          style="color:var(--accent);text-decoration:none;font-size:11px">Paperless #${plId} ↗</a>` : '<span style="color:var(--muted);font-size:11px">Noch nicht in Paperless</span>';
+        const matchStr = (existing.match||[]).join(' | ') || '—';
+        const ordner = (existing.typische_ordner||[]).join(', ') || '—';
+        return `<div style="background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:6px;padding:12px 14px;margin-bottom:14px">
+          <div style="font-size:10px;color:var(--success);font-weight:bold;margin-bottom:8px;letter-spacing:0.5px">WIRD ERGÄNZT BEI</div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+            <div>
+              <div style="font-size:13px;font-weight:bold;color:var(--text)">${existing.name}</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">Match: <code style="font-size:10px">${matchStr}</code></div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">Ordner: ${ordner}</div>
+            </div>
+            <div style="text-align:right">${plLink}</div>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:8px 0">
+          <div style="font-size:10px;color:var(--success);font-weight:bold;margin-bottom:4px;letter-spacing:0.5px">WIRD HINZUGEFÜGT</div>
+          <div style="font-size:11px;color:var(--muted)">
+            ${neueMatch.length ? `Match-Strings: ${neueMatch.map(m=>`<code style="background:rgba(16,185,129,.12);color:var(--success);padding:1px 5px;border-radius:3px;margin-right:3px">${m}</code>`).join('')}` : ''}
+            ${neueVar.length ? `<br>Varianten: ${neueVar.map(v=>`<span style="color:var(--text)">${v}</span>`).join(', ')}` : ''}
+          </div>
+        </div>`;
+      })()}
+
       <div class="field-group">
         <label>Neue Varianten (bearbeiten/ergänzen)</label>
         <div class="tags-input" id="tags-varianten" data-tags='${JSON.stringify(neueVar)}'>
@@ -1350,7 +1381,7 @@ function toggleCorrEdit(idx, entry) {
           </label>
         </div>
       </div>
-        <button class="btn btn-success" onclick="saveCorrEdit(${idx})">✓ Speichern</button>
+        <button class="btn btn-success" onclick="saveCorrEdit(${idx}, '${entry.name.replace(/'/g, "\\'")}')">✓ Speichern</button>
         <button class="btn btn-ghost" onclick="closeCorrEdit(${idx})">Abbrechen</button>
         <button class="btn btn-ghost" style="color:var(--warn);border-color:var(--warn)"
           onclick="openMergePaperless(${idx})">⇔ Mit anderem zusammenführen</button>
@@ -2231,6 +2262,7 @@ async function selectDocReview(i) {
   renderDocReviewList();
   const entry = docReviewEntries[i];
   const panel = document.getElementById('docreview-panel');
+  panel.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">Lade Dokument…</div>';
 
   // Dokument aus Paperless laden
   let doc = null;
@@ -2239,63 +2271,189 @@ async function selectDocReview(i) {
     doc = await r.json();
   } catch(e) {}
 
+  // Custom Fields aus doc extrahieren + lesbar machen
+  const cfMap = {};
+  if (doc?.custom_fields) {
+    for (const cf of doc.custom_fields) {
+      cfMap[cf.field] = cf.value;
+    }
+  }
+
+  // Status-Feld (CF9): interne Select-ID → lesbarer Wert via Paperless API
+  // Paperless liefert für Select-Felder eine interne UUID/ID, nicht den Anzeigenamen
+  // Wir lösen das auf indem wir den Wert direkt aus dem custom_field_value lesen
+  // (Paperless ≥2.x liefert value als String bei Select-Feldern)
+  // Falls es eine interne ID ist, zeigen wir sie als-is — besser als nichts
+
+  // Aktuell gesetzte Tags (Namen)
+  const currentTagIds  = doc?.tags || [];
+  const currentTagNames = currentTagIds
+    .map(id => (allTags.find(t => t.id === id)||{}).name)
+    .filter(Boolean);
+
+  // Dokumenttyp Name
+  const dtName = (() => {
+    if (!doc?.document_type) return '—';
+    const found = (window._allDocTypes||[]).find(dt => dt.id === doc.document_type);
+    return found?.name || `ID ${doc.document_type}`;
+  })();
+
+  // Korrespondent Name
+  const corrName = (() => {
+    if (!doc?.correspondent) return '—';
+    const found = allDocCorrespondents.find(c => c.id === doc.correspondent);
+    return found?.name || `ID ${doc.correspondent}`;
+  })();
+
+  // Confidence Farbe
+  const confColor = {'hoch':'var(--success)','mittel':'var(--warn)','tief':'#f87171'}[entry.confidence] || 'var(--muted)';
+
+  // Custom Fields anzeigen (nur gesetzte)
+  const cfLabels = {1:'CHF',5:'Rechnungs-Nr.',6:'Kunden-Nr.',7:'QR-Referenz',
+                    8:'Fällig am',9:'Status',10:'Policen-Nr.',11:'Kennzeichen',
+                    12:'Bezahlt am',13:'Gescannt am'};
+  const cfRows = Object.entries(cfMap)
+    .filter(([k,v]) => v !== null && v !== '' && v !== undefined)
+    .map(([k,v]) => `<div style="display:flex;gap:8px;font-size:11px;margin-bottom:2px">
+      <span style="color:var(--muted);min-width:90px">${cfLabels[k]||'CF'+k}</span>
+      <span style="color:var(--text)">${v}</span>
+    </div>`).join('');
+
+  // Thumbnail URL (Paperless liefert /api/documents/{id}/thumb/)
+  const thumbUrl = `${window.PAPERLESS_INTERNAL||window.PAPERLESS_URL||''}/api/documents/${entry.document_id}/thumb/`;
+  const paperlessUrl = `${window.PAPERLESS_URL||''}/documents/${entry.document_id}`;
+
+  // Select Options
   const spOptions = allStoragePaths.map(sp =>
-    `<option value="${sp.id}" ${sp.name===entry.pfad?'selected':''}>
-      ${sp.name}
-    </option>`).join('');
+    `<option value="${sp.id}" ${sp.name===entry.pfad?'selected':''}>${sp.name}</option>`).join('');
   const corrOptions = `<option value="">— kein Korrespondent —</option>` +
     allDocCorrespondents.map(c =>
-      `<option value="${c.id}" ${c.id===doc?.correspondent?'selected':''}>
-        ${c.name}
-      </option>`).join('');
-  const currentTagIds = doc?.tags || [];
+      `<option value="${c.id}" ${c.id===doc?.correspondent?'selected':''}>${c.name}</option>`).join('');
   const tagOptions = allTags.map(t =>
-    `<option value="${t.id}" ${currentTagIds.includes(t.id)?'selected':''}>
-      ${t.name}
-    </option>`).join('');
+    `<option value="${t.id}" ${currentTagIds.includes(t.id)?'selected':''}>${t.name}</option>`).join('');
+
+  // Dokumenttyp Options
+  const dtOptions = `<option value="">— kein Typ —</option>` +
+    (window._allDocTypes||[]).map(dt =>
+      `<option value="${dt.id}" ${dt.id===doc?.document_type?'selected':''}>${dt.name}</option>`).join('');
 
   panel.innerHTML = `
-    <div class="card">
-      <div class="card-header">
+    <div class="card" style="padding:0;overflow:hidden">
+
+      <!-- Header -->
+      <div class="card-header" style="padding:12px 16px">
         <span class="card-title">Dok #${entry.document_id}</span>
-        <a href="${window.PAPERLESS_URL||''}/documents/${entry.document_id}" target="_blank"
-           style="color:var(--accent);font-size:12px">In Paperless öffnen ↗</a>
+        <a href="${paperlessUrl}" target="_blank"
+           style="color:var(--accent);font-size:12px;text-decoration:none">
+          In Paperless öffnen ↗
+        </a>
       </div>
-      <div class="field-group">
-        <label>Titel</label>
-        <div style="color:var(--text);padding:6px">${doc?.title||'—'}</div>
+
+      <!-- Thumbnail + KI-Erkennung nebeneinander -->
+      <div style="display:flex;gap:0;border-bottom:1px solid var(--border)">
+
+        <!-- Thumbnail -->
+        <div style="flex:0 0 200px;background:#111;display:flex;align-items:center;justify-content:center;min-height:200px;border-right:1px solid var(--border)">
+          <a href="${paperlessUrl}" target="_blank">
+            <img src="${thumbUrl}"
+              style="max-width:196px;max-height:280px;object-fit:contain;display:block"
+              onerror="this.parentElement.innerHTML='<span style=color:var(--muted);font-size:11px>Keine Vorschau</span>'"
+              alt="Vorschau">
+          </a>
+        </div>
+
+        <!-- KI-Erkennung -->
+        <div style="flex:1;padding:14px 16px;font-size:12px">
+          <div style="font-size:10px;color:var(--muted);font-weight:bold;letter-spacing:0.5px;margin-bottom:10px">KI-ERKENNUNG</div>
+
+          <div style="display:grid;grid-template-columns:100px 1fr;gap:4px 8px;margin-bottom:12px">
+            <span style="color:var(--muted)">Titel</span>
+            <span style="color:var(--text);font-weight:500">${doc?.title||entry.title||'—'}</span>
+
+            <span style="color:var(--muted)">Korrespondent</span>
+            <span style="color:var(--text)">${corrName}</span>
+
+            <span style="color:var(--muted)">Ordner</span>
+            <span style="color:var(--warn)">${entry.pfad||'—'}</span>
+
+            <span style="color:var(--muted)">Dokumenttyp</span>
+            <span style="color:var(--text)">${dtName}</span>
+
+            <span style="color:var(--muted)">Datum</span>
+            <span style="color:var(--text)">${doc?.created||'—'}</span>
+
+            <span style="color:var(--muted)">Confidence</span>
+            <span style="color:${confColor};font-weight:bold">${entry.confidence||'?'}</span>
+
+            <span style="color:var(--muted)">Review-Grund</span>
+            <span style="color:var(--muted);font-size:11px">${(entry.grund||[]).join(', ')||'—'}</span>
+
+            ${doc?._begruendung ? `
+            <span style="color:var(--muted)">Begründung</span>
+            <span style="color:var(--muted);font-size:11px;font-style:italic">${doc._begruendung}</span>
+            ` : ''}
+          </div>
+
+          ${currentTagNames.length ? `
+          <div style="margin-bottom:10px">
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px">TAGS</div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px">
+              ${currentTagNames.map(t => `<span style="background:rgba(79,156,249,.15);color:var(--accent);padding:2px 8px;border-radius:10px;font-size:11px">${t}</span>`).join('')}
+            </div>
+          </div>` : ''}
+
+          ${cfRows ? `
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px">CUSTOM FIELDS</div>
+            ${cfRows}
+          </div>` : ''}
+        </div>
       </div>
-      <div class="field-group">
-        <label>Aktueller Ordner</label>
-        <div style="color:var(--warn);padding:6px">${entry.pfad||'—'}</div>
-      </div>
-      <div class="field-group">
-        <label>Confidence</label>
-        <div style="padding:6px">${entry.confidence||'?'}</div>
-      </div>
-      <div class="field-group">
-        <label>Review-Grund</label>
-        <div style="color:var(--muted);padding:6px">${(entry.grund||[]).join(', ')||'—'}</div>
-      </div>
-      <hr class="divider">
-      <div class="field-group">
-        <label>Storage Path (Ordner)</label>
-        <select id="dr-sp">${spOptions}</select>
-      </div>
-      <div class="field-group">
-        <label>Korrespondent</label>
-        <select id="dr-corr">${corrOptions}</select>
-      </div>
-      <div class="field-group">
-        <label>Tags (Mehrfachauswahl)</label>
-        <select id="dr-tags" multiple style="min-height:120px">${tagOptions}</select>
-      </div>
-      <div class="btn-row">
-        <button class="btn btn-success" onclick="submitDocReview(${i},'approve')">✓ Freigeben</button>
-        <button class="btn btn-primary"  onclick="submitDocReview(${i},'reclassify')">✎ Neu klassifizieren</button>
-        <button class="btn btn-danger"   onclick="submitDocReview(${i},'reject')">✗ Ignorieren</button>
+
+      <!-- Korrekturen -->
+      <div style="padding:14px 16px">
+        <div style="font-size:10px;color:var(--muted);font-weight:bold;letter-spacing:0.5px;margin-bottom:10px">KORREKTUREN (nur bei «Neu klassifizieren»)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div class="field-group" style="margin:0">
+            <label>Ordner</label>
+            <select id="dr-sp">${spOptions}</select>
+          </div>
+          <div class="field-group" style="margin:0">
+            <label>Korrespondent</label>
+            <select id="dr-corr">${corrOptions}</select>
+          </div>
+          <div class="field-group" style="margin:0">
+            <label>Dokumenttyp</label>
+            <select id="dr-dt">${dtOptions}</select>
+          </div>
+          <div class="field-group" style="margin:0">
+            <label>Tags (Mehrfachauswahl)</label>
+            <select id="dr-tags" multiple style="min-height:80px">${tagOptions}</select>
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-success" onclick="submitDocReview(${i},'approve')">✓ Freigeben</button>
+          <button class="btn btn-primary"  onclick="submitDocReview(${i},'reclassify')">✎ Neu klassifizieren</button>
+          <button class="btn btn-danger"   onclick="submitDocReview(${i},'reject')">✗ Ignorieren</button>
+        </div>
       </div>
     </div>`;
+
+  // Dokumenttypen für Select laden falls noch nicht da
+  if (!window._allDocTypes) {
+    try {
+      const r = await fetch(`${API_BASE}/paperless/document_types`);
+      const d = await r.json();
+      window._allDocTypes = d.results || [];
+      // Select neu befüllen
+      const dtSel = document.getElementById('dr-dt');
+      if (dtSel) {
+        dtSel.innerHTML = `<option value="">— kein Typ —</option>` +
+          window._allDocTypes.map(dt =>
+            `<option value="${dt.id}" ${dt.id===doc?.document_type?'selected':''}>${dt.name}</option>`).join('');
+      }
+    } catch(e) {}
+  }
 }
 
 async function submitDocReview(index, action) {
@@ -2306,11 +2464,13 @@ async function submitDocReview(index, action) {
     const spEl   = document.getElementById('dr-sp');
     const corrEl = document.getElementById('dr-corr');
     const tagsEl = document.getElementById('dr-tags');
-    body.storage_path_id   = spEl ? parseInt(spEl.value) : null;
-    body.storage_path_name = spEl?.options[spEl.selectedIndex]?.text?.trim() || null;
-    body.correspondent_id  = corrEl?.value ? parseInt(corrEl.value) : null;
-    body.tag_ids           = tagsEl ? Array.from(tagsEl.selectedOptions).map(o => parseInt(o.value)) : [];
-    body.tag_names         = tagsEl ? Array.from(tagsEl.selectedOptions).map(o => o.text.trim()) : [];
+    const dtEl   = document.getElementById('dr-dt');
+    body.storage_path_id    = spEl ? parseInt(spEl.value) : null;
+    body.storage_path_name  = spEl?.options[spEl.selectedIndex]?.text?.trim() || null;
+    body.correspondent_id   = corrEl?.value ? parseInt(corrEl.value) : null;
+    body.tag_ids            = tagsEl ? Array.from(tagsEl.selectedOptions).map(o => parseInt(o.value)) : [];
+    body.tag_names          = tagsEl ? Array.from(tagsEl.selectedOptions).map(o => o.text.trim()) : [];
+    body.document_type_id   = dtEl?.value ? parseInt(dtEl.value) : null;
   }
 
   try {
@@ -2365,7 +2525,7 @@ function renderFamilyPersonen(d) {
   }
   pContainer.innerHTML = list.map((p, i) => `
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
-      <input type="text" placeholder="z.B. vorname" value="${p.id||''}"
+      <input type="text" placeholder="z.B. person1" value="${p.id||''}"
         style="font-family:monospace" oninput="_familyData.personen[${i}].id=this.value.toLowerCase().replace(/\\s/g,'')">
       <input type="text" placeholder="z.B. Anna" value="${p.anzeigename||''}"
         oninput="_familyData.personen[${i}].anzeigename=this.value">

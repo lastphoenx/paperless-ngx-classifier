@@ -152,6 +152,19 @@ CF_POLICENNUMMER   = int(os.environ.get("CF_POLICENNUMMER_ID",   "10"))
 CF_KENNZEICHEN     = int(os.environ.get("CF_KENNZEICHEN_ID",     "11"))
 CF_BEZAHLT_AM      = int(os.environ.get("CF_BEZAHLT_AM_ID",      "12"))
 CF_GESCANNT_AM     = int(os.environ.get("CF_GESCANNT_AM_ID",     "13"))
+
+# Tags die diesen Regex-Mustern entsprechen lösen KEINEN Confidence-Downgrade aus
+# wenn sie verworfen werden (z.B. Jahreszahlen, Monat.Jahr).
+# Komma-getrennte Python-Regex in .env: CONFIDENCE_IGNORE_TAG_PATTERNS=^\d{4}$,^\d{1,2}\.\d{4}$
+import re as _re
+_raw_ignore_patterns = os.environ.get("CONFIDENCE_IGNORE_TAG_PATTERNS", r"^\d{4}$,^\d{1,2}\.\d{4}$")
+CONFIDENCE_IGNORE_TAG_PATTERNS = [
+    _re.compile(p.strip()) for p in _raw_ignore_patterns.split(",") if p.strip()
+]
+
+def _is_trivial_tag_violation(tag: str) -> bool:
+    """True wenn der Tag trivial ist und keinen Confidence-Downgrade rechtfertigt."""
+    return any(p.match(tag) for p in CONFIDENCE_IGNORE_TAG_PATTERNS)
 LOG_PATH          = Path(os.environ.get("LOG_PATH", "/opt/paperless-scripts/logs/post_consume_v11.log"))
 RAG_TOP_K         = int(os.environ.get("RAG_TOP_K", "5"))
 VISION_TIMEOUT    = int(os.environ.get("VISION_TIMEOUT", "120"))
@@ -892,8 +905,13 @@ def sanitize_decision(decision: dict, manifest: list[dict], similar_entries: lis
     clean_tags = [t for t in raw_tags if t not in _alle_verboten]
     removed = set(raw_tags) - set(clean_tags)
     if removed:
-        violations.append(f"Tags verworfen (verboten): {removed}")
-        log.warning("Sanitize: Tags verworfen: %s", removed)
+        # Triviale Tags (z.B. Jahreszahlen) nicht als echte Violation zählen
+        non_trivial_removed = {t for t in removed if not _is_trivial_tag_violation(t)}
+        if non_trivial_removed:
+            violations.append(f"Tags verworfen (verboten): {non_trivial_removed}")
+            log.warning("Sanitize: Tags verworfen (non-trivial): %s", non_trivial_removed)
+        if removed - non_trivial_removed:
+            log.info("Sanitize: Tags verworfen (trivial, kein Downgrade): %s", removed - non_trivial_removed)
 
     # Tag-Ausschluss via tags.json
     _pseudo_ocr    = " ".join(filter(None, [decision.get("korrespondent",""), decision.get("titel",""), decision.get("dokumenttyp_semantisch","")]))
@@ -2100,6 +2118,7 @@ def main():
             confidence=decision.get("confidence", "mittel"),
             grund=_grund,
             title=decision.get("titel", ""),
+            begruendung=decision.get("begruendung", ""),
         )
 
     # Dokumenttyp — semantisch aus LLM (nicht visuell aus Vision)
@@ -2294,10 +2313,12 @@ def build_custom_fields(
             kz_fmt = kz_norm_check[:2] + " " + kz_norm_check[2:]
             # Kennzeichen ist Select-Feld → braucht interne Option-ID
             kz_id = _get_select_option_id(CF_KENNZEICHEN, kz_fmt)
-        if kz_id:
-            _add(CF_KENNZEICHEN, kz_id, f"Kennzeichen={kz_fmt}")
+            if kz_id:
+                _add(CF_KENNZEICHEN, kz_id, f"Kennzeichen={kz_fmt}")
+            else:
+                log.info("Custom Field Kennzeichen: Option-ID für '%s' nicht gefunden", kz_fmt)
         else:
-            log.info("Custom Field Kennzeichen: Option-ID für '%s' nicht gefunden", kz_fmt)
+            log.debug("Kennzeichen '%s' nicht in family.json — kein CF gesetzt", kennzeichen)
 
     # ── Status: Default "Offen" für Rechnungen — oder "Bezahlt" aus Handschrift ──
     doc_type = (decision.get("dokumenttyp_semantisch") or "").lower()
@@ -2362,7 +2383,8 @@ def write_audit_entry(
 
 
 def enqueue_document_review(document_id: int, pfad: str, confidence: str,
-                             grund: list, title: str = "") -> None:
+                             grund: list, title: str = "",
+                             begruendung: str = "") -> None:
     """Dokument in Document Review Queue schreiben.
     Wird befüllt wenn: confidence!=hoch, Familie/Sonstiges, had_violations, neuer Korrespondent.
     Der Correspondent Manager zeigt diese Queue zur manuellen Nachkontrolle an.
@@ -2394,24 +2416,26 @@ def enqueue_document_review(document_id: int, pfad: str, confidence: str,
         updated = False
         for e in existing:
             if e.get("document_id") == document_id and e.get("status") == "pending":
-                e["pfad"]       = pfad
-                e["confidence"] = confidence
-                e["grund"]      = grund
-                e["title"]      = title
-                e["timestamp"]  = time.strftime("%Y-%m-%dT%H:%M:%S")
+                e["pfad"]        = pfad
+                e["confidence"]  = confidence
+                e["grund"]       = grund
+                e["title"]       = title
+                e["begruendung"] = begruendung
+                e["timestamp"]   = time.strftime("%Y-%m-%dT%H:%M:%S")
                 updated = True
                 log.info("Document Review Queue: ID=%s aktualisiert (Dedupe)", document_id)
                 break
 
         if not updated:
             existing.append({
-                "document_id": document_id,
-                "pfad":        pfad,
-                "confidence":  confidence,
-                "grund":       grund,
-                "title":       title,
-                "status":      "pending",
-                "timestamp":   time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "document_id":  document_id,
+                "pfad":         pfad,
+                "confidence":   confidence,
+                "grund":        grund,
+                "title":        title,
+                "begruendung":  begruendung,
+                "status":       "pending",
+                "timestamp":    time.strftime("%Y-%m-%dT%H:%M:%S"),
             })
             log.info("Document Review Queue: ID=%s neu eingereiht, Grund=%s", document_id, grund)
 
