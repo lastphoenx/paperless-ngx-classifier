@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 1.3 | Mai 2026**
+**Version 2.2 | Mai 2026**
 
 ---
 
@@ -34,7 +34,7 @@ Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart.
 | Logo-Klick | `#home` | Landing Page — Systemübersicht |
 | ! Korrespondenten Review | `#pending` | Neue Absender freigeben |
 | # Korrespondenten | `#correspondents` | Absender verwalten |
-| D Dokument-Review | `#docreview` | Unsichere Dokumente prüfen |
+| D Dokument-Review | `#docreview` | Unsichere Dokumente prüfen, Vorschau + LLM-Begründung |
 | T Dokumenttypen | `#doctypes` | Synonyme + Ausschluss-Keywords |
 | ~ Tags | `#tags` | Tags + Ausschluss-Keywords |
 | M Manifest | `#manifest` | Ordner konfigurieren |
@@ -115,16 +115,53 @@ Suchfeld filtert nach Name, Varianten, Match-Strings, Ordnern, Notiz.
 
 ## 6. Dokument-Review
 
+Dokumente mit einem der pending-Tags landen automatisch in der Review-Warteschlange:
+
 | Tag | Farbe | Bedeutung |
 |---|---|---|
 | `pending_review` | gelb | KI unsicher, Datum verdächtig, Fallback-Ordner |
 | `pending_qs` | grün | QS-Modus — alle Dokumente prüfen |
 | `pending_new_correspondent` | rot | Unbekannter Absender |
 
+### Panel-Aufbau
+
+Das Dokument-Review-Panel besteht aus zwei Bereichen:
+
+**Links — Vorschau**
+- Thumbnail der ersten Seite direkt aus Paperless
+- Klick öffnet das Dokument in Paperless
+
+**Rechts — KI-Erkennung**
+
+| Feld | Beschreibung |
+|---|---|
+| Titel | Vom LLM generierter Vorschlag |
+| Korrespondent | Erkannter Absender |
+| Ordner | Zugewiesener Speicherpfad |
+| Dokumenttyp | Erkannter Dokumenttyp |
+| Datum | Erkanntes Belegdatum |
+| Confidence | Farbig: grün ≥90 %, gelb 70 %–89 %, rot <70 % |
+| Review-Grund | Warum das Dokument in die Queue kam |
+| LLM-Begründung | Erklärung des LLM zur Einschätzung |
+
+Unter den KI-Feldern:
+- **Tags als Chips** — alle gesetzten Tags angezeigt
+- **Custom Fields** — nur gefüllte Felder, Status-ID wird als «Bezahlt»/«Offen» lesbar dargestellt
+
+### Korrekturen (2×2-Grid)
+
+| Feld | Funktion |
+|---|---|
+| Ordner | Anderen Speicherpfad wählen |
+| Korrespondent | Anderen Absender wählen |
+| Dokumenttyp | Anderen Typ wählen (NEU) |
+| Tags | Tags hinzufügen / entfernen |
+
 ### Aktionen
-- **✓ Freigeben** → pending-Tags entfernt
-- **✎ Neu klassifizieren** → Ordner/Tags/Korrespondent anpassen → Paperless + Manifest lernen
-- **✗ Ignorieren** → aus Queue entfernt
+
+- **✓ Freigeben** — pending-Tags entfernen, Dokument freigeben
+- **✎ Neu klassifizieren** — gewählte Korrekturen (Ordner, Korrespondent, Typ, Tags) anwenden und Manifest + Korrespondenten-Modell trainieren
+- **✗ Ignorieren** — aus Queue entfernen ohne Änderungen
 
 ---
 

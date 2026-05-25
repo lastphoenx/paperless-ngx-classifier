@@ -104,7 +104,7 @@ Fahrzeugkennzeichen in `family.json` konfigurieren. Wenn das Vision-Modell `XX 0
 
 Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Korrespondenten-Review** — unbekannte Absender bestätigen, ablehnen oder zusammenführen
-- **Dokument-Review** — unsichere Klassifizierungen bestätigen oder korrigieren
+- **Dokument-Review** — Dokument-Vorschaubild, KI-Felder (Titel, Korrespondent, Ordner, Typ, Datum, farbige Confidence, Review-Grund, **LLM-Begründung**), Tags als Chips, Custom Fields, Korrekturformular (Ordner, Korrespondent, Typ, Tags)
 - **Dokumenttypen** — Synonyme und Ausschluss-Keywords verwalten
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
@@ -194,6 +194,16 @@ nano /opt/paperless/.env
 
 > Diese Dateien sind **nicht** im Repo enthalten (sie enthalten persönliche Daten). Für jede Datei sind Beispieldateien mit Platzhalterwerten vorhanden.
 
+### `.env` — wichtige Variablen
+
+| Variable | Standard | Funktion |
+|---|---|---|
+| `CONFIDENCE_IGNORE_TAG_PATTERNS` | `^\d{4}$,^\d{1,2}\.\d{4}$` | Regex-Muster für Tags, die die Confidence **nicht** senken (Jahreszahlen, Monat.Jahr). Kommagetrennt. Leer = alles deaktiviert. |
+| `CF_BEZAHLT_AM_ID` | — | Paperless Custom-Field-ID für «Bezahlt am» |
+| `CF_GESCANNT_AM_ID` | — | Paperless Custom-Field-ID für «Eingescannt am» |
+
+Alle Variablen mit Beschreibungen siehe `.env.example`.
+
 ---
 
 ## Komponenten
@@ -229,7 +239,7 @@ Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
 | Home | Systemübersicht, Feature-Zusammenfassung, Komponentenversionen |
 | Correspondent Review | Unbekannte Absender bestätigen / ablehnen / zusammenführen |
 | Correspondents | Bekannte Absender bearbeiten |
-| Document Review | Unsichere Klassifizierungen bestätigen oder korrigieren |
+| Document Review | Vorschaubild + KI-Felder + farbige Confidence + LLM-Begründung + Korrekturformular |
 | Document Types | Synonyme + Ausschluss-Keywords |
 | Tags | Ausschluss-Keywords pro Tag |
 | Speicherpfade | Ordnerkonfiguration |
