@@ -193,6 +193,21 @@ Oder nach dem Start über paper.manager → Familie-Tab pflegen (empfohlen).
 
 ---
 
+## Schritt 6b — Dokumenttypen konfigurieren (Empfehlung)
+
+Die mitgelieferte `document_types.example.json` enthält 23 bewährte Typen. Dieses Set **breit und stabil** halten — der LLM trifft breite Kategorien zuverlässiger als enge.
+
+**Nicht** für jeden Sonderfall einen eigenen Typ anlegen. Tags (z.B. `Mahnung`, `Steuerrelevant`) für Querschnittsthemen verwenden.
+
+Falls eigene Typen hinzugefügt werden, Sync-Check ausführen:
+```bash
+python3 /opt/paperless-scripts/fix_document_types_v2.py
+```
+
+> **Wichtig:** Jeder Ordner in `manifest.json` hat eine Whitelist erlaubter Typen. Ein Typ der nicht in der Whitelist steht landet als Fallback — auch wenn das Dokument klar einem Absender zuzuordnen wäre.
+
+---
+
 ## Schritt 7 — Paperless Consumer Scripts eintragen
 
 In `/opt/paperless/.env` (Paperless-Konfiguration):
@@ -202,6 +217,7 @@ PAPERLESS_POST_CONSUME_SCRIPT=/opt/paperless-scripts/post_consume.py
 PAPERLESS_PRE_CONSUME_SCRIPT=/opt/paperless-scripts/pre_consume.sh
 PAPERLESS_CONSUMER_POLLING=10
 PAPERLESS_CONSUMER_ENABLE_BARCODES=true
+PAPERLESS_TRAIN_TASK_CRON=disable
 ```
 
 Paperless neu starten:
@@ -249,45 +265,27 @@ cd /opt/paperless
 docker compose down && docker compose up -d
 ```
 
-**3. Alle Korrespondenten auf «Keine automatische Zuweisung» setzen:**
+**3. Alle Korrespondenten, Dokumenttypen und Tags auf «Keine Zuweisung» setzen:**
 ```bash
-# Einmalig nach der Installation ausführen.
-# correspondent_manager_app.py setzt matching_algorithm=0 bei neu angelegten
-# Korrespondenten automatisch — bestehende müssen einmalig manuell zurückgesetzt werden.
+# Token aus .env lesen
+export TOKEN=$(grep "PAPERLESS_TOKEN=" /opt/paperless/.env | head -1 | cut -d= -f2)
 
-curl -s "http://localhost:8000/api/correspondents/?page_size=100" \
-  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
-  grep -o '[0-9]*' | while read id; do
-    curl -s -X PATCH "http://localhost:8000/api/correspondents/$id/" \
-      -H "Authorization: Token $TOKEN" \
-      -H "Content-Type: application/json" \
-      -d '{"matching_algorithm": 0}' > /dev/null
-    echo "Korrespondent $id → Keine Zuweisung"
+# Alle drei Objekttypen in einem Durchgang
+for endpoint in correspondents document_types tags; do
+  echo "Verarbeite ${endpoint}..."
+  curl -s "http://localhost:8000/api/${endpoint}/?page_size=100" \
+    -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
+    grep -o '[0-9]*' | while read id; do
+      curl -s -X PATCH "http://localhost:8000/api/${endpoint}/$id/" \
+        -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
+        -d '{"matching_algorithm": 0}' > /dev/null
+      echo "  ${endpoint} $id → Keine Zuweisung ✓"
+  done
 done
 ```
 
-**4. Gleiches für Tags und Dokumenttypen (empfohlen):**
-```bash
-# Tags
-curl -s "http://localhost:8000/api/tags/?page_size=100" \
-  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
-  grep -o '[0-9]*' | while read id; do
-    curl -s -X PATCH "http://localhost:8000/api/tags/$id/" \
-      -H "Authorization: Token $TOKEN" \
-      -H "Content-Type: application/json" \
-      -d '{"matching_algorithm": 0}' > /dev/null
-done
-
-# Dokumenttypen
-curl -s "http://localhost:8000/api/document_types/?page_size=100" \
-  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
-  grep -o '[0-9]*' | while read id; do
-    curl -s -X PATCH "http://localhost:8000/api/document_types/$id/" \
-      -H "Authorization: Token $TOKEN" \
-      -H "Content-Type: application/json" \
-      -d '{"matching_algorithm": 0}' > /dev/null
-done
-```
+> Neue Objekte die über paper.manager angelegt werden, erhalten automatisch `matching_algorithm=0`.
+> Dieser Reset ist eine einmalige Operation für bestehende Daten.
 
 ---
 
@@ -398,6 +396,9 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | 401 bei API-Calls | PAPER_MANAGER_TOKEN nicht gesetzt | .env prüfen, Service neu starten |
 | Kennzeichen-Routing funktioniert nicht | family.json leer oder falsch | paper.manager → Familie → Fahrzeuge prüfen |
 | Permissions-Fehler auf Dokumenten | Gruppen-IDs falsch | PAPERLESS_VIEW_GROUP_IDS in .env |
+| Falscher Ordner trotz korrekter Vision | Paperless Classifier noch aktiv | Schritt 7b — alle 3 Objekttypen zurücksetzen |
+| Absurder Fallback-Typ (z.B. Arztbericht) | Typ nicht im Manifest für diesen Ordner | Typ in Speicherpfade-Whitelist ergänzen |
+| `Scan_` Titel / Dateien als `0000xxx.pdf` | post_consume.py Absturz (KRITISCH) | Fehler beheben, PDF re-konsumieren |
 
 ---
 

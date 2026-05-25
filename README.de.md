@@ -247,41 +247,105 @@ Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
 
 ---
 
-## ⚠️ Paperless-NGX Classifier deaktivieren (Pflicht)
+## ⚠️ Kritisch: Paperless-NGX Built-in Classifier deaktivieren
 
-Paperless-NGX hat einen eigenen integrierten ML-Classifier der Korrespondenten, Tags und Dokumenttypen automatisch zuweist — **bevor** `post_consume.py` läuft.
+Dies ist der **wichtigste Konfigurationsschritt**. Wird er übersprungen, werden Dokumente falsch klassifiziert — auch wenn Vision den Absender korrekt erkannt hat.
 
-Das führt zu einem kritischen Konflikt:
-- Paperless weist z.B. «Reformierte Kirche» einem Dokument zu
-- Der zugewiesene Korrespondent landet im Dateinamen der an `post_consume.py` übergeben wird
-- `post_consume.py` bekommt falschen Kontext → LLM entscheidet falsch
+### Das Problem
 
-### Lösung — zwei Massnahmen zwingend erforderlich
+Paperless-NGX betreibt einen eigenen ML-Classifier der Korrespondenten, Tags und Dokumenttypen **vor** `post_consume.py` zuweist. Das Ergebnis wird in den Dateinamen eingebaut der an unser Script übergeben wird — wodurch der LLM-Prompt korrumpiert wird auch wenn Vision den richtigen Absender erkannt hat.
 
-**1. Training deaktivieren** (in `/opt/paperless/.env`):
+**Symptom:** Dokument landet im falschen Ordner trotz korrekter Vision-Erkennung. Log zeigt z.B. `Datei=2026-05-25 Falscher Korrespondent_dokument.pdf` obwohl das Dokument von einem ganz anderen Absender stammt.
+
+### Lösung — drei Schritte erforderlich
+
+**1. Training deaktivieren** in `/opt/paperless/.env`:
 ```bash
 PAPERLESS_TRAIN_TASK_CRON=disable
 ```
 
-**2. Alle bestehenden Korrespondenten auf «Keine Zuweisung» setzen:**
+**2. Docker neu starten:**
 ```bash
-curl -s "http://localhost:8000/api/correspondents/?page_size=100" \
-  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
-  grep -o '[0-9]*' | while read id; do
-    curl -s -X PATCH "http://localhost:8000/api/correspondents/$id/" \
-      -H "Authorization: Token $TOKEN" \
-      -H "Content-Type: application/json" \
-      -d '{"matching_algorithm": 0}'
+cd /opt/paperless && docker compose down && docker compose up -d
+```
+
+**3. Alle Korrespondenten, Dokumenttypen und Tags auf «Keine Zuweisung» setzen:**
+```bash
+export TOKEN=$(grep "PAPERLESS_TOKEN=" /opt/paperless/.env | head -1 | cut -d= -f2)
+
+for endpoint in correspondents document_types tags; do
+  echo "Verarbeite ${endpoint}..."
+  curl -s "http://localhost:8000/api/${endpoint}/?page_size=100" \
+    -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
+    grep -o '[0-9]*' | while read id; do
+      curl -s -X PATCH "http://localhost:8000/api/${endpoint}/$id/" \
+        -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" \
+        -d '{"matching_algorithm": 0}' > /dev/null
+      echo "  ${endpoint} $id → Keine Zuweisung ✓"
+  done
 done
 ```
 
-> **Warum:** Paperless baut den zugewiesenen Korrespondenten in den Dateinamen ein der an `post_consume.py` übergeben wird. Auch wenn Vision den richtigen Absender erkennt, verwirrt ein falscher Dateiname den LLM beim Routing-Entscheid.
+> Neue Objekte die über paper.manager angelegt werden, erhalten automatisch `matching_algorithm=0`. Dieser Reset ist eine einmalige Operation für bestehende Daten.
 >
-> `correspondent_manager_app.py` legt neue Korrespondenten automatisch mit `matching_algorithm=0` an — bestehende müssen einmalig manuell zurückgesetzt werden.
->
-> Danach gilt: **unser Script ist der einzige Klassifizierer** — kein Konflikt mehr.
+> Vollständige Schritt-für-Schritt-Anleitung → [INSTALL.md](INSTALL.md#schritt-9----paperless-built-in-classifier-deaktivieren-pflicht)
 
-Vollständige Schritt-für-Schritt-Anleitung → [INSTALL.md](INSTALL.md#schritt-7b----paperless-classifier-deaktivieren-pflicht)
+---
+
+## Empfehlungen: Dokumenttypen und Tags
+
+### Dokumenttypen breit und stabil halten
+
+Der LLM trifft breite Kategorien zuverlässiger als enge. Keinen eigenen Typ für jeden Sonderfall anlegen.
+
+**Empfohlenes Set (23 Typen):**
+
+| Typ | Abdeckung |
+|---|---|
+| Rechnung | Allgemeine Rechnungen |
+| Arztrechnung | Arztrechnungen |
+| Servicerechnung | Service/Wartung |
+| Reparaturrechnung | Reparaturen |
+| Versicherungsabrechnung | Versicherungsprämien |
+| Police | Alle Versicherungspolicen |
+| Lohnabrechnung | Monatliche Lohnabrechnung |
+| Lohnausweis | Jährlicher Lohnausweis (steuerrelevant) |
+| Steuerwertbescheinigung | Steuerwertbescheinigungen |
+| Steuerdokument | Steuererklärung, Rückerstattungen |
+| Gesundheitsdossier | Arztberichte, Rezepte, Laborresultate |
+| Arbeitgeberdokument | Arbeitszeugnisse, Kündigungen |
+| Auto | Fahrzeugdokumente, MFK, Schadensberichte |
+| Banken | Kontoauszüge, Depot, Wertschriften |
+| Behördenpost | Amtliche Post, Ausweisdokumente |
+| Verfügung | Behördliche Entscheide |
+| Vertrag | Alle Verträge |
+| Korrespondenz | Briefe, Einladungen, allgemeine Post |
+| Garantieschein | Garantien |
+| Betriebsanleitung | Anleitungen |
+| Quittung | Quittungen, Lieferscheine |
+| Schulzeugnis | Schuldokumente |
+| Vermögensausweis | Vermögens-/Depotauszüge |
+
+### Tags für Querschnittsthemen
+
+- `Steuerrelevant` — alles was für die Steuererklärung benötigt wird
+- `Mahnung` — Mahnungen unabhängig von Typ oder Absender
+- Pending-Tags (`pending_review`, `pending_new_correspondent`, `pending_qs`) — werden nur durch die Pipeline gesetzt, nicht über den Paperless-Classifier zuweisen
+
+---
+
+## Fehlerbehebung
+
+| Problem | Lösung |
+|---|---|
+| Falscher Ordner trotz korrekter Vision | Paperless Classifier nicht deaktiviert — Reset oben ausführen |
+| `Arztbericht` oder absurder Fallback-Typ | Dokumenttyp nicht in Manifest-Whitelist für diesen Ordner — in Speicherpfade ergänzen |
+| Confidence immer mittel | `CONFIDENCE_IGNORE_TAG_PATTERNS` in `.env` prüfen |
+| `Scan_` Titel / Dateien als `0000xxx.pdf` | `post_consume.py` Absturz — PDF nach Fehlerbehebung re-konsumieren |
+| `Field required` beim Freigeben | `correspondent_manager_app.py` v2.2+ deployen |
+| Login via IP leitet falsch weiter | `PAPERLESS_INTERNAL_URL` in `.env` prüfen (auf `http://localhost:8000` setzen) |
+| Berechtigungsfehler auf Dokumenten | `python3 fix_all_perms.py` |
+| Embeddings veraltet | `rm training/manifest_embeddings.json` |
 
 ---
 
