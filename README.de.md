@@ -51,6 +51,7 @@ Jede Korrektur in paper.manager fliesst zurück ins System:
 
 - Bestätigte Korrespondenten → werden mit Match-Strings in `correspondents.json` aufgenommen
 - Umklassifizierte Dokumente → erlaubte Tags im Manifest werden aktualisiert
+- Bekannter Dokumenttyp nicht im Ordner-Manifest → Manifest automatisch ergänzt, Confidence mittel (Self-healing)
 - Bekannte Absender → kommen nie wieder in die Review-Warteschlange
 - Deterministisches Routing → wächst mit der Zeit, reduziert LLM-Aufrufe
 
@@ -339,7 +340,7 @@ Der LLM trifft breite Kategorien zuverlässiger als enge. Keinen eigenen Typ fü
 | Problem | Lösung |
 |---|---|
 | Falscher Ordner trotz korrekter Vision | Paperless Classifier nicht deaktiviert — Reset oben ausführen |
-| `Arztbericht` oder absurder Fallback-Typ | Dokumenttyp nicht in Manifest-Whitelist für diesen Ordner — in Speicherpfade ergänzen |
+| `Arztbericht` als Typ beim ersten Scan eines neuen Dokumenttyps | Typ noch nicht im Ordner-Manifest — automatisch ergänzt, nächster Scan läuft korrekt (Self-healing) |
 | Confidence immer mittel | `CONFIDENCE_IGNORE_TAG_PATTERNS` in `.env` prüfen |
 | `Scan_` Titel / Dateien als `0000xxx.pdf` | `post_consume.py` Absturz — PDF nach Fehlerbehebung re-konsumieren |
 | `Field required` beim Freigeben | `correspondent_manager_app.py` v2.2+ deployen |

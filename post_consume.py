@@ -940,10 +940,51 @@ def sanitize_decision(decision: dict, manifest: list[dict], similar_entries: lis
     # 5. Dokumenttyp
     dt = (decision.get("dokumenttyp_semantisch") or "").strip()
     if allowed_dokumenttypen and dt and dt not in allowed_dokumenttypen:
-        fallback_dt = sorted(allowed_dokumenttypen)[0]
-        violations.append(f"Dokumenttyp {dt!r} nicht erlaubt → {fallback_dt!r}")
-        log.warning("Sanitize: Dokumenttyp '%s' → Fallback '%s'", dt, fallback_dt)
-        decision["dokumenttyp_semantisch"] = fallback_dt
+        # Prüfen ob Typ global bekannt (in document_types.json)
+        _known_types = set()
+        try:
+            if DOCUMENT_TYPES_JSON.exists():
+                _dt_data = json.loads(DOCUMENT_TYPES_JSON.read_text(encoding="utf-8"))
+                for _t in _dt_data.get("typen", []):
+                    _known_types.add(_t["name"].lower())
+                    for _s in _t.get("synonyme", []):
+                        _known_types.add(_s.lower())
+        except Exception:
+            pass
+
+        if dt.lower() in _known_types:
+            # Typ ist global bekannt — nur nicht für diesen Ordner konfiguriert.
+            # Typ BEHALTEN, aber als Violation loggen (senkt Confidence)
+            # UND Manifest-Lernvorschlag: Typ zum Ordner hinzufügen
+            violations.append(f"Dokumenttyp '{dt}' nicht für Ordner '{decision.get('ordner')}' konfiguriert — Manifest aktualisiert")
+            log.info("Sanitize: Dokumenttyp '%s' bekannt aber nicht im Manifest für '%s' → behalten + Manifest-Update",
+                     dt, decision.get("ordner"))
+            # Manifest-Lernvorschlag: Typ zum Ordner ergänzen
+            try:
+                _manifest_path = MANIFEST_PATH
+                if _manifest_path.exists():
+                    _mdata = json.loads(_manifest_path.read_text(encoding="utf-8"))
+                    for _entry in _mdata.get("ordner", []):
+                        if _entry.get("pfad") == decision.get("ordner"):
+                            _existing = _entry.get("erlaubte_dokumenttypen", [])
+                            if dt not in _existing:
+                                _existing.append(dt)
+                                _entry["erlaubte_dokumenttypen"] = _existing
+                                _manifest_path.write_text(
+                                    json.dumps(_mdata, ensure_ascii=False, indent=2),
+                                    encoding="utf-8"
+                                )
+                                log.info("Manifest-Lernvorschlag: '%s' zu Ordner '%s' hinzugefügt",
+                                         dt, decision.get("ordner"))
+                            break
+            except Exception as _me:
+                log.warning("Manifest-Update fehlgeschlagen: %s", _me)
+        else:
+            # Typ komplett unbekannt → sinnvollster Fallback ist leer (kein Typ)
+            # statt alphabetisch erstem Typ
+            violations.append(f"Dokumenttyp '{dt}' unbekannt — kein Fallback gesetzt")
+            log.warning("Sanitize: Dokumenttyp '%s' unbekannt — wird nicht gesetzt", dt)
+            decision["dokumenttyp_semantisch"] = ""
 
     # 5b. Ausschluss-Check: Dokumenttyp via Ausschluss-Keywords verwerfen
     # Läuft NACH Constraint-Check — verhindert dass ausgeschlossener Typ gesetzt wird
