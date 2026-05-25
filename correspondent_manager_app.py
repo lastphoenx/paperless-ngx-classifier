@@ -52,15 +52,23 @@ PAPERLESS_HEADERS = {
     "Authorization": f"Token {PAPERLESS_API_TOKEN}",
     "Content-Type": "application/json",
 }
-PAPERLESS_OWNER_ID     = int(os.environ.get("PAPERLESS_OWNER_ID", "3"))
+PAPERLESS_OWNER_ID     = int(os.environ.get("PAPERLESS_OWNER_ID", "3"))  # deprecated — wird nicht verwendet, siehe _default_permissions()
 _PERM_VIEW_GROUP_IDS   = [int(g) for g in os.environ.get("PAPERLESS_VIEW_GROUP_IDS",  "1,2").split(",") if g.strip().isdigit()]
 _PERM_CHANGE_GROUP_IDS = [int(g) for g in os.environ.get("PAPERLESS_CHANGE_GROUP_IDS", "2").split(",") if g.strip().isdigit()]
 
 
 def _default_permissions() -> dict:
-    """Zentrale Permissions — einzige Stelle wo Gruppen-IDs gesetzt werden.
-    WICHTIG: owner wird NICHT gesetzt (null) — nur Gruppen.
-    owner gesetzt = andere Benutzer sehen das Objekt nicht.
+    """
+    Zentrale Permissions — EINZIGE Stelle für Berechtigungen.
+
+    REGEL (nie ändern):
+      owner = null (kein Owner — sonst sehen andere Benutzer das Objekt nicht)
+      view  = family + Eltern (IDs aus PAPERLESS_VIEW_GROUP_IDS)
+      change = Eltern (IDs aus PAPERLESS_CHANGE_GROUP_IDS)
+
+    PAPERLESS_OWNER_ID in .env wird bewusst NICHT verwendet:
+      Owner-Konzept ist für Mehrbenutzer-Haushalt ungeeignet.
+      Gruppen-Permissions reichen vollständig.
     """
     return {
         "set_permissions": {
