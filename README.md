@@ -33,12 +33,13 @@ pre_consume_qr.py     — Swiss QR-Bill parsing (IBAN, amount, reference, due da
 post_consume.py       — Main pipeline (runs after every successful scan)
   ├─ Vision LLM       — Analyses document as image: sender, date, amount,
   │                     licence plate, handwritten notes ("bez. 6.2.26" → paid)
+  │                     household context injected: members (never senders) + employers
   ├─ RAG              — Embeddings (bge-m3) match document to known folders
   ├─ LLM              — Classifies document type, tags, storage path
   ├─ Sanitiser        — Validates against manifest, exclusion keywords;
   │                     known type not in folder manifest → auto-add + confidence mittel
-  ├─ Deterministic    — Licence plates from family.json bypass LLM entirely
-  │   routing           (faster + more reliable for known patterns)
+  ├─ Deterministic    — Licence plates + relationships (employer, bank, health insurer,
+  │   routing           doctor) from family.json bypass LLM entirely (~100% accurate)
   └─ Paperless API    — Patches correspondent, tags, path, custom fields
   ↓
 paper.manager         — Browser UI for reviewing uncertain documents,
@@ -81,7 +82,17 @@ Automatically extracts and populates:
 - Due date (`Fällig am`)
 
 ### Deterministic routing
-Configure vehicle licence plates in `family.json`. When the vision model spots `XX 000001` on a document, it goes directly to `Person/Auto` — no LLM call needed.
+Configure relationships in `family.json`: vehicle licence plates, employers, banks, health insurers, and doctors. When the vision model identifies a known sender, the document is routed directly — no LLM call needed.
+
+| Trigger | Condition | Routes to |
+|---|---|---|
+| Licence plate | Plate spotted in image | `Person/Auto` |
+| Employer | Sender = known employer of Person X | `Person/Work` |
+| Bank | Sender = known bank of Person X | `Person/Finances` |
+| Health insurer | Sender = known insurer of Person X | `Person/Health` |
+| Doctor | Sender = known doctor of Person X | `Person/Health` |
+
+Household member names and employer names are also injected into every Vision prompt so the model knows these are never the document sender.
 
 ### Custom fields — automatically filled
 
@@ -105,7 +116,7 @@ A single-page browser UI (no framework, no build step) for:
 - **Document types** — manage synonyms and exclusion keywords
 - **Tags** — manage exclusion keywords per tag
 - **Storage paths** — configure folders with allowed tags and document types
-- **Family config** — persons, vehicles, household name (no hardcoding in code)
+- **Family config** — persons, vehicles, relationships (employer, bank, health insurer, doctor), household name (no hardcoding in code)
 - **Version display** — shows active versions of all components in the sidebar
 
 ---
@@ -117,7 +128,7 @@ A single-page browser UI (no framework, no build step) for:
 | Sender detection | OCR text matching only | Vision + fuzzy matching + learning |
 | Document type | Manual or simple rules | LLM + synonym resolution + exclusions |
 | Handwriting | Not possible | Recognised and parsed |
-| Licence plate routing | Manual rule per plate | Configured in UI, deterministic |
+| Deterministic routing | Manual rule per document | Licence plates + relationships (employer/bank/doctor) — configured in UI, ~100% accurate |
 | Custom fields | Manual | Automatic (QR-Bill + Vision) |
 | Unknown senders | Silent failure | Review queue with suggested values |
 | Corrections | Lost | Feed back into next classification |
@@ -182,7 +193,7 @@ nano /opt/paperless/.env
 
 | File | Purpose |
 |---|---|
-| `family.json` | Household: persons and vehicles (basis for folder structure + deterministic routing) |
+| `family.json` | Household: persons, vehicles, and relationships — basis for folder structure, deterministic routing, and Vision prompt context |
 | `correspondents.json` | Known senders with fuzzy match rules and extraction patterns |
 | `document_types.json` | Document types with synonyms and exclusion keywords |
 | `manifest.json` | Storage folder structure with allowed tags and document types |

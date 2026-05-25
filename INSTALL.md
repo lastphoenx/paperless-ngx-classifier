@@ -185,7 +185,13 @@ nano /opt/paperless-scripts/training/family.json
       "ordner_prefix": "Person1"
     }
   ],
-  "fahrzeuge": []
+  "fahrzeuge": [],
+  "beziehungen": [
+    {"typ": "arbeitgeber", "korrespondent": "Firma AG",     "person": "person1", "ordner": "Person1/Arbeit"},
+    {"typ": "bank",        "korrespondent": "Musterbank",   "person": "person1", "ordner": "Person1/Finanzen"},
+    {"typ": "krankenkasse","korrespondent": "Musterkasse",  "person": "person1", "ordner": "Person1/Gesundheit"},
+    {"typ": "arzt",        "korrespondent": "Dr. Muster",   "person": "person1", "ordner": "Person1/Gesundheit"}
+  ]
 }
 ```
 
@@ -394,7 +400,7 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | Custom Fields werden nicht gesetzt | CF_*_ID falsch | IDs in Paperless Admin prüfen |
 | paper.manager nicht erreichbar | Service nicht gestartet | `systemctl status correspondent-manager` |
 | 401 bei API-Calls | PAPER_MANAGER_TOKEN nicht gesetzt | .env prüfen, Service neu starten |
-| Kennzeichen-Routing funktioniert nicht | family.json leer oder falsch | paper.manager → Familie → Fahrzeuge prüfen |
+| Routing funktioniert nicht (Kennzeichen/Arbeitgeber/Bank) | family.json leer oder Beziehung fehlt | paper.manager → Familie → Fahrzeuge / Beziehungen prüfen |
 | Permissions-Fehler auf Dokumenten | Gruppen-IDs falsch | PAPERLESS_VIEW_GROUP_IDS in .env |
 | Falscher Ordner trotz korrekter Vision | Paperless Classifier noch aktiv | Schritt 7b — alle 3 Objekttypen zurücksetzen |
 | Erster Scan mit unerwartetem Typ, danach korrekt | Typ neu für diesen Ordner → Manifest automatisch ergänzt (Self-healing) | Erwartet — kein Handlungsbedarf |
@@ -405,7 +411,7 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 ## Erste Schritte nach Installation
 
 1. **paper.manager öffnen** → `http://SERVER_IP:8100`
-2. **Familie konfigurieren** → Tab «Familie» → Haushalt + Personen + Fahrzeuge
+2. **Familie konfigurieren** → Tab «Familie» → Haushalt + Personen + Fahrzeuge + Beziehungen
 3. **Ersten Scan** machen → QS-Modus EIN für vollständige Prüfung
 4. **Korrespondenten Review** → neue Absender freigeben
 5. **Manifest** → pending-Ordner ergänzen
