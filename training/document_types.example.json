@@ -1,0 +1,141 @@
+{
+  "version": "1.0",
+  "beschreibung": "Dokumenttypen mit Synonymen und Ausschluss-Keywords. Name und alle Synonyme müssen global unique sein. Ausschluss-Keywords sind nicht unique. Pflegbar via paper.manager → Dokumenttypen.",
+  "typen": [
+    {
+      "name": "Rechnung",
+      "synonyme": [
+        "Faktura",
+        "Zahlungsaufforderung",
+        "Invoice"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Allgemeine Rechnung ohne spezifische Kategorie",
+      "_paperless_id": null
+    },
+    {
+      "name": "Servicerechnung",
+      "synonyme": [
+        "Werkstattrechnung",
+        "Servicebericht mit Rechnung",
+        "Wartungsrechnung"
+      ],
+      "ausschliessen": [
+        "Strassenverkehrsamt",
+        "Verkehrssteuer"
+      ],
+      "beschreibung": "Rechnung für Service/Wartung (Auto, Geräte) — nicht für Behördenpost",
+      "_paperless_id": null
+    },
+    {
+      "name": "Lohnabrechnung",
+      "synonyme": [
+        "Gehaltsabrechnung",
+        "Salärausweis",
+        "Monatslohn"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Monatliche Lohnabrechnung des Arbeitgebers",
+      "_paperless_id": null
+    },
+    {
+      "name": "Lohnausweis",
+      "synonyme": [
+        "Jahreslohnausweis"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Jährlicher Lohnausweis vom Arbeitgeber (steuerrelevant)",
+      "_paperless_id": null
+    },
+    {
+      "name": "Versicherungsabrechnung",
+      "synonyme": [
+        "Prämienrechnung",
+        "Versicherungsprämie",
+        "Prämienabrechnung"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Prämienrechnung oder Abrechnung einer Versicherung",
+      "_paperless_id": null
+    },
+    {
+      "name": "Police",
+      "synonyme": [
+        "Versicherungspolice",
+        "Versicherungsvertrag",
+        "Versicherungsschein"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Versicherungspolice oder -vertrag",
+      "_paperless_id": null
+    },
+    {
+      "name": "Vertrag",
+      "synonyme": [
+        "Vereinbarung",
+        "Kontrakt",
+        "Dienstleistungsvertrag",
+        "Kaufvertrag"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Allgemeiner Vertrag",
+      "_paperless_id": null
+    },
+    {
+      "name": "Korrespondenz",
+      "synonyme": [
+        "Brief",
+        "Schreiben",
+        "Mitteilung",
+        "Bestätigung"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Allgemeiner Brief oder Korrespondenz",
+      "_paperless_id": null
+    },
+    {
+      "name": "Behördenpost",
+      "synonyme": [
+        "Amtsschreiben",
+        "Behördenschreiben",
+        "Amtliche Mitteilung"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Post von Behörden",
+      "_paperless_id": null
+    },
+    {
+      "name": "Verfügung",
+      "synonyme": [
+        "Entscheid",
+        "Beschluss",
+        "Verwaltungsentscheid"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Behördliche Verfügung oder Entscheid",
+      "_paperless_id": null
+    },
+    {
+      "name": "Betriebsanleitung",
+      "synonyme": [
+        "Bedienungsanleitung",
+        "Handbuch",
+        "Manual",
+        "Gebrauchsanweisung"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Bedienungsanleitung oder Handbuch für ein Gerät",
+      "_paperless_id": null
+    },
+    {
+      "name": "Garantieschein",
+      "synonyme": [
+        "Garantiebeleg",
+        "Garantieurkunde"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Garantieschein für ein Gerät oder Produkt",
+      "_paperless_id": null
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "version": "1.0",
+  "beschreibung": "Ordner-Konfiguration für die Klassifizierungs-Pipeline. Erlaubte Tags sind Vorschläge für die KI, keine Verbote. Pflegbar via paper.manager → Manifest.",
+  "ordner": [
+    {
+      "pfad": "Familie/Versicherung",
+      "beschreibung": "Versicherungsdokumente für den gesamten Haushalt",
+      "abgrenzung": "Nur Versicherungsunterlagen, keine Rechnungen für Reparaturen",
+      "erlaubte_tags": ["Versicherung", "Familie", "Rechnung"],
+      "verbotene_tags": [],
+      "erlaubte_dokumenttypen": ["Versicherungsabrechnung", "Police", "Korrespondenz"],
+      "max_tags": 4,
+      "pending": false
+    },
+    {
+      "pfad": "Familie/Versicherung/Policen",
+      "beschreibung": "Versicherungspolicen und -verträge",
+      "abgrenzung": "Nur Policen und Verträge, keine Abrechnungen",
+      "erlaubte_tags": ["Versicherung", "Familie"],
+      "verbotene_tags": [],
+      "erlaubte_dokumenttypen": ["Police", "Vertrag"],
+      "max_tags": 3,
+      "pending": false
+    },
+    {
+      "pfad": "Person1/Arbeit",
+      "beschreibung": "Arbeitsbezogene Dokumente für Person1",
+      "abgrenzung": "Lohnabrechnungen, Lohnausweise, Arbeitsverträge",
+      "erlaubte_tags": ["Arbeit", "Lohn"],
+      "verbotene_tags": [],
+      "erlaubte_dokumenttypen": ["Lohnabrechnung", "Lohnausweis", "Vertrag", "Korrespondenz"],
+      "max_tags": 4,
+      "pending": false
+    },
+    {
+      "pfad": "Person1/Steuern",
+      "beschreibung": "Steuerdokumente für Person1",
+      "abgrenzung": "Steuererklärungen, Steuerrechnungen, Lohnausweise (steuerrelevant)",
+      "erlaubte_tags": ["Steuern", "Behörde"],
+      "verbotene_tags": [],
+      "erlaubte_dokumenttypen": ["Lohnausweis", "Korrespondenz", "Rechnung", "Verfügung"],
+      "max_tags": 3,
+      "pending": false
+    },
+    {
+      "pfad": "Person1/Auto",
+      "beschreibung": "Fahrzeugdokumente für Person1",
+      "abgrenzung": "Verkehrssteuer, Fahrzeugversicherung, Service/Reparatur",
+      "erlaubte_tags": ["Auto", "Rechnung"],
+      "verbotene_tags": [],
+      "erlaubte_dokumenttypen": ["Rechnung", "Servicerechnung", "Versicherungsabrechnung", "Behördenpost"],
+      "max_tags": 4,
+      "pending": false
+    },
+    {
+      "pfad": "Person2/Auto",
+      "beschreibung": "Fahrzeugdokumente für Person2",
+      "abgrenzung": "Verkehrssteuer, Fahrzeugversicherung, Service/Reparatur",
+      "erlaubte_tags": ["Auto", "Rechnung"],
+      "verbotene_tags": [],
+      "erlaubte_dokumenttypen": ["Rechnung", "Servicerechnung", "Versicherungsabrechnung", "Behördenpost"],
+      "max_tags": 4,
+      "pending": false
+    },
+    {
+      "pfad": "Familie/Behörde",
+      "beschreibung": "Behördenpost für den Haushalt",
+      "abgrenzung": "Gemeinde, Kanton, Bund — allgemeine Behördenkorrespondenz",
+      "erlaubte_tags": ["Behörde", "Familie"],
+      "verbotene_tags": [],
+      "erlaubte_dokumenttypen": ["Behördenpost", "Verfügung", "Korrespondenz"],
+      "max_tags": 3,
+      "pending": false
+    },
+    {
+      "pfad": "Familie/Sonstiges",
+      "beschreibung": "Fallback-Ordner für nicht klassifizierbare Dokumente",
+      "abgrenzung": "Nur wenn kein anderer Ordner passt",
+      "erlaubte_tags": [],
+      "verbotene_tags": [],
+      "erlaubte_dokumenttypen": [],
+      "max_tags": 4,
+      "pending": false
+    }
+  ]
+}

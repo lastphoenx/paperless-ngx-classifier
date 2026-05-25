@@ -1,0 +1,22 @@
+# Produktive Konfiguration — niemals committen
+.env
+
+# Echte Trainingsdaten (personenbezogen) — *.example.* bleiben im Repo
+training/*.json
+!training/*.example.json
+training/*.jsonl
+!training/*.example.jsonl
+training/*.lock
+training/*.back
+training/samples/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Logs
+*.log
+logs/

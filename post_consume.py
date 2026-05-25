@@ -1,0 +1,2727 @@
+#!/usr/bin/env python3
+"""
+post_consume_v12.py — Paperless-NGX Post-Consume Pipeline v12
+Architektur:
+  1. ocrmypdf         → bereits via pre_consume.sh erledigt
+  2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
+  3. bge-m3           → Embeddings auf OCR-Text → Top-K ähnlichste Manifest-Einträge
+  4. llama3.3:70b     → Entscheidung: Tags + Korrespondent + Storage Path
+  5. Paperless API    → Metadaten setzen
+
+Umgebungsvariablen (.env):
+  PAPERLESS_URL           http://localhost:8000
+  PAPERLESS_TOKEN         <token>           (gleich wie in v10)
+  OLLAMA_BASE_URL         http://localhost:11434
+  OLLAMA_MODEL_VISION     mistral-small3.1  (oder qwen2.5vl:32b)
+  MANIFEST_PATH           /opt/paperless-scripts/training/manifest.json
+  CORRECTIONS_PATH        /opt/paperless-scripts/training/corrections.jsonl
+  LOG_PATH                /opt/paperless-scripts/logs/post_consume_v11.log
+  RAG_TOP_K               5
+  VISION_TIMEOUT          120
+  LLM_TIMEOUT             180
+  PAPERLESS_STORAGE_MODE  api  (api oder copy)
+"""
+
+import os
+
+POST_CONSUME_VERSION = "12.3"  # 12.3: CF12 Bezahlt am, CF13 Gescannt am, Tag+Doctype Ausschluss, EZ-Fix
+import sys
+import json
+import logging
+import time
+import base64
+import subprocess
+import tempfile
+import traceback
+from pathlib import Path
+from typing import Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# ─── Konfiguration ────────────────────────────────────────────────────────────
+
+PAPERLESS_URL     = os.environ.get("PAPERLESS_INTERNAL_URL", "http://localhost:8000")
+PAPERLESS_TOKEN   = os.environ.get("PAPERLESS_TOKEN", "")           # gleich wie v10
+OLLAMA_BASE       = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+MANIFEST_PATH     = Path(os.environ.get("MANIFEST_PATH", "/opt/paperless-scripts/training/manifest.json"))
+CORRECTIONS_PATH  = Path(os.environ.get("CORRECTIONS_PATH", "/opt/paperless-scripts/training/corrections.jsonl"))
+ESCALATION_QUEUE  = Path(os.environ.get("ESCALATION_QUEUE", "/opt/paperless-scripts/training/escalation_queue.jsonl"))
+DOCUMENT_REVIEW_QUEUE = Path(os.environ.get("DOCUMENT_REVIEW_QUEUE", "/opt/paperless-scripts/training/document_review_queue.jsonl"))
+DOCUMENT_TYPES_JSON = Path(os.environ.get("DOCUMENT_TYPES_JSON", "/opt/paperless-scripts/training/document_types.json"))
+TAGS_JSON           = Path(os.environ.get("TAGS_JSON",           "/opt/paperless-scripts/training/tags.json"))
+FAMILY_JSON         = Path(os.environ.get("FAMILY_JSON",         "/opt/paperless-scripts/training/family.json"))
+
+# ── Family-Config Cache ───────────────────────────────────────────────────────
+_FAMILY_DATA:   dict | None = None
+
+def _load_family() -> dict:
+    """family.json laden — cached. Gibt leeres Dict bei Fehler."""
+    global _FAMILY_DATA
+    if _FAMILY_DATA is not None:
+        return _FAMILY_DATA
+    try:
+        if FAMILY_JSON.exists():
+            _FAMILY_DATA = json.loads(FAMILY_JSON.read_text(encoding="utf-8"))
+            log.info("family.json geladen: %d Personen, %d Fahrzeuge",
+                     len(_FAMILY_DATA.get("personen", [])),
+                     len(_FAMILY_DATA.get("fahrzeuge", [])))
+        else:
+            _FAMILY_DATA = {}
+    except Exception as e:
+        log.warning("family.json laden fehlgeschlagen: %s", e)
+        _FAMILY_DATA = {}
+    return _FAMILY_DATA
+
+
+def _get_haushalt_name() -> str:
+    """Haushalts-Name aus family.json für LLM-Prompt."""
+    return _load_family().get("haushalt", {}).get("name", "Haushalt")
+
+
+def _build_kennzeichen_map() -> dict[str, dict]:
+    """Kennzeichen → {ordner, person_id} Map aus family.json.
+    Normalisiert: Leerzeichen entfernt, Grossbuchstaben.
+    """
+    result = {}
+    for fz in _load_family().get("fahrzeuge", []):
+        kz = fz.get("kennzeichen", "").replace(" ", "").upper()
+        if kz:
+            result[kz] = {
+                "ordner":    fz.get("ordner", ""),
+                "person_id": fz.get("person_id", ""),
+                "kennzeichen_display": fz.get("kennzeichen", kz),
+            }
+    return result
+
+# ── Tag-Ausschluss-Cache ──────────────────────────────────────────────────────
+_TAG_AUSSCHLUSS_MAP:    dict[str, list[str]] = {}
+_TAG_AUSSCHLUSS_LOADED: bool = False
+
+
+def _load_tag_ausschluss_map() -> None:
+    global _TAG_AUSSCHLUSS_LOADED
+    if _TAG_AUSSCHLUSS_LOADED:
+        return
+    try:
+        if TAGS_JSON.exists():
+            data = json.loads(TAGS_JSON.read_text(encoding="utf-8"))
+            for t in data.get("tags", []):
+                kws = [k.lower() for k in t.get("ausschliessen", []) if k]
+                if kws:
+                    _TAG_AUSSCHLUSS_MAP[t["name"].lower()] = kws
+        _TAG_AUSSCHLUSS_LOADED = True
+        if _TAG_AUSSCHLUSS_MAP:
+            log.info("Tag-Ausschluss-Map: %d Tags mit Keywords geladen", len(_TAG_AUSSCHLUSS_MAP))
+    except Exception as e:
+        log.warning("Tag-Ausschluss-Map laden fehlgeschlagen: %s", e)
+
+
+def _filter_excluded_tags(tags: list[str], ocr_text: str, vision_meta: dict) -> list[str]:
+    """Entfernt Tags deren Ausschluss-Keywords im Dokument vorkommen."""
+    _load_tag_ausschluss_map()
+    if not _TAG_AUSSCHLUSS_MAP:
+        return tags
+    search_text = " ".join(filter(None, [
+        ocr_text[:2000] if ocr_text else "",
+        str(vision_meta.get("absender") or "") if vision_meta else "",
+        str(vision_meta.get("dokumenttyp_visuell") or "") if vision_meta else "",
+    ])).lower()
+    filtered, removed = [], []
+    for tag in tags:
+        kws = _TAG_AUSSCHLUSS_MAP.get(tag.lower(), [])
+        hit = next((k for k in kws if k in search_text), None)
+        if hit:
+            removed.append(f"{tag}('{hit}')")
+        else:
+            filtered.append(tag)
+    if removed:
+        log.info("Tag-Ausschluss: entfernt %s", ", ".join(removed))
+    return filtered
+
+# ── Custom Field IDs (in Paperless angelegt) ──────────────────────────────────
+# Überschreibbar via .env falls IDs sich ändern
+CF_BETRAG          = int(os.environ.get("CF_BETRAG_ID",          "1"))
+CF_RECHNUNGSNUMMER = int(os.environ.get("CF_RECHNUNGSNUMMER_ID", "5"))
+CF_KUNDENNUMMER    = int(os.environ.get("CF_KUNDENNUMMER_ID",    "6"))
+CF_QR_REFERENZ     = int(os.environ.get("CF_QR_REFERENZ_ID",     "7"))
+CF_FAELLIG_AM      = int(os.environ.get("CF_FAELLIG_AM_ID",      "8"))
+CF_STATUS          = int(os.environ.get("CF_STATUS_ID",          "9"))
+CF_POLICENNUMMER   = int(os.environ.get("CF_POLICENNUMMER_ID",   "10"))
+CF_KENNZEICHEN     = int(os.environ.get("CF_KENNZEICHEN_ID",     "11"))
+CF_BEZAHLT_AM      = int(os.environ.get("CF_BEZAHLT_AM_ID",      "12"))
+CF_GESCANNT_AM     = int(os.environ.get("CF_GESCANNT_AM_ID",     "13"))
+LOG_PATH          = Path(os.environ.get("LOG_PATH", "/opt/paperless-scripts/logs/post_consume_v11.log"))
+RAG_TOP_K         = int(os.environ.get("RAG_TOP_K", "5"))
+VISION_TIMEOUT    = int(os.environ.get("VISION_TIMEOUT", "120"))
+LLM_TIMEOUT       = int(os.environ.get("LLM_TIMEOUT", "300"))
+STORAGE_MODE      = os.environ.get("PAPERLESS_STORAGE_MODE", "api").lower()
+
+SAMPLE_MAX_PER_FOLDER = int(os.environ.get("SAMPLE_MAX_PER_FOLDER", "10"))
+SAMPLES_BASE = MANIFEST_PATH.parent / "samples"
+
+MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
+MODEL_EMBED  = "bge-m3"
+MODEL_LLM    = os.environ.get("OLLAMA_MODEL_LLM", "llama3.3:70b")
+
+MEDIA_ROOT = "/usr/src/paperless/media"
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_PATH),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+log = logging.getLogger("post_consume_v12")
+
+# ─── Paperless ENV ────────────────────────────────────────────────────────────
+
+DOCUMENT_ID       = os.environ.get("DOCUMENT_ID", "")
+DOCUMENT_FILE_NAME = os.environ.get("DOCUMENT_FILE_NAME", "unbekannt.pdf")
+DOCUMENT_SOURCE_PATH = os.environ.get("DOCUMENT_SOURCE_PATH", "")
+
+# ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
+
+def _headers() -> dict:
+    return {"Authorization": f"Token {PAPERLESS_TOKEN}", "Content-Type": "application/json"}
+
+
+def _make_retry_session(
+    retries: int = 3,
+    backoff_factor: float = 0.5,
+    status_forcelist: tuple = (500, 502, 503, 504),
+) -> requests.Session:
+    """HTTP-Session mit automatischem Retry + Exponential Backoff.
+    Retries bei transienten Fehlern (5xx, Connection-Fehler).
+    Kein Retry bei 4xx (Client-Fehler) — die sind deterministisch.
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+        allowed_methods={"GET", "POST", "PATCH", "PUT"},
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+# Globale Session — wird für alle Paperless API-Calls wiederverwendet
+_http = _make_retry_session()
+
+
+def paperless_get(endpoint: str) -> dict:
+    r = _http.get(f"{PAPERLESS_URL}/api/{endpoint}", headers=_headers(), timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def paperless_patch(document_id: int, payload: dict) -> bool:
+    r = _http.patch(
+        f"{PAPERLESS_URL}/api/documents/{document_id}/",
+        json=payload,
+        headers=_headers(),
+        timeout=30,
+    )
+    if not r.ok:
+        log.error("PATCH /api/documents/%s → %s %s", document_id, r.status_code, r.text[:300])
+        return False
+    return True
+
+
+# Ollama-Session ohne Retry — LLM-Calls sind idempotent aber langsam
+# Retry würde bei Timeout die Laufzeit verdoppeln
+_ollama_session = requests.Session()
+
+
+def ollama_post(endpoint: str, payload: dict, timeout: int) -> dict:
+    r = _ollama_session.post(f"{OLLAMA_BASE}/{endpoint}", json=payload, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def pdf_to_base64_image(pdf_path: str) -> Optional[str]:
+    """Erste Seite via ghostscript → JPEG → base64. Gleiche Methode wie v10."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+        subprocess.run([
+            "gs", "-dNOPAUSE", "-dBATCH", "-sDEVICE=jpeg",
+            "-dFirstPage=1", "-dLastPage=1", "-r150",
+            f"-sOutputFile={tmp_path}", pdf_path
+        ], capture_output=True, check=True)
+        with open(tmp_path, "rb") as f:
+            data = base64.b64encode(f.read()).decode()
+        os.unlink(tmp_path)
+        return data
+    except Exception as e:
+        log.warning("pdf_to_base64_image fehlgeschlagen: %s", e)
+        return None
+
+
+def find_pdf(doc_id: str) -> Optional[str]:
+    """PDF-Pfad ermitteln.
+    Paperless speichert intern immer als 7-stellige ID flach in originals/.
+    Kein glob — deterministisch, O(1).
+    """
+    # 1. DOCUMENT_SOURCE_PATH (direkt von Paperless übergeben — zuverlässigste Quelle)
+    if DOCUMENT_SOURCE_PATH and Path(DOCUMENT_SOURCE_PATH).exists():
+        return DOCUMENT_SOURCE_PATH
+
+    doc_id_padded = str(doc_id).zfill(7)
+
+    # 2. Interner Originals-Pfad (flach, immer so bei Paperless)
+    originals = Path(MEDIA_ROOT) / "documents" / "originals" / f"{doc_id_padded}.pdf"
+    if originals.exists():
+        return str(originals)
+
+    # 3. Archiv-Kopie (falls Paperless archiviert hat)
+    archive = Path(MEDIA_ROOT) / "documents" / "archive" / f"{doc_id_padded}.pdf"
+    if archive.exists():
+        return str(archive)
+
+    log.warning("PDF für Dok #%s nicht gefunden (gesucht: %s)", doc_id, originals)
+    return None
+
+
+# ─── Manifest laden ───────────────────────────────────────────────────────────
+
+def load_manifest() -> list[dict]:
+    if not MANIFEST_PATH.exists():
+        log.warning("manifest.json nicht gefunden: %s", MANIFEST_PATH)
+        return []
+    with open(MANIFEST_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    # Manifest ist Dict mit "ordner"-Key
+    if isinstance(data, dict):
+        entries = data.get("ordner", [])
+    elif isinstance(data, list):
+        entries = data
+    else:
+        return []
+    log.info("Manifest geladen: %d Einträge", len(entries))
+    return entries
+
+
+def load_corrections() -> list[dict]:
+    if not CORRECTIONS_PATH.exists():
+        return []
+    corrections = []
+    with open(CORRECTIONS_PATH, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    corrections.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    return corrections
+
+
+# ─── RAG: bge-m3 Embeddings ───────────────────────────────────────────────────
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def get_embedding(text: str) -> Optional[list[float]]:
+    try:
+        resp = ollama_post(
+            "api/embeddings",
+            {"model": MODEL_EMBED, "prompt": text[:4096]},
+            timeout=60,
+        )
+        return resp.get("embedding")
+    except Exception as e:
+        log.warning("bge-m3 Embedding fehlgeschlagen: %s", e)
+        return None
+
+
+def manifest_entry_to_corpus(entry: dict) -> str:
+    """
+    Baut einen repräsentativen Text aus einem Manifest-Eintrag.
+    Nutzt die tatsächliche Struktur von manifest.json v1.1:
+      - pfad (NICHT ordner!)
+      - beschreibung
+      - erkennungsmerkmale: visuell, layout_hinweis, bereich_absender,
+                            bereich_inhalt, bereich_empfaenger, kennzeichen,
+                            schweiz_spezifisch
+      - dokumenttyp: primär, auch
+      - abgrenzung
+    """
+    erk = entry.get("erkennungsmerkmale", {})
+
+    # Alle erkennungsmerkmale-Felder zusammenführen
+    visuell       = erk.get("visuell", "")
+    layout        = erk.get("layout_hinweis", "")
+    absender      = erk.get("bereich_absender", "")
+    inhalt        = erk.get("bereich_inhalt", "")
+    empfaenger    = erk.get("bereich_empfaenger", "")
+    kennzeichen   = erk.get("kennzeichen", "")
+    ch_spezifisch = erk.get("schweiz_spezifisch", "")
+    fahrzeug      = erk.get("fahrzeug", "")
+
+    # Listen zu Strings
+    def to_str(v):
+        if isinstance(v, list):
+            return " ".join(v)
+        return str(v) if v else ""
+
+    # Dokumenttyp
+    doctyp = entry.get("dokumenttyp", {})
+    if isinstance(doctyp, dict):
+        primaer = doctyp.get("primär", "")
+        auch    = " ".join(doctyp.get("auch", []))
+    else:
+        primaer = str(doctyp)
+        auch    = ""
+
+    corpus = " ".join(filter(None, [
+        entry.get("pfad", ""),           # PFAD (nicht ordner)
+        entry.get("beschreibung", ""),
+        to_str(visuell),
+        to_str(layout),
+        to_str(absender),
+        to_str(inhalt),
+        to_str(empfaenger),
+        to_str(kennzeichen),
+        to_str(ch_spezifisch),
+        to_str(fahrzeug),
+        primaer,
+        auch,
+        to_str(entry.get("abgrenzung", "")),
+    ]))
+    return corpus.strip()
+
+
+EMBEDDING_CACHE_PATH = MANIFEST_PATH.parent / "manifest_embeddings.json"
+
+
+def _manifest_hash(manifest: list[dict]) -> str:
+    """SHA256 des Manifest-Inhalts für Cache-Validierung."""
+    import hashlib
+    content = json.dumps(manifest, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def load_or_build_manifest_embeddings(manifest: list[dict]) -> dict[str, list[float]]:
+    """
+    Lädt Manifest-Embeddings aus Cache oder berechnet sie neu.
+    Cache wird invalidiert wenn manifest.json Inhalt sich geändert hat (Hash).
+    """
+    current_hash = _manifest_hash(manifest)
+    cache_data: dict = {}
+
+    # Cache laden falls vorhanden
+    if EMBEDDING_CACHE_PATH.exists():
+        try:
+            with open(EMBEDDING_CACHE_PATH, encoding="utf-8") as f:
+                cache_data = json.load(f)
+            cached_hash = cache_data.get("manifest_hash", "")
+            if cached_hash == current_hash:
+                embeddings = cache_data.get("embeddings", {})
+                log.info("Manifest-Embedding-Cache gültig: %d Einträge (hash=%s)", len(embeddings), current_hash)
+                return embeddings
+            else:
+                log.info("Manifest geändert (hash %s → %s) — Cache neu berechnen", cached_hash, current_hash)
+        except Exception as e:
+            log.warning("Cache laden fehlgeschlagen: %s — neu berechnen", e)
+
+    # Neu berechnen
+    log.info("Berechne Manifest-Embeddings (%d Einträge) ...", len(manifest))
+    embeddings: dict[str, list[float]] = {}
+    for entry in manifest:
+        pfad   = entry.get("pfad", "")
+        if not pfad:
+            continue
+        corpus = manifest_entry_to_corpus(entry)
+        emb    = get_embedding(corpus)
+        if emb:
+            embeddings[pfad] = emb
+        else:
+            log.warning("Kein Embedding für '%s'", pfad)
+
+    # Cache speichern
+    try:
+        with open(EMBEDDING_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(
+                {"manifest_hash": current_hash, "embeddings": embeddings},
+                f,
+                ensure_ascii=False,
+            )
+        log.info("Manifest-Embedding-Cache gespeichert: %d Einträge (hash=%s)", len(embeddings), current_hash)
+    except Exception as e:
+        log.warning("Cache speichern fehlgeschlagen: %s", e)
+
+    return embeddings
+
+
+def find_similar_manifest_entries(
+    text: str,
+    manifest: list[dict],
+    manifest_embeddings: dict[str, list[float]],
+    top_k: int,
+) -> list[dict]:
+    if not manifest:
+        return []
+
+    query_emb = get_embedding(text)
+    if query_emb is None:
+        log.warning("Kein Query-Embedding — RAG Fallback: erste %d Einträge", top_k)
+        return manifest[:top_k]
+
+    # Index: pfad → entry
+    entry_map = {e.get("pfad", ""): e for e in manifest}
+
+    scored = []
+    for pfad, entry_emb in manifest_embeddings.items():
+        entry = entry_map.get(pfad)
+        if entry is None:
+            continue
+        sim = cosine_similarity(query_emb, entry_emb)
+        scored.append((sim, entry))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    log.info(
+        "RAG Top-%d: %s",
+        top_k,
+        [(round(s, 3), e.get("pfad", "?")) for s, e in scored[:top_k]]
+    )
+    return [e for _, e in scored[:top_k]]
+
+
+def _find_json_object(text: str) -> str:
+    """
+    Findet das erste vollständige JSON-Objekt via Brace-Counter.
+    Korrekt bei nested JSON — Regex ist es nicht.
+    """
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                return text[start:i + 1]
+    return ""
+
+
+def extract_json_from_response(raw: str) -> dict:
+    """Robustes JSON-Parsing — toleriert Markdown, Reasoning-Text, nested JSON."""
+    import re
+    raw = raw.strip()
+    # Thinking-Tags entfernen (qwen3 reasoning)
+    raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+    # 1. Direkt als JSON parsen (bester Fall)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # 2. Markdown-Block entfernen und erneut versuchen
+    md_match = re.search(r'```(?:json)?\s*(.+?)\s*```', raw, re.DOTALL)
+    if md_match:
+        try:
+            return json.loads(md_match.group(1))
+        except json.JSONDecodeError:
+            pass
+    # 3. Brace-Counter — findet erstes vollständiges JSON-Objekt
+    candidate = _find_json_object(raw)
+    if candidate:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+    log.warning("JSON-Extraktion fehlgeschlagen. Raw: %s", raw[:200])
+    return {}
+
+
+def normalize_decision_keys(d: dict) -> dict:
+    """
+    Normalisiert JSON-Keys auf Kleinschreibung.
+    llama3:8b liefert manchmal 'Ordner' statt 'ordner', 'Tags' statt 'tags'.
+    """
+    KEY_MAP = {
+        "ordner":                 ["ordner", "Ordner", "folder"],
+        "tags":                   ["tags", "Tags"],
+        "korrespondent":          ["korrespondent", "Korrespondent", "absender"],
+        "titel":                  ["titel", "Titel", "title"],
+        "datum":                  ["datum", "Datum", "date"],
+        "betrag":                 ["betrag", "Betrag", "amount"],
+        "dokumenttyp_semantisch": ["dokumenttyp_semantisch", "dokumenttyp", "Dokumenttyp", "type"],
+        "confidence":             ["confidence", "Confidence"],
+        "begruendung":            ["begruendung", "Begründung", "reason"],
+    }
+    result = {}
+    for canonical, variants in KEY_MAP.items():
+        for v in variants:
+            if v in d:
+                result[canonical] = d[v]
+                break
+    return result
+
+
+VISION_SYSTEM = "Du bist ein JSON-Extraktor für Schweizer Dokumente. Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt. Kein Text davor oder danach. Kein Markdown."
+
+
+def vision_analyze(image_b64: Optional[str], ocr_text: str) -> dict:
+    """Vision-LLM Analyse — Ollama natives Format (images-Array, nicht image_url)."""
+    user_content = (
+        f"Extrahiere aus diesem Schweizer Dokument folgende Felder als JSON.\n"
+        f"Achte besonders auf handschriftliche Notizen oben rechts am Rand "
+        f"(meist ein Bezahlt-Vermerk wie 'bez. 6.2.26' oder 'bez 26.3.26' oder 'EZ 26.3.26').\n\n"
+        f'{{"absender": "Firmenname oder Behörde nicht Empfänger", '
+        f'"empfaenger": "Name des Empfängers", '
+        f'"datum": "Datum des Dokuments als JJJJ-MM-TT oder null", '
+        f'"betrag": "CHF XX.XX oder null", '
+        f'"kennzeichen": "Fahrzeugkennzeichen z.B. AG 239878 oder null", '
+        f'"dokumenttyp_visuell": "z.B. Rechnung/Lohnabrechnung/Verfügung", '
+        f'"layout": "Beschreibung des Layouts", '
+        f'"logo_vorhanden": true/false, '
+        f'"tabellen_vorhanden": true/false, '
+        f'"qr_einzahlungsschein": true/false, '
+        f'"sprache": "de/fr/it/en", '
+        f'"handschrift": "handschriftliche Notiz exakt abschreiben z.B. bez. 6.2.26 — null wenn keine", '
+        f'"besonderheiten": "wichtige Zusatzinfos oder null"}}\n\n'
+        f"OCR-Text (Zusatzinfo):\n{ocr_text[:1500]}"
+    )
+
+    if image_b64:
+        messages = [{
+            "role": "user",
+            "content": user_content,
+            "images": [image_b64],
+        }]
+    else:
+        messages = [{
+            "role": "user",
+            "content": user_content,
+        }]
+
+    try:
+        resp = ollama_post(
+            "api/chat",
+            {
+                "model": MODEL_VISION,
+                "messages": messages,
+                "system": VISION_SYSTEM,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.1, "num_predict": 300},
+            },
+            timeout=VISION_TIMEOUT,
+        )
+        raw = resp.get("message", {}).get("content", "")
+        return extract_json_from_response(raw)
+    except Exception as e:
+        log.warning("Vision-LLM fehlgeschlagen: %s", e)
+        return {}
+
+
+def parse_handschrift_bezahlt(handschrift):
+    """Extrahiert Bezahlt-Datum aus handschriftlicher Notiz.
+    Erkennt: bez. 6.2.26, bez 26.3.2026, BEZ 6.2.26, bezahlt 6.2.26, bz. 6.2.26
+    NICHT erkannt: EZ (= Einzahlung, kein Bezahlt-Vermerk — False Positive vermeiden)
+    Gibt ISO-Datum zurück (YYYY-MM-DD) oder None.
+    """
+    if not handschrift:
+        return None
+    import re as _re
+    m = _re.search(
+        r'(?:bezahlt\s*|bez\.?\s*|bz\.?\s*)(\d{1,2})[.\s/](\d{1,2})[.\s/](\d{2,4})',
+        handschrift.lower()
+    )
+    if not m:
+        return None
+    day, month, year = m.group(1), m.group(2), m.group(3)
+    if len(year) == 2:
+        year = "20" + year
+    try:
+        import datetime as _dt
+        d = _dt.date(int(year), int(month), int(day))
+        return d.isoformat()
+    except ValueError:
+        return None
+
+
+# ─── Schritt 4: qwen3:32b Entscheidung ───────────────────────────────────────
+
+def build_constraints(similar_entries: list[dict], target_ordner: str = None) -> dict:
+    """
+    Berechnet Constraints aus:
+    1. Zielordner (primär) — wenn bekannt
+    2. Top-3 RAG-Nachbarn (sekundär) — nur als Ergänzung
+    3. tags_global (immer)
+    """
+    top3 = similar_entries[:3]
+    allowed_tags: set[str] = set()
+    allowed_dokumenttypen: set[str] = set()
+    verboten_tags: set[str] = set()
+
+    # tags_global immer laden
+    try:
+        manifest_root = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        for gruppe in manifest_root.get("tags_global", {}).values():
+            allowed_tags.update(gruppe)
+        # Wenn Zielordner bekannt: primär dessen Tags verwenden
+        if target_ordner:
+            for e in manifest_root.get("ordner", []):
+                if e.get("pfad") == target_ordner:
+                    allowed_tags.update(e.get("erlaubte_tags", []))
+                    allowed_dokumenttypen.update(e.get("erlaubte_dokumenttypen", []))
+                    verboten_tags.update(e.get("verbotene_tags", []))
+                    break
+    except Exception:
+        pass
+
+    # RAG-Nachbarn als Ergänzung (nicht als primäre Quelle)
+    for e in top3:
+        # Nur Tags hinzufügen die NICHT verboten sind
+        for t in e.get("erlaubte_tags", []):
+            if t not in verboten_tags:
+                allowed_tags.add(t)
+        allowed_dokumenttypen.update(e.get("erlaubte_dokumenttypen", []))
+        # Verbotene Tags aus Top-1 haben Vorrang
+    verboten_tags.update(top3[0].get("verbotene_tags", []) if top3 else [])
+
+    allowed_tags -= verboten_tags
+    max_tags = min((e.get("max_tags", 4) for e in top3), default=4)
+    return {
+        "allowed_tags": allowed_tags,
+        "verboten_tags": verboten_tags,
+        "allowed_dokumenttypen": allowed_dokumenttypen,
+        "max_tags": max_tags,
+    }
+
+
+def build_llm_prompt(
+    ocr_text: str,
+    vision_meta: dict,
+    similar_entries: list[dict],
+    manifest: list[dict],
+    corrections: list[dict],
+    filename: str,
+    constraints: dict,
+    corr_map: dict = None,
+) -> str:
+    """Optimierter Prompt — kompakt und fokussiert.
+
+    Optimierungen gegenüber Vorgänger:
+    - Ordnerliste: nur Top-5 RAG-Kandidaten + alle passenden Ordner
+      statt vollständige Liste (verhindert Aufmerksamkeitsverlust)
+    - OCR: 2000 statt 3000 Zeichen (erste 2000 enthalten fast immer Absender+Betreff)
+    - Vision: nur relevante Felder, kein JSON-Dump des ganzen Objekts
+    - Korrekturen: nur letzte 5 statt 8
+    - Struktur: Constraints direkt nach Vision (höhere Aufmerksamkeit am Anfang)
+    """
+    allowed_tags          = constraints["allowed_tags"]
+    verboten_tags         = constraints["verboten_tags"]
+    allowed_dokumenttypen = constraints["allowed_dokumenttypen"]
+    max_tags              = constraints["max_tags"]
+
+    # Ordnerliste: RAG-Kandidaten zuerst, dann Rest — kompakter als alle
+    rag_ordner   = [e.get("pfad", "?") for e in similar_entries]
+    alle_ordner  = [e.get("pfad", "?") for e in manifest]
+    # Top-Kandidaten + Rest (dedupliziert, Reihenfolge erhalten)
+    seen = set()
+    ordner_priorisiert = []
+    for o in rag_ordner + alle_ordner:
+        if o not in seen:
+            ordner_priorisiert.append(o)
+            seen.add(o)
+
+    # Vision: nur die wichtigsten Felder kompakt
+    vision_keys = ["absender", "empfaenger", "datum", "betrag", "kennzeichen",
+                   "dokumenttyp_visuell", "qr_einzahlungsschein", "sprache"]
+    vision_kompakt = {k: vision_meta.get(k) for k in vision_keys
+                      if vision_meta.get(k) and str(vision_meta.get(k)).lower()
+                      not in ("null", "none", "")}
+
+    # Kennzeichen-Override (deterministisch — vor LLM-Entscheidung)
+    kennzeichen = vision_meta.get("kennzeichen", "")
+    kennzeichen_hinweis = ""
+    if kennzeichen and str(kennzeichen).lower() not in ("null", "none", ""):
+        nkz = str(kennzeichen).upper().replace(" ", "")
+        kz_map = _build_kennzeichen_map()
+        if nkz in kz_map:
+            kennzeichen_hinweis = f"\n>>> KENNZEICHEN {kennzeichen} = ZWINGEND {kz_map[nkz]['ordner']} <<<"
+
+    # RAG-Kandidaten (kompakt)
+    similar_text = ""
+    for i, e in enumerate(similar_entries[:3], 1):  # max 3 statt 5
+        pfad   = e.get("pfad", "?")
+        erk    = e.get("erkennungsmerkmale", {})
+        abgr   = e.get("abgrenzung", "")[:60]
+        similar_text += f"  {i}. {pfad} | {erk.get('bereich_absender','')[:50]} | {abgr}\n"
+
+    # Korrekturen (letzte 5)
+    recent_corrections = "".join(
+        f"  {c.get('vorher','?')} → {c.get('nachher','?')}: {c.get('grund','')}\n"
+        for c in corrections[-5:]
+    )
+
+    allowed_tags_str  = ", ".join(sorted(allowed_tags))  if allowed_tags  else "(keine)"
+    verboten_str      = ", ".join(sorted(verboten_tags)) if verboten_tags else "(keine)"
+    typen_str         = ", ".join(sorted(allowed_dokumenttypen)) if allowed_dokumenttypen else "(keine)"
+
+    # OCR auf 2000 Zeichen begrenzen — erste 2000 enthalten immer Absender+Betreff
+    ocr_short = ocr_text[:2000]
+
+    # Bekannte Korrespondenten: typische_ordner als starker Hinweis für LLM
+    # Funktioniert durch Fuzzy-Match auf Absender-Name aus Vision/OCR
+    korr_hinweis = ""
+    if corr_map:
+        absender = (vision_meta.get("absender") or "").lower().strip()
+        for entry in corr_map.get("eintraege", []):
+            # Prüfe ob Absender mit diesem Korrespondenten übereinstimmt
+            kandidaten = [entry["name"].lower()] +                          [v.lower() for v in entry.get("varianten", [])] +                          [m.lower() for m in entry.get("match", [])]
+            if any(k in absender or absender in k for k in kandidaten if len(k) >= 4):
+                ordner = entry.get("typische_ordner", [])
+                dt = entry.get("default_dokumenttyp", "")
+                if ordner:
+                    korr_hinweis = (
+                        f"\n>>> BEKANNTER KORRESPONDENT: {entry['name']} <<<"
+                        f"\n>>> TYPISCHE ORDNER: {', '.join(ordner)} <<<"
+                        + (f"\n>>> STANDARD-DOKUMENTTYP: {dt} <<<" if dt else "")
+                        + "\n>>> Wähle ZWINGEND einen dieser Ordner ausser du hast starken gegenteiligen Beweis! <<<"
+                    )
+                break
+
+    # Kennzeichen-Hinweise für Prompt dynamisch aus family.json
+    kz_map = _build_kennzeichen_map()
+    kz_prioritaeten = ""
+    for i, (kz_norm, fz) in enumerate(kz_map.items(), 1):
+        kz_prioritaeten += f"{i}. Kennzeichen {fz['kennzeichen_display']} → {fz['ordner']}\n"
+
+    return (
+        f"Klassifiziere dieses Dokument für {_get_haushalt_name()} (Schweiz).\n"
+        "Antworte NUR mit JSON.\n\n"
+        f"DATEI: {filename}\n"
+        f"VISION: {json.dumps(vision_kompakt, ensure_ascii=False)}{kennzeichen_hinweis}\n\n"
+        f"OCR (erste 2000 Zeichen):\n{ocr_short}\n\n"
+        f"KANDIDATEN (RAG):\n{similar_text or '  (keine)'}\n"
+        f"ALLE ORDNER: {', '.join(ordner_priorisiert)}\n\n"
+        f"ERLAUBTE TAGS (NUR DIESE!): {allowed_tags_str}\n"
+        f"VERBOTENE TAGS: {verboten_str}\n"
+        f"ERLAUBTE DOKUMENTTYPEN: {typen_str}\n"
+        f"MAX TAGS: {max_tags}\n\n"
+        f"PRIORITÄTEN:\n"
+        + kz_prioritaeten +
+        f"{len(kz_map)+1}. Versicherungspolice → Familie/Versicherung/Policen\n"
+        f"{len(kz_map)+2}. Lebensversicherung/Säule3/PK → Familie/Finanzen\n"
+        f"{len(kz_map)+3}. Reparatur/Service Gerät/Haus → Familie/Haus-Garten\n"
+        f"{len(kz_map)+4}. SVA/AHV/Gemeinde → Familie/Behörde\n"
+        f"{len(kz_map)+5}. Steueramt → Person/Steuern\n"
+        + (f"\nKORREKTUREN:\n{recent_corrections}" if recent_corrections else "") +
+        '\n{"ordner":"...","tags":[...],"korrespondent":"...","titel":"...","datum":"YYYY-MM-DD",'
+        '"betrag":"CHF XX.XX","dokumenttyp_semantisch":"...","confidence":"hoch|mittel|tief",'
+        '"begruendung":"1 Satz"}'
+    )
+
+
+def sanitize_decision(decision: dict, manifest: list[dict], similar_entries: list[dict]) -> tuple[dict, bool]:
+    """
+    Sanitization direkt nach LLM-Output + normalize_decision_keys.
+    Gibt (sanitized_decision, had_violations) zurück.
+    had_violations=True → Confidence wird automatisch reduziert.
+
+    Wichtig: arbeitet auf einer KOPIE — original decision wird nicht mutiert.
+
+    Reihenfolge:
+      1. Ordner validieren → Fallback Familie/Sonstiges
+      2. Constraints mit bekanntem Zielordner berechnen (folder_tags HART)
+      3. Tags filtern (folder_tags hard, tags_global nur Fallback)
+      4. Confidence normalisieren
+      5. Dokumenttyp validieren
+    """
+    import copy
+    decision = copy.deepcopy(decision)  # KRITISCH 1: nie original mutieren
+    violations = []
+    ordner_liste = [e.get("pfad", "?") for e in manifest]
+
+    # 1. Ordner
+    if decision.get("ordner") not in ordner_liste:
+        violations.append(f"ungültiger Ordner: {decision.get('ordner')!r}")
+        decision["ordner"] = "Familie/Sonstiges"
+
+    # 2. Constraints mit finalem Ordner
+    constraints = build_constraints(similar_entries, target_ordner=decision["ordner"])
+    allowed_tags          = constraints["allowed_tags"]
+    verboten_tags         = constraints["verboten_tags"]
+    allowed_dokumenttypen = constraints["allowed_dokumenttypen"]
+    max_tags              = constraints["max_tags"]
+
+    # Tags: Suggest-Modus statt Hard-Allow
+    # erlaubte_tags im Manifest sind VORSCHLÄGE — kein hartes Verbot
+    # Nur verbotene_tags werden wirklich entfernt (Jahreszahlen, Monatsnamen etc.)
+    _ordner_entry = next((e for e in manifest if e.get("pfad") == decision["ordner"]), {})
+    _vorgeschlagene_tags = set(_ordner_entry.get("erlaubte_tags", []))
+
+    # Globale verbotene Tags aus Manifest-Root laden
+    _global_verboten = set()
+    try:
+        manifest_root = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        _global_verboten.update(manifest_root.get("verbotene_tags_global", []))
+    except Exception:
+        pass
+    _alle_verboten = verboten_tags | _global_verboten
+
+    # 3. Tags
+    raw_tags = decision.get("tags") or []
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+    elif not isinstance(raw_tags, list):
+        raw_tags = []
+
+    # Nur verbotene Tags entfernen — erlaubte Tags sind nur Hinweise
+    clean_tags = [t for t in raw_tags if t not in _alle_verboten]
+    removed = set(raw_tags) - set(clean_tags)
+    if removed:
+        violations.append(f"Tags verworfen (verboten): {removed}")
+        log.warning("Sanitize: Tags verworfen: %s", removed)
+
+    # Tag-Ausschluss via tags.json
+    _pseudo_ocr    = " ".join(filter(None, [decision.get("korrespondent",""), decision.get("titel",""), decision.get("dokumenttyp_semantisch","")]))
+    _pseudo_vision = {"absender": decision.get("korrespondent",""), "dokumenttyp_visuell": decision.get("dokumenttyp_semantisch","")}
+    clean_tags = _filter_excluded_tags(clean_tags, _pseudo_ocr, _pseudo_vision)
+
+    # Confidence-Downgrade wenn Tags ausserhalb der Vorschläge
+    if _vorgeschlagene_tags:
+        unbekannte = set(clean_tags) - _vorgeschlagene_tags
+        if unbekannte:
+            log.info("Sanitize: Tags ausserhalb Vorschläge (erlaubt): %s", unbekannte)
+            # Kein Downgrade mehr — nur Info-Log
+
+    decision["tags"] = clean_tags[:max_tags]
+
+    # 4. Confidence normalisieren
+    conf_raw = decision.get("confidence", "tief")
+    if isinstance(conf_raw, (int, float)):
+        conf_raw = "hoch" if conf_raw >= 0.8 else "mittel" if conf_raw >= 0.5 else "tief"
+    confidence = str(conf_raw).strip().lower()
+    if confidence not in {"hoch", "mittel", "tief"}:
+        violations.append(f"ungültige Confidence: {confidence!r}")
+        confidence = "tief"
+    decision["confidence"] = confidence
+
+    # 5. Dokumenttyp
+    dt = (decision.get("dokumenttyp_semantisch") or "").strip()
+    if allowed_dokumenttypen and dt and dt not in allowed_dokumenttypen:
+        fallback_dt = sorted(allowed_dokumenttypen)[0]
+        violations.append(f"Dokumenttyp {dt!r} nicht erlaubt → {fallback_dt!r}")
+        log.warning("Sanitize: Dokumenttyp '%s' → Fallback '%s'", dt, fallback_dt)
+        decision["dokumenttyp_semantisch"] = fallback_dt
+
+    # 5b. Ausschluss-Check: Dokumenttyp via Ausschluss-Keywords verwerfen
+    # Läuft NACH Constraint-Check — verhindert dass ausgeschlossener Typ gesetzt wird
+    # ocr_text und vision_meta werden als module-level Kontext nicht übergeben →
+    # Ausschluss-Check hier nur auf Typ-Name-Basis (Vollcheck in resolve_document_type)
+    dt_final = (decision.get("dokumenttyp_semantisch") or "").strip()
+    if dt_final:
+        _load_ausschluss_map()
+        # Kontext aus decision (kein ocr/vision hier) — nutze verfügbare Felder
+        _pseudo_ocr  = decision.get("korrespondent", "") + " " + decision.get("titel", "")
+        _pseudo_vision = {"absender": decision.get("korrespondent", ""),
+                          "dokumenttyp_visuell": decision.get("dokumenttyp_semantisch", "")}
+        if _doctype_is_excluded(dt_final, _pseudo_ocr, _pseudo_vision):
+            violations.append(f"Dokumenttyp '{dt_final}' durch Ausschluss-Keyword verworfen")
+            log.warning("Sanitize: Dokumenttyp '%s' via Ausschluss-Check entfernt", dt_final)
+            decision["dokumenttyp_semantisch"] = ""
+
+    # Confidence automatisch reduzieren bei Violations
+    if violations and decision["confidence"] == "hoch":
+        decision["confidence"] = "mittel"
+        log.info("Sanitize: Confidence hoch→mittel wegen Violations: %s", violations)
+    elif len(violations) >= 2 and decision["confidence"] == "mittel":
+        decision["confidence"] = "tief"
+        log.info("Sanitize: Confidence mittel→tief wegen %d Violations", len(violations))
+
+    had_violations = bool(violations)
+    if had_violations:
+        log.info("Sanitize: %d Violations korrigiert: %s", len(violations), violations)
+    else:
+        log.info("Sanitize: OK (kein Violation)")
+
+    return decision, had_violations
+
+
+LLM_SYSTEM = "Du bist ein präziser Dokumenten-Klassifikator. Antworte ausschliesslich mit einem validen JSON-Objekt. Kein Markdown, keine Erklärung."
+
+
+def llm_decide(prompt: str) -> dict:
+    try:
+        resp = ollama_post(
+            "api/chat",
+            {
+                "model": MODEL_LLM,
+                "messages": [{"role": "user", "content": prompt}],
+                "system": LLM_SYSTEM,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.05, "num_predict": 256},
+            },
+            timeout=LLM_TIMEOUT,
+        )
+        raw = resp.get("message", {}).get("content", "")
+        return extract_json_from_response(raw)
+    except Exception as e:
+        log.error("LLM Aufruf fehlgeschlagen: %s", e)
+        return {}
+
+
+# ─── Paperless API: Objekte auflösen/anlegen ──────────────────────────────────
+
+def _get_by_name(endpoint: str, name: str) -> Optional[int]:
+    r = _http.get(
+        f"{PAPERLESS_URL}/api/{endpoint}/",
+        params={"name__iexact": name},
+        headers=_headers(),
+        timeout=15,
+    )
+    if not r.ok:
+        log.warning("GET %s '%s' → HTTP %s: %s", endpoint, name, r.status_code, r.text[:100])
+        return None
+    try:
+        data = r.json()
+    except Exception:
+        log.warning("GET %s '%s' — kein JSON (Token falsch?): %s", endpoint, name, r.text[:100])
+        return None
+    for item in data.get("results", []):
+        if item["name"].lower() == name.lower():
+            return item["id"]
+    return None
+
+
+# Gruppen-IDs für Permissions — aus Env oder Defaults
+# Müssen mit den Paperless-Gruppen "Familie" (view) und "Eltern" (change) übereinstimmen
+_PERM_VIEW_GROUPS   = [int(g) for g in os.environ.get("PAPERLESS_VIEW_GROUP_IDS",  "1").split(",") if g.strip().isdigit()]
+_PERM_CHANGE_GROUPS = [int(g) for g in os.environ.get("PAPERLESS_CHANGE_GROUP_IDS", "2").split(",") if g.strip().isdigit()]
+
+
+def _default_permissions() -> dict:
+    """Zentrale Permissions-Payload — wird überall verwendet.
+    Einzige Stelle wo Gruppen-IDs gesetzt werden.
+    """
+    return {
+        "set_permissions": {
+            "view":   {"users": [], "groups": _PERM_VIEW_GROUPS},
+            "change": {"users": [], "groups": _PERM_CHANGE_GROUPS},
+        },
+    }
+
+
+def _create_obj(endpoint: str, name: str, extra: dict = None) -> Optional[int]:
+    """Objekt anlegen mit korrekten Gruppen-Permissions.
+    Ohne Permissions sind neu angelegte Tags/Typen/Pfade für andere User nicht sichtbar
+    und erscheinen als 'Private' in der Paperless-UI.
+    """
+    payload = {"name": name}
+    if extra:
+        payload.update(extra)
+    # Zentrale Permissions — verhindert "Private"-Anzeige für andere User
+    payload.update(_default_permissions())
+    r = _http.post(
+        f"{PAPERLESS_URL}/api/{endpoint}/",
+        json=payload,
+        headers=_headers(),
+        timeout=15,
+    )
+    if r.ok:
+        obj_id = r.json().get("id")
+        log.info("Angelegt: %s '%s' → ID=%s", endpoint, name, obj_id)
+        # Paperless ignoriert set_permissions beim POST für manche Objekte
+        # → sofort PATCH um Permissions sicherzustellen
+        if obj_id:
+            _http.patch(
+                f"{PAPERLESS_URL}/api/{endpoint}/{obj_id}/",
+                json=_default_permissions(),
+                headers=_headers(),
+                timeout=10,
+            )
+        return obj_id
+    log.warning("POST %s '%s' fehlgeschlagen: %s", endpoint, name, r.text[:100])
+    return _get_by_name(endpoint, name)
+
+
+# Cache für bekannte Tags: name.lower() → id
+_KNOWN_TAGS_CACHE: dict[str, Optional[int]] = {}
+_KNOWN_TAGS_LOADED: bool = False
+
+
+def _load_known_tags() -> None:
+    """Alle bekannten Tags aus Paperless laden und cachen.
+    Wird einmalig beim ersten Aufruf geladen.
+    """
+    global _KNOWN_TAGS_LOADED
+    if _KNOWN_TAGS_LOADED:
+        return
+    try:
+        result = _http.get(
+            f"{PAPERLESS_URL}/api/tags/?page_size=500",
+            headers=_headers(), timeout=15
+        ).json()
+        for tag in result.get("results", []):
+            _KNOWN_TAGS_CACHE[tag["name"].lower()] = tag["id"]
+        _KNOWN_TAGS_LOADED = True
+        log.info("Tag-Cache geladen: %d bekannte Tags", len(_KNOWN_TAGS_CACHE))
+    except Exception as e:
+        log.warning("Tag-Cache laden fehlgeschlagen: %s", e)
+
+
+def resolve_tag(name: str) -> Optional[int]:
+    """Tag-ID nachschlagen — NUR bestehende Tags.
+    Neue Tags werden NICHT angelegt (nur menschliche Pflege erlaubt).
+    Unbekannte Tags werden still ignoriert.
+    """
+    if not name or name.lower() in ("null", "none", ""):
+        return None
+    _load_known_tags()
+    tag_id = _KNOWN_TAGS_CACHE.get(name.lower())
+    if tag_id is None:
+        log.info("Tag '%s' unbekannt — wird ignoriert (nur menschliche Pflege)", name)
+    return tag_id
+
+
+def resolve_correspondent(name: str) -> Optional[int]:
+    if not name or name.lower() in ("null", "none"):
+        return None
+    try:
+        return _get_by_name("correspondents", name) or _create_obj("correspondents", name)
+    except Exception as e:
+        log.warning("Korrespondent '%s': %s", name, e)
+        return None
+
+
+
+# ── Korrespondenten-Kanonisierung ────────────────────────────────────────────
+# Benötigt: rapidfuzz (pip install rapidfuzz)
+# Dateien:  training/correspondents.json
+#           training/pending_correspondents.jsonl
+
+CORRESPONDENTS_PATH = Path(os.environ.get(
+    "CORRESPONDENTS_JSON",
+    "/opt/paperless-scripts/training/correspondents.json"
+))
+PENDING_CORR_PATH = Path(os.environ.get(
+    "PENDING_JSONL",
+    "/opt/paperless-scripts/training/pending_correspondents.jsonl"
+))
+PENDING_REVIEW_TAG       = os.environ.get("PENDING_REVIEW_TAG",       "pending_review")
+PENDING_QS_TAG           = os.environ.get("PENDING_QS_TAG",           "pending_qs")
+PENDING_NEW_CORR_TAG     = os.environ.get("PENDING_NEW_CORR_TAG",      "pending_new_correspondent")
+
+# Alle System-Pending-Tags (für cleanup beim Freigeben)
+ALL_PENDING_TAGS = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG}
+HIGH_THRESHOLD  = int(os.environ.get("HIGH_THRESHOLD",  "90"))  # ergaenzung
+MERGE_THRESHOLD = int(os.environ.get("MERGE_THRESHOLD", "80"))  # merge_into — höher = weniger False Positives
+
+# PENDING_MODE: steuert wann pending_review Tag gesetzt wird
+# "always"    → alle Dokumente bekommen pending_qs (QS-Modus)
+# "uncertain" → nur bei unbekanntem Korrespondent, tiefer Confidence oder Fallback (Standard)
+# "never"     → nie pending (nur für Tests)
+PENDING_MODE = os.environ.get("PENDING_MODE", "uncertain")
+
+
+def _normalize_corr(text: str) -> str:
+    """Lowercase, Umlaute erhalten, Mehrfach-Whitespace zusammenführen."""
+    import unicodedata
+    text = text.lower().strip()
+    text = unicodedata.normalize("NFC", text)
+    import re as _re
+    text = _re.sub(r"\s+", " ", text)
+    return text
+
+
+def _load_corr_map() -> dict:
+    """correspondents.json laden (shared-read, kein Lock nötig)."""
+    if not CORRESPONDENTS_PATH.exists():
+        return {"version": "1.0", "eintraege": []}
+    with open(CORRESPONDENTS_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_corr_ids_only(corr_map: dict) -> None:
+    """correspondents.json atomar mit flock schreiben."""
+    CORRESPONDENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Datei anlegen falls nicht vorhanden
+    if not CORRESPONDENTS_PATH.exists():
+        CORRESPONDENTS_PATH.write_text(
+            json.dumps({"version": "1.0", "eintraege": []}, ensure_ascii=False, indent=2)
+        )
+    fd = open(CORRESPONDENTS_PATH, "r+", encoding="utf-8")
+    try:
+        import fcntl as _fcntl
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
+        # Nochmals lesen (anderer Prozess könnte inzwischen geschrieben haben)
+        fd.seek(0)
+        current = json.load(fd)
+        # Nur _paperless.id Felder mergen — keine anderen Änderungen überschreiben
+        current_by_name = {e["name"]: e for e in current.get("eintraege", [])}
+        for entry in corr_map.get("eintraege", []):
+            name = entry["name"]
+            if name in current_by_name:
+                pid = entry.get("_paperless", {}).get("id")
+                if pid:
+                    current_by_name[name].setdefault("_paperless", {})["id"] = pid
+        fd.seek(0)
+        fd.truncate()
+        json.dump(current, fd, ensure_ascii=False, indent=2)
+        fd.flush()
+    finally:
+        import fcntl as _fcntl
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
+        fd.close()
+
+
+def _find_exact_match(corr_map: dict, raw_name: str) -> Optional[dict]:
+    """Exact Match auf normalisierte match-Strings aller Einträge.
+    NUR echter Gleichheits-Match — kein Substring.
+    Substring-Matching wurde entfernt: "Zurich" würde sonst
+    "Zürich Lebensversicherung" und "Zürich Versicherung" gleich matchen.
+    """
+    norm = _normalize_corr(raw_name)
+    for entry in corr_map.get("eintraege", []):
+        for m in entry.get("match", []):
+            if _normalize_corr(m) == norm:
+                return entry
+    return None
+
+
+# Firmennamen-Suffixe die beim Fuzzy-Match normalisiert werden sollen
+# "Zurich Versicherung AG" und "Zürich Versicherungs-Gesellschaft AG" → beide "zurich versicherung"
+_FIRMA_SUFFIXE = [
+    r'\s+ag$', r'\s+gmbh$', r'\s+sa$', r'\s+sarl$', r'\s+ag\s+co\.?\s+kg$',
+    r'\s+gesellschaft$', r'\s+-gesellschaft$', r'\s+versicherungs-gesellschaft$',
+    r'\s+versicherung$', r'\s+versicherungen$', r'\s+bank$', r'\s+gruppe$',
+    r'\s+holding$', r'\s+stiftung$', r'\s+genossenschaft$',
+]
+# Kritische Namen die NICHT automatisch gemergt werden dürfen
+# (zu ähnliche Namen aber verschiedene Entitäten)
+_FUZZY_BLACKLIST_PAIRS = [
+    ("zurich versicherung", "zurich lebensversicherung"),
+    ("css versicherung", "css krankenversicherung"),
+    ("helvetia versicherung", "helvetia leben"),
+    ("axa versicherung", "axa leben"),
+]
+
+
+def _normalize_firma(text: str) -> str:
+    """Firmennamen-Suffixe entfernen + Umlaut-Normalisierung für Fuzzy-Vergleich."""
+    import re as _re
+    t = _normalize_corr(text)
+    # Umlaut-Varianten angleichen: ü↔ue, ä↔ae, ö↔oe
+    t = t.replace("ü", "u").replace("ue", "u")
+    t = t.replace("ä", "a").replace("ae", "a")
+    t = t.replace("ö", "o").replace("oe", "o")
+    # Bindestriche normalisieren
+    t = t.replace("-", " ").replace("  ", " ")
+    # Firmen-Suffixe entfernen
+    for pattern in _FIRMA_SUFFIXE:
+        t = _re.sub(pattern, "", t, flags=_re.IGNORECASE).strip()
+    return t.strip()
+
+
+def _token_overlap(a: str, b: str) -> float:
+    """Token-Overlap-Score: Anteil gemeinsamer Tokens. 0.0–1.0."""
+    tokens_a = set(a.split())
+    tokens_b = set(b.split())
+    if not tokens_a or not tokens_b:
+        return 0.0
+    overlap = tokens_a & tokens_b
+    return len(overlap) / max(len(tokens_a), len(tokens_b))
+
+
+def _is_blacklisted_pair(a: str, b: str) -> bool:
+    """Prüft ob zwei normalisierte Namen auf der Blacklist stehen."""
+    na, nb = _normalize_firma(a), _normalize_firma(b)
+    for p1, p2 in _FUZZY_BLACKLIST_PAIRS:
+        if (p1 in na and p2 in nb) or (p2 in na and p1 in nb):
+            return True
+        if (p1 in nb and p2 in na) or (p2 in nb and p1 in na):
+            return True
+    return False
+
+
+def _find_fuzzy_match(corr_map: dict, raw_name: str) -> tuple[Optional[dict], int]:
+    """
+    Fuzzy-Match via rapidfuzz gegen alle name + varianten.
+    Sicherheitsmassnahmen:
+      - Firmen-Suffix-Normalisierung (AG/GmbH/Versicherung etc.)
+      - Umlaut-Angleichung (Zurich/Zürich)
+      - Token-Overlap als Zusatzscore (verhindert falsche Merges bei kurzen Matches)
+      - Blacklist für bekannte kritische Namenspaare
+    Gibt (bester_Eintrag, Score) zurück. Score 0-100.
+    """
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        log.warning("rapidfuzz nicht installiert — Fuzzy-Match übersprungen")
+        return None, 0
+
+    norm      = _normalize_corr(raw_name)
+    norm_firm = _normalize_firma(raw_name)
+    best_entry = None
+    best_score = 0
+
+    for entry in corr_map.get("eintraege", []):
+        candidates = [entry["name"]] + entry.get("varianten", [])
+        for candidate in candidates:
+            cand_norm  = _normalize_corr(candidate)
+            cand_firm  = _normalize_firma(candidate)
+
+            # Blacklist-Check: bekannte kritische Paare nicht mergen
+            if _is_blacklisted_pair(raw_name, candidate):
+                log.info("Fuzzy: Blacklist-Paar übersprungen: '%s' ↔ '%s'", raw_name, candidate)
+                continue
+
+            # Score 1: WRatio auf normalisierten Namen
+            score_wratio = fuzz.WRatio(cand_norm, norm)
+            # Score 2: WRatio auf Firma-normalisierten Namen (ohne Suffixe)
+            score_firma  = fuzz.WRatio(cand_firm, norm_firm) if cand_firm and norm_firm else 0
+            # Score 3: Token-Overlap (0–100)
+            score_token  = int(_token_overlap(cand_firm, norm_firm) * 100)
+
+            # Kombinierter Score: WRatio dominiert, Token-Overlap als Tiebreaker
+            # Firma-Score erhöht Score wenn Suffixe den WRatio verwässern
+            combined = max(score_wratio, score_firma) * 0.8 + score_token * 0.2
+
+            # Sicherheitsschwelle: Token-Overlap < 0.3 bei Score ≥ 70 → verdächtig
+            if combined >= 70 and score_token < 30:
+                log.info(
+                    "Fuzzy: Score %d aber Token-Overlap nur %d%% für '%s' ↔ '%s' — reduziert",
+                    combined, score_token, raw_name, candidate
+                )
+                combined = min(combined, 65)  # unter MERGE_THRESHOLD drücken
+
+            if combined > best_score:
+                best_score = int(combined)
+                best_entry = entry
+
+    if best_entry:
+        log.info("Fuzzy-Match: '%s' → '%s' (Score %d)", raw_name, best_entry["name"], best_score)
+    return best_entry, best_score
+
+
+def _append_pending_corr(entry: dict) -> None:
+    """Thread-/Prozess-sicher in pending_correspondents.jsonl schreiben."""
+    PENDING_CORR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(PENDING_CORR_PATH, "a", encoding="utf-8") as f:
+        import fcntl as _fcntl
+        _fcntl.flock(f, _fcntl.LOCK_EX)
+        try:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        finally:
+            _fcntl.flock(f, _fcntl.LOCK_UN)
+    log.info("Pending-Korrespondent: aktion=%s name=%s",
+             entry.get("aktion"), entry.get("vorgeschlagener_eintrag", {}).get("name", "?"))
+
+
+def _build_pending_entry(aktion: str, raw_name: str, document_id: int,
+                          fuzzy_match: Optional[dict] = None,
+                          fuzzy_score: int = 0) -> dict:
+    """Pending-Eintrag im Schema von pending_correspondents.jsonl aufbauen."""
+    import time as _time
+    vorschlag = {
+        "name": raw_name,
+        "varianten": [],
+        "match": [_normalize_corr(raw_name)],
+        "matching_algorithm": "any",
+        "typ": "",
+        "typische_ordner": [],
+        "notiz": "",
+        "_paperless": {"id": None, "is_insensitive": True, "owner": None,
+                       "permissions": {"view": {"users": [], "groups": []},
+                                       "change": {"users": [], "groups": []}}},
+    }
+    entry = {
+        "aktion":       aktion,
+        "status":       "pending",
+        "pending_type": PENDING_NEW_CORR_TAG,   # immer neuer Korrespondent
+        "llm_raw":      raw_name,
+        "llm_confidence": 1.0,
+        "source_document_ids": [document_id],
+        "created_at":   _time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "reviewed_by":  None,
+        "reviewed_at":  None,
+        "vorgeschlagener_eintrag": vorschlag,
+    }
+    if aktion == "ergaenzung" and fuzzy_match:
+        entry["ziel_name"]      = fuzzy_match["name"]
+        entry["fuzzy_score"]    = fuzzy_score
+        entry["merge_hinweis"]  = f"Fuzzy-Score {fuzzy_score}% — mögliche Ergänzung zu '{fuzzy_match['name']}'"
+    elif aktion == "merge_into" and fuzzy_match:
+        entry["merge_ziel_name"]   = fuzzy_match["name"]
+        entry["fuzzy_score"]       = fuzzy_score
+        entry["merge_begruendung"] = f"Fuzzy-Score {fuzzy_score}% — vermutlich identisch mit '{fuzzy_match['name']}'"
+    return entry
+
+
+def resolve_correspondent_canonical(
+    raw_name: str,
+    document_id: int,
+) -> tuple[Optional[int], bool, Optional[str]]:
+    """
+    Hauptfunktion: Kanonisierung + Paperless-Zuordnung.
+
+    Ablauf:
+      1. Exact Match auf correspondents.json → direkt ID + default_dokumenttyp zurück
+      2. Kein Exact Match → Fuzzy-Match (3 Stufen)
+         ≥ 90% → "ergaenzung" in pending
+         ≥ 70% → "merge_into" in pending
+         <  70% → "neu" in pending
+
+    Gibt (korr_id_oder_None, pending_review_needed, default_dokumenttyp_oder_None) zurück.
+    pending_review_needed=True → Tag im finalen PATCH hinzufügen.
+    default_dokumenttyp → wird als Hinweis in sanitize_decision verwendet.
+    """
+    if not raw_name or raw_name.lower() in ("null", "none", ""):
+        return None, False, None
+
+    corr_map = _load_corr_map()
+
+    # ── Schritt 1: Exact Match ────────────────────────────────────────────────
+    matched = _find_exact_match(corr_map, raw_name)
+    if matched:
+        paperless_id = matched.get("_paperless", {}).get("id")
+        default_dt = matched.get("default_dokumenttyp") or matched.get("typ") or None
+        if paperless_id:
+            log.info("Korrespondent Exact Match: '%s' → ID %s (default_dt=%s)",
+                     matched["name"], paperless_id, default_dt)
+            return paperless_id, False, default_dt
+        # In correspondents.json vorhanden aber noch nicht in Paperless angelegt
+        log.info("Korrespondent in Map, noch keine Paperless-ID → anlegen: '%s'", matched["name"])
+        try:
+            new_id = _get_by_name("correspondents", matched["name"]) or                      _create_obj("correspondents", matched["name"])
+            if new_id:
+                matched.setdefault("_paperless", {})["id"] = new_id
+                _save_corr_ids_only(corr_map)
+                log.info("Korrespondent in Paperless angelegt + ID gespeichert: %s", new_id)
+                return new_id, False, default_dt
+        except Exception as e:
+            log.warning("Korrespondent anlegen fehlgeschlagen: %s", e)
+        return None, False, default_dt
+
+    # ── Schritt 2: Fuzzy Match ────────────────────────────────────────────────
+    fuzzy_entry, fuzzy_score = _find_fuzzy_match(corr_map, raw_name)
+    log.info("Kein Exact Match für '%s' — Fuzzy-Score: %d%%", raw_name, fuzzy_score)
+
+    # 3-Stufen Fuzzy — verhindert zu aggressive Merge-Vorschläge
+    if fuzzy_score >= HIGH_THRESHOLD and fuzzy_entry:
+        aktion = "ergaenzung"     # sehr ähnlich → wahrscheinlich Variante
+    elif fuzzy_score >= MERGE_THRESHOLD and fuzzy_entry:
+        aktion = "merge_into"     # ähnlich → möglicher Merge-Kandidat
+    else:
+        aktion = "neu"            # zu verschieden oder kein Treffer → neu anlegen
+        fuzzy_entry = None
+
+    pending_entry = _build_pending_entry(
+        aktion, raw_name, document_id,
+        fuzzy_match=fuzzy_entry, fuzzy_score=fuzzy_score
+    )
+    _append_pending_corr(pending_entry)
+
+    # Kein direkter PATCH hier — pending_review Tag wird im finalen Haupt-PATCH gesetzt
+    # (verhindert dass der spätere Tags-PATCH pending_review wieder überschreibt)
+    return None, True, None  # (kein Korrespondent, pending_review nötig, kein default_dt)
+
+# Cache für bekannte Dokumenttypen
+# Struktur: name.lower() → {"id": int, "synonyme": [str]}
+_KNOWN_DOCTYPE_CACHE: dict = {}
+_KNOWN_DOCTYPE_LOADED: bool = False
+# Synonym-Map: synonym.lower() → kanonischer_name.lower()
+_SYNONYM_MAP: dict = {}
+
+
+def _load_known_doctypes() -> None:
+    """Dokumenttypen aus Paperless + Synonyme aus document_types.json laden."""
+    global _KNOWN_DOCTYPE_LOADED
+    if _KNOWN_DOCTYPE_LOADED:
+        return
+    try:
+        # 1. Paperless: IDs laden
+        result = _http.get(
+            f"{PAPERLESS_URL}/api/document_types/?page_size=500",
+            headers=_headers(), timeout=15
+        ).json()
+        pl_map = {dt["name"].lower(): dt["id"] for dt in result.get("results", [])}
+
+        # 2. document_types.json: Synonyme + Unique-Validierung
+        if DOCUMENT_TYPES_JSON.exists():
+            dt_data = json.loads(DOCUMENT_TYPES_JSON.read_text(encoding="utf-8"))
+            seen = {}  # string.lower() → typ_name (Unique-Check)
+            for typ in dt_data.get("typen", []):
+                typ_name = typ["name"]
+                typ_lower = typ_name.lower()
+                # Name registrieren
+                if typ_lower in seen:
+                    log.warning("Dokumenttyp DUPLICATE NAME '%s' — ignoriert", typ_name)
+                    continue
+                seen[typ_lower] = typ_name
+                dt_id = pl_map.get(typ_lower)
+                _KNOWN_DOCTYPE_CACHE[typ_lower] = {"id": dt_id, "name": typ_name}
+                # Synonyme registrieren
+                for syn in typ.get("synonyme", []):
+                    syn_lower = syn.lower()
+                    if syn_lower in seen:
+                        log.warning("Synonym DUPLICATE '%s' (bei '%s') — ignoriert", syn, typ_name)
+                        continue
+                    seen[syn_lower] = typ_name
+                    _SYNONYM_MAP[syn_lower] = typ_lower
+        else:
+            # Fallback: nur Paperless-IDs ohne Synonyme
+            for name_lower, dt_id in pl_map.items():
+                _KNOWN_DOCTYPE_CACHE[name_lower] = {"id": dt_id, "name": name_lower}
+
+        _KNOWN_DOCTYPE_LOADED = True
+        log.info("Dokumenttyp-Cache: %d Typen, %d Synonyme geladen",
+                 len(_KNOWN_DOCTYPE_CACHE), len(_SYNONYM_MAP))
+    except Exception as e:
+        log.warning("Dokumenttyp-Cache laden fehlgeschlagen: %s", e)
+
+
+# Ausschluss-Map: typ_name.lower() → [keyword, ...] (case-insensitive Match)
+# Kein Unique-Constraint — gleiche Keywords dürfen bei mehreren Typen stehen
+_AUSSCHLUSS_MAP: dict[str, list[str]] = {}
+_AUSSCHLUSS_LOADED: bool = False
+
+
+def _load_ausschluss_map() -> None:
+    """Ausschluss-Keywords aus document_types.json laden."""
+    global _AUSSCHLUSS_LOADED
+    if _AUSSCHLUSS_LOADED:
+        return
+    try:
+        if DOCUMENT_TYPES_JSON.exists():
+            dt_data = json.loads(DOCUMENT_TYPES_JSON.read_text(encoding="utf-8"))
+            for t in dt_data.get("typen", []):
+                kws = [k.lower() for k in t.get("ausschliessen", []) if k]
+                if kws:
+                    _AUSSCHLUSS_MAP[t["name"].lower()] = kws
+        _AUSSCHLUSS_LOADED = True
+        if _AUSSCHLUSS_MAP:
+            log.info("Ausschluss-Map geladen: %d Typen mit Ausschluss-Keywords", len(_AUSSCHLUSS_MAP))
+    except Exception as e:
+        log.warning("Ausschluss-Map laden fehlgeschlagen: %s", e)
+
+
+def _doctype_is_excluded(typ_name: str, ocr_text: str, vision_meta: dict) -> bool:
+    """Prüft ob ein Dokumenttyp für dieses Dokument ausgeschlossen ist.
+    Matched Case-Insensitiv gegen OCR-Text + Vision-Absender + Vision-Dokumenttyp.
+    """
+    _load_ausschluss_map()
+    kws = _AUSSCHLUSS_MAP.get(typ_name.lower(), [])
+    if not kws:
+        return False
+    # Suchraum: OCR (erste 2000 Zeichen) + Vision-Absender + Vision-Dokumenttyp
+    search_text = " ".join(filter(None, [
+        ocr_text[:2000] if ocr_text else "",
+        str(vision_meta.get("absender") or ""),
+        str(vision_meta.get("dokumenttyp_visuell") or ""),
+    ])).lower()
+    for kw in kws:
+        if kw in search_text:
+            log.info("Dokumenttyp '%s' ausgeschlossen: Keyword '%s' gefunden", typ_name, kw)
+            return True
+    return False
+
+
+def _resolve_doctype_via_ollama(name: str) -> Optional[str]:
+    """Fallback: Ollama fragt welcher Dokumenttyp am nächsten ist.
+    Gibt kanonischen Namen zurück oder None.
+    """
+    if not _KNOWN_DOCTYPE_CACHE:
+        return None
+    typ_liste = ", ".join(
+        f'"{v["name"]}"' for v in _KNOWN_DOCTYPE_CACHE.values() if v.get("id")
+    )
+    if not typ_liste:
+        return None
+    prompt = (
+        f'Welcher dieser Dokumenttypen passt am besten zu "{name}"? '
+        f'Antworte NUR mit dem exakten Namen aus dieser Liste, ohne Erklärung: {typ_liste}'
+    )
+    try:
+        r = _http.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": MODEL_LLM, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0, "num_predict": 30}},
+            timeout=15
+        )
+        antwort = r.json().get("response", "").strip().strip('"').strip("'")
+        # Antwort gegen Cache prüfen
+        if antwort.lower() in _KNOWN_DOCTYPE_CACHE:
+            log.info("Dokumenttyp Ollama-Fallback: '%s' → '%s'", name, antwort)
+            return antwort.lower()
+    except Exception as e:
+        log.warning("Ollama Dokumenttyp-Fallback fehlgeschlagen: %s", e)
+    return None
+
+
+def resolve_document_type(name: str, ocr_text: str = "", vision_meta: dict = None) -> Optional[int]:
+    """Dokumenttyp-ID auflösen — 3-Stufen-Suche:
+    1. Exakter Name-Match
+    2. Synonym-Match (unique, in document_types.json definiert)
+    3. Ollama-Fallback (semantische Ähnlichkeit)
+    Neue Dokumenttypen werden NICHT angelegt.
+    Ausschluss-Check: wenn Ausschluss-Keywords im Dokument → None zurück.
+    """
+    if not name or name.lower() in ("null", "none", "sonstiges", ""):
+        return None
+    _load_known_doctypes()
+    name_lower = name.lower()
+
+    # Stufe 1: Exakter Name-Match
+    if name_lower in _KNOWN_DOCTYPE_CACHE:
+        # Ausschluss-Check
+        if _doctype_is_excluded(name_lower, ocr_text, vision_meta or {}):
+            log.info("Dokumenttyp '%s' via Ausschluss-Check verworfen", name)
+            return None
+        return _KNOWN_DOCTYPE_CACHE[name_lower].get("id")
+
+    # Stufe 2: Synonym-Match
+    canonical = _SYNONYM_MAP.get(name_lower)
+    if canonical and canonical in _KNOWN_DOCTYPE_CACHE:
+        if _doctype_is_excluded(canonical, ocr_text, vision_meta or {}):
+            log.info("Dokumenttyp '%s' (via Synonym '%s') via Ausschluss-Check verworfen", canonical, name)
+            return None
+        dt_id = _KNOWN_DOCTYPE_CACHE[canonical].get("id")
+        log.info("Dokumenttyp Synonym: '%s' → '%s' (ID %s)", name, canonical, dt_id)
+        return dt_id
+
+    # Stufe 3: Ollama-Fallback
+    ollama_match = _resolve_doctype_via_ollama(name)
+    if ollama_match and ollama_match in _KNOWN_DOCTYPE_CACHE:
+        if _doctype_is_excluded(ollama_match, ocr_text, vision_meta or {}):
+            log.info("Dokumenttyp '%s' (Ollama-Fallback) via Ausschluss-Check verworfen", ollama_match)
+            return None
+        return _KNOWN_DOCTYPE_CACHE[ollama_match].get("id")
+
+    log.info("Dokumenttyp '%s' nicht auflösbar — ignoriert", name)
+    return None
+
+
+def resolve_storage_path(pfad: str) -> Optional[int]:
+    """Storage Path suchen oder anlegen.
+    Template: pfad/{created_year}/{correspondent}/{title}
+    WICHTIG: {correspondent} wird von Paperless auf "none" gesetzt wenn kein Korrespondent
+    zugewiesen ist — das erzeugt Pfade wie Familie/Sonstiges/2017/none/Titel.
+    Workaround: correspondent im Template durch einen Literal-Fallback ersetzen
+    via Paperless-internem Fallback-Segment. Da Paperless das Template 1:1 verwendet,
+    lassen wir {correspondent} weg und ersetzen durch {document_type} als sinnvolleres
+    Gruppierungsmerkmal für dokumente ohne Korrespondent.
+    """
+    if not pfad:
+        return None
+    try:
+        sp_id = _get_by_name("storage_paths", pfad)
+        if sp_id:
+            return sp_id
+        # Template ohne {correspondent} — verhindert "none"-Verzeichnisse
+        # Stattdessen: Ordner/Jahr/Titel (flacher, robuster)
+        template = f"{pfad}/{{created_year}}/{{title}}"
+        return _create_obj("storage_paths", pfad, {"path": template})
+    except Exception as e:
+        log.warning("Storage Path '%s': %s", pfad, e)
+        return None
+
+
+def maybe_add_sample(pdf_path: str, pfad: str, confidence: str, doc_id: str):
+    """
+    Kopiert PDF als Sample wenn:
+    - confidence == "hoch"
+    - Ordner hat noch < SAMPLE_MAX_PER_FOLDER Samples
+    - Dieses Dokument ist noch nicht als Sample vorhanden
+    Erstellt Ordner automatisch.
+    """
+    if SAMPLE_MAX_PER_FOLDER <= 0:
+        return
+    if confidence.lower() != "hoch":
+        log.info("Auto-Sample übersprungen: confidence='%s' (nur 'hoch' wird gesampelt)", confidence)
+        return
+
+    # Ordnername: pfad mit / → _ und Sonderzeichen bereinigen
+    import re
+    # Ordner-Struktur beibehalten: Thomas/Auto → samples/Thomas/Auto/
+    sample_dir = SAMPLES_BASE / pfad
+    sample_dir.mkdir(parents=True, exist_ok=True)
+
+    # Anzahl bestehender Samples prüfen
+    # Idempotency: prüfen ob dieses Dokument bereits als Sample vorhanden
+    # Verhindert doppelte Samples bei re-consume / retry
+    doc_id_str = str(doc_id)
+    existing = list(sample_dir.glob("*.pdf"))
+    if any(doc_id_str in p.name for p in existing):
+        log.info("Sample für Dok #%s bereits vorhanden — übersprungen", doc_id)
+        return
+    
+    if len(existing) >= SAMPLE_MAX_PER_FOLDER:
+        log.info("Auto-Sample übersprungen: Ordner '%s' hat bereits %d/%d Samples",
+                 pfad, len(existing), SAMPLE_MAX_PER_FOLDER)
+        return
+
+    # Sample-Dateiname: doc_id + Original-Dateiname
+    import shutil
+    sample_name = f"{doc_id}_{Path(pdf_path).name}"
+    target = sample_dir / sample_name
+
+    if target.exists():
+        log.info("Auto-Sample bereits vorhanden: %s", target)
+        return
+
+    try:
+        shutil.copy2(pdf_path, target)
+        log.info("✓ Auto-Sample gespeichert: %s (%d/%d)",
+                 target, len(existing) + 1, SAMPLE_MAX_PER_FOLDER)
+    except Exception as e:
+        log.warning("Auto-Sample fehlgeschlagen: %s", e)
+
+
+def ensure_all_storage_paths(manifest: list[dict]):
+    """Alle Manifest-Pfade in Paperless sicherstellen."""
+    for entry in manifest:
+        pfad = entry.get("pfad")
+        if pfad:
+            resolve_storage_path(pfad)
+
+
+# ─── Hauptlogik ───────────────────────────────────────────────────────────────
+
+def main():
+    log.info("=" * 70)
+    log.info("post_consume_v12 | ID=%s | Datei=%s", DOCUMENT_ID, DOCUMENT_FILE_NAME)
+    log.info("Storage-Modus: %s | Vision-Modell: %s", STORAGE_MODE, MODEL_VISION)
+
+    if not DOCUMENT_ID:
+        log.error("DOCUMENT_ID nicht gesetzt — Abbruch")
+        sys.exit(1)
+    if not PAPERLESS_TOKEN:
+        log.error("PAPERLESS_TOKEN nicht gesetzt — Abbruch")
+        sys.exit(1)
+
+    document_id = int(DOCUMENT_ID)
+    start_time = time.monotonic()
+
+    # ── Manifest + Korrekturen laden ──────────────────────────────────────────
+    manifest    = load_manifest()
+    corrections = load_corrections()
+    log.info("Manifest: %d Einträge | Korrekturen: %d", len(manifest), len(corrections))
+
+    # ── Manifest-Embeddings laden/cachen ─────────────────────────────────────
+    manifest_embeddings = load_or_build_manifest_embeddings(manifest)
+
+    # ── Storage Paths sicherstellen (gecacht via Lockfile) ───────────────────
+    # Nur laden wenn noch kein Cache existiert — nicht für jedes Dokument neu
+    # SP-Cache an Manifest-Hash koppeln — selbstheilend bei Manifest-Änderungen
+    _sp_cache = Path("/tmp/paperless_sp_cache.flag")
+    _current_mhash = _manifest_hash(manifest)
+    _cached_mhash  = _sp_cache.read_text().strip() if _sp_cache.exists() else ""
+    if STORAGE_MODE == "api" and _current_mhash != _cached_mhash:
+        ensure_all_storage_paths(manifest)
+        try:
+            _sp_cache.write_text(_current_mhash)
+        except Exception:
+            pass
+
+    # ── OCR-Text aus Paperless abrufen ────────────────────────────────────────
+    try:
+        doc_info = _http.get(
+            f"{PAPERLESS_URL}/api/documents/{document_id}/",
+            headers=_headers(), timeout=30
+        ).json()
+        ocr_text_full = doc_info.get("content", "").strip()
+        # Auf 3000 Zeichen kürzen — reicht für Klassifizierung, vermeidet Timeout bei langen Docs
+        ocr_text = ocr_text_full[:3000]
+    except Exception as e:
+        log.warning("Dokument-Info Abruf fehlgeschlagen: %s", e)
+        ocr_text = ""
+
+    if not ocr_text:
+        log.warning("Kein OCR-Text — Vision-LLM arbeitet nur mit Bild")
+    elif len(ocr_text_full) > 3000:
+        log.info("OCR-Text gekürzt: %d → 3000 Zeichen", len(ocr_text_full))
+
+    # ── PDF finden ────────────────────────────────────────────────────────────
+    pdf_path = find_pdf(DOCUMENT_ID)
+    if pdf_path:
+        log.info("PDF: %s", pdf_path)
+    else:
+        log.warning("PDF nicht gefunden: %s", DOCUMENT_FILE_NAME)
+
+    # ── QR-Meta aus pre_consume_qr.py lesen ──────────────────────────────────
+    qr_meta = read_qr_meta(DOCUMENT_SOURCE_PATH)
+    if qr_meta:
+        log.info("QR-Bill: Betrag=%s %s, Referenz=%s",
+                 qr_meta.get("betrag"), qr_meta.get("waehrung"), qr_meta.get("referenz"))
+
+    # ── Schritt 2: Vision-LLM (immer) ────────────────────────────────────────
+    # Vision wird IMMER ausgeführt — sie liefert strukturierte Felder
+    # (Absender, Datum, Betrag, Handschrift) die OCR allein nicht zuverlässig extrahiert.
+    # OCR-Keywords werden nur noch als Zusatzinfo ans LLM übergeben, nicht als Bypass.
+    image_b64 = None
+    if pdf_path:
+        image_b64 = pdf_to_base64_image(pdf_path)
+    log.info("Schritt 2: Vision-LLM (%s)", MODEL_VISION)
+    vision_meta = vision_analyze(image_b64, ocr_text)
+    log.info("Vision: %s", json.dumps(vision_meta, ensure_ascii=False))
+    write_audit_entry(document_id, "vision", vision_meta)
+
+    # ── Schritt 3: bge-m3 RAG ─────────────────────────────────────────────────
+    log.info("Schritt 3: bge-m3 RAG (Top-%d)", RAG_TOP_K)
+    rag_text = ocr_text or f"{DOCUMENT_FILE_NAME} {vision_meta.get('dokumenttyp_visuell', '')}"
+    similar_entries = find_similar_manifest_entries(rag_text, manifest, manifest_embeddings, top_k=RAG_TOP_K)
+
+    # ── Schritt 3.5: Deterministisches Pre-Routing ───────────────────────────
+    # Kennzeichen aus BEIDEN Quellen prüfen: vision_meta UND OCR-Text
+    # (Vision kann übersprungen sein → OCR ist die Fallback-Quelle)
+    kz_vision = str(vision_meta.get("kennzeichen") or "").upper().replace(" ", "")
+    kz_ocr    = ocr_text.upper().replace(" ", "")
+    pre_decision = None
+
+    def _extract_absender_from_ocr(text: str) -> Optional[str]:
+        """Versucht Absender aus den ersten 3 Zeilen des OCR zu extrahieren."""
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        return lines[0] if lines else None
+
+    def _pre_route(ordner: str, kz_tag: str, source: str) -> dict:
+        """Baut pre_decision aus Manifest-Tags — kein Hardcoding.
+        Korrespondent kommt aus correspondents.json (typische_ordner Match),
+        NICHT aus Vision/OCR — Vision kann Handschrift oder Störtext als Absender lesen.
+        """
+        # Korrespondent aus correspondents.json — wer hat diesen Ordner als typischen Ordner?
+        _korrespondent = None
+        try:
+            corr_data = json.loads(CORRESPONDENTS_JSON.read_text(encoding="utf-8"))
+            for e in corr_data.get("eintraege", []):
+                if ordner in e.get("typische_ordner", []):
+                    _korrespondent = e["name"]
+                    break
+        except Exception:
+            pass
+        # Fallback: Vision-Absender nur wenn kein Eintrag in correspondents.json
+        if not _korrespondent:
+            _korrespondent = vision_meta.get("absender") or _extract_absender_from_ocr(ocr_text)
+
+        _betrag = vision_meta.get("betrag")
+        _titel  = f"Servicerechnung {_korrespondent}" if _korrespondent else "Servicerechnung"
+        if _betrag and str(_betrag).lower() not in ("null", "none", ""):
+            _titel += f" ({_betrag})"
+        # Tags aus Manifest-Eintrag holen — nicht hardcodiert
+        ordner_entry = next((e for e in manifest if e.get("pfad") == ordner), {})
+        manifest_tags = ordner_entry.get("erlaubte_tags", [])
+        _max = ordner_entry.get("max_tags", 4)
+        auto_tags = [kz_tag] if kz_tag in manifest_tags else []
+        for t in manifest_tags:
+            if t not in auto_tags and len(auto_tags) < _max:
+                auto_tags.append(t)
+        doctyp = ordner_entry.get("dokumenttyp", {}).get("primär", "Servicerechnung")
+        return {
+            "ordner": ordner,
+            "tags": auto_tags,
+            "korrespondent": _korrespondent,
+            "titel": _titel,
+            "datum": vision_meta.get("datum"),
+            "betrag": _betrag,
+            "dokumenttyp_semantisch": doctyp,
+            "confidence": "hoch",
+            "begruendung": f"Deterministisch: Kennzeichen {kz_tag} ({source}) → {ordner}"
+        }
+
+    # Kennzeichen-Routing dynamisch aus family.json
+    kz_map = _build_kennzeichen_map()
+    for kz_norm, fz in kz_map.items():
+        kz_display = fz["kennzeichen_display"]
+        ordner     = fz["ordner"]
+        # Kennzeichen normalisiert (ohne Leerzeichen) in Vision + OCR suchen
+        kz_in_vision = kz_norm in kz_vision
+        kz_in_ocr    = kz_norm in kz_ocr
+        if kz_in_vision or kz_in_ocr:
+            source = "vision_meta" if kz_in_vision else "OCR-Text"
+            log.info("Pre-Routing: Kennzeichen %s (%s) → %s (kein LLM)", kz_display, source, ordner)
+            pre_decision = _pre_route(ordner, kz_display, source)
+            break  # erstes Match gewinnt
+
+    # ── Schritt 4: LLM Entscheidung ───────────────────────────────────────────
+    log.info("Schritt 4: %s Entscheidung", MODEL_LLM)
+
+    # Constraints einmal berechnen — für Prompt UND Validation-Layer
+    constraints = build_constraints(similar_entries)
+    allowed_tags          = constraints["allowed_tags"]
+    verboten_tags         = constraints["verboten_tags"]
+    allowed_dokumenttypen = constraints["allowed_dokumenttypen"]
+    max_tags              = constraints["max_tags"]
+
+    if pre_decision:
+        decision = pre_decision
+    else:
+        prompt   = build_llm_prompt(ocr_text, vision_meta, similar_entries, manifest, corrections, DOCUMENT_FILE_NAME, constraints, corr_map=_load_corr_map())
+        decision = llm_decide(prompt)
+        if not decision:
+            log.error("Keine verwertbare Entscheidung — Exit 0")
+            sys.exit(0)
+        decision = normalize_decision_keys(decision)
+
+    # ── Sanitization direkt nach LLM-Output ──────────────────────────────────
+    # sanitize_decision ist die einzige Validation-Stelle — kein doppelter Code
+    decision, had_violations = sanitize_decision(decision, manifest, similar_entries)
+
+    # Constraints für nachgelagerte Nutzung (Tags-PATCH, Eskalation etc.)
+    final_constraints     = build_constraints(similar_entries, target_ordner=decision["ordner"])
+    allowed_tags          = final_constraints["allowed_tags"]
+    verboten_tags         = final_constraints["verboten_tags"]
+    allowed_dokumenttypen = final_constraints["allowed_dokumenttypen"]
+    max_tags              = final_constraints["max_tags"]
+
+    log.info("Entscheidung: %s", json.dumps(decision, ensure_ascii=False))
+    log.info("Begründung: %s", decision.get("begruendung", ""))
+    write_audit_entry(document_id, "sanitized", decision)
+
+    # ── Systemische Confidence-Anpassung ─────────────────────────────────────
+    # Kleine Modelle setzen fast alles auf "hoch" — wir korrigieren systemisch
+    _conf = decision.get("confidence", "tief")
+    _downgrades = []
+    if not decision.get("tags"):
+        _downgrades.append("keine Tags")
+    if not decision.get("korrespondent"):
+        _downgrades.append("kein Korrespondent")
+    if not vision_meta or vision_meta == {}:
+        _downgrades.append("Vision fehlgeschlagen")
+    if decision.get("ordner") == "Familie/Sonstiges":
+        _downgrades.append("Fallback-Ordner")
+    if len(_downgrades) >= 3 and _conf in ("hoch", "mittel"):
+        decision["confidence"] = "tief"
+        log.info("Confidence downgrade →tief: %s", ", ".join(_downgrades))
+    elif len(_downgrades) >= 2 and _conf == "hoch":
+        decision["confidence"] = "mittel"
+        log.info("Confidence downgrade hoch→mittel: %s", ", ".join(_downgrades))
+
+    # ── Schritt 5: Paperless API Patch ───────────────────────────────────────
+    patch = {}
+
+    # Zentrale Permissions — verhindert "Private"-Anzeige für andere User
+    patch.update(_default_permissions())
+
+    # Custom Fields setzen (Betrag, QR-Referenz, Fällig am, Kennzeichen, etc.)
+    # Korrespondenten-Eintrag für zukünftige Muster-Validierung
+    _corr_entry = None
+    try:
+        _corr_map = _load_corr_map()
+        _raw_corr = decision.get("korrespondent") or ""
+        _corr_entry = next(
+            (e for e in _corr_map.get("eintraege", [])
+             if e["name"].lower() == _raw_corr.lower()),
+            None
+        )
+    except Exception:
+        pass
+
+    _custom_fields = build_custom_fields(
+        decision=decision,
+        vision_meta=vision_meta,
+        qr_meta=qr_meta,
+        corr_entry=_corr_entry,
+    )
+    if _custom_fields:
+        patch["custom_fields"] = _custom_fields
+        log.info("Custom Fields: %d Felder gesetzt", len(_custom_fields))
+
+    # Titel
+    titel = (decision.get("titel") or "").strip()
+    if titel:
+        # Betrag anfügen falls vorhanden
+        betrag = vision_meta.get("betrag") or decision.get("betrag")
+        if betrag and str(betrag).lower() not in ("null", "none") and betrag not in titel:
+            titel = f"{titel} ({betrag})"
+        patch["title"] = titel[:128]
+
+    # Korrespondent
+    korr_id, pending_review_needed, corr_default_dt = resolve_correspondent_canonical(
+        decision.get("korrespondent") or "",
+        document_id=document_id,
+    )
+    if korr_id:
+        patch["correspondent"] = korr_id
+
+    # Default-Dokumenttyp aus Korrespondenten-Map als Fallback wenn LLM keinen gesetzt hat
+    if corr_default_dt and not (decision.get("dokumenttyp_semantisch") or "").strip():
+        log.info("Korrespondent-Default-DokTyp als Fallback: '%s'", corr_default_dt)
+        decision["dokumenttyp_semantisch"] = corr_default_dt
+    elif corr_default_dt:
+        log.info("Korrespondent-Default-DokTyp vorhanden: '%s' (LLM hat '%s' gesetzt — behalten)",
+                 corr_default_dt, decision.get("dokumenttyp_semantisch"))
+
+    # Datum — Vision hat Vorrang, LLM nur Fallback
+    # Dateinamen-Datum (DOCUMENT_FILE_NAME beginnt oft mit Datum) nie verwenden
+    vision_datum = vision_meta.get("datum")
+    llm_datum = decision.get("datum")
+    # Datum-Validierung:
+    # 1. Jahr muss plausibel sein (2000-2099)
+    # 2. Datum darf nicht mehr als 2 Jahre vor dem Scan-Datum liegen
+    #    → sonst wahrscheinlich falsches Datum (z.B. Eintrittsdatum statt Dokumentdatum)
+    import datetime as _dt
+    _scan_year = _dt.date.today().year
+    datum = None
+    _datum_suspicious = False
+    for candidate in [llm_datum, vision_datum]:  # LLM zuerst — hat mehr Kontext
+        if not candidate or str(candidate).lower() in ("null", "none", ""):
+            continue
+        try:
+            year = int(str(candidate)[:4])
+            if not (2000 <= year <= 2099):
+                continue
+            datum = candidate
+            # Plausibilitätsprüfung: mehr als 2 Jahre alt?
+            if (_scan_year - year) > 2:
+                _datum_suspicious = True
+                log.warning("Datum-Verdacht: '%s' ist >2 Jahre vor Scan (%d) — "
+                            "möglicherweise falsches Datum (Eintrittsdatum?)", candidate, _scan_year)
+            break
+        except (ValueError, TypeError):
+            continue
+
+    if datum:
+        patch["created"] = datum
+        if _datum_suspicious and decision.get("confidence") == "hoch":
+            decision["confidence"] = "mittel"
+            log.warning("Confidence auf 'mittel' reduziert wegen verdächtigem Datum '%s'", datum)
+
+    # Tags — aus LLM-Entscheidung (bereits durch Validation-Layer gefiltert)
+    tag_ids = []
+    for tag_name in (decision.get("tags") or []):
+        tag_name = str(tag_name).strip()
+        if tag_name:
+            tid = resolve_tag(tag_name)
+            if tid:
+                tag_ids.append(tid)
+
+    # Jahres-Tag immer aus validiertem Datum setzen (unabhängig vom LLM)
+    if datum and len(str(datum)) >= 4:
+        year = str(datum)[:4]
+        if year.isdigit() and 2000 <= int(year) <= 2099:
+            ytid = resolve_tag(year)
+            if ytid and ytid not in tag_ids:
+                tag_ids.append(ytid)
+                log.info("Jahres-Tag automatisch gesetzt: %s", year)
+
+    # Wenn keine Tags → wenigstens ersten erlaubten Tag aus Top-1 RAG-Treffer setzen
+    if not tag_ids and allowed_tags:
+        top1_tags = similar_entries[0].get("erlaubte_tags", []) if similar_entries else []
+        if top1_tags:
+            fallback_tag = top1_tags[0]
+            ftid = resolve_tag(fallback_tag)
+            if ftid:
+                tag_ids.append(ftid)
+                log.info("Tag-Fallback aus RAG Top-1: %s", fallback_tag)
+
+    # ── Eskalation + Document Review Queue (Fix #4) ─────────────────────────────
+    # Eskalation (Tag-Nachbesserung via llm) wenn:
+    #   - keine Tags gefunden
+    #   - confidence = tief
+    #   - Ordner ist Fallback Familie/Sonstiges
+    # Document Review Queue (pending_review Tag) zusätzlich wenn:
+    #   - Korrespondent in Pending-Queue (unbekannt)
+    #   - confidence != hoch  (LLM war unsicher, Mensch soll prüfen)
+    #   - Ordner ist Familie/Sonstiges (Catch-All → Review nötig)
+    _pfad_fuer_queue = (decision.get("ordner") or "Familie/Sonstiges").strip()
+    _conf = decision.get("confidence", "tief")
+    _needs_escalation = (
+        not tag_ids or
+        _conf == "tief" or
+        _pfad_fuer_queue == "Familie/Sonstiges"
+    )
+    if _needs_escalation:
+        grund = []
+        if not tag_ids: grund.append("keine Tags")
+        if _conf == "tief": grund.append("confidence=tief")
+        if _pfad_fuer_queue == "Familie/Sonstiges": grund.append("Fallback-Ordner")
+        log.info("Eskalation eingereiht: %s", ", ".join(grund))
+        enqueue_escalation(document_id, _pfad_fuer_queue, vision_meta, ocr_text)
+
+    # Pending-Tags — drei verschiedene je nach Grund:
+    # pending_new_correspondent → unbekannter Absender (immer, unabhängig von PENDING_MODE)
+    # pending_review            → LLM unsicher (confidence tief/mittel, Fallback-Ordner)
+    # pending_qs                → QS-Modus aktiv (PENDING_MODE=always)
+
+    def _add_pending_tag(tag_name: str, grund: str) -> None:
+        tag_id = _get_by_name("tags", tag_name) or _create_obj("tags", tag_name)
+        if tag_id and tag_id not in tag_ids:
+            tag_ids.append(tag_id)
+            log.info("Pending-Tag '%s' gesetzt: %s", tag_name, grund)
+
+    # 1. Unbekannter Korrespondent → immer pending_new_correspondent
+    if pending_review_needed:
+        _add_pending_tag(PENDING_NEW_CORR_TAG, "Korrespondent unbekannt")
+
+    # 2. LLM unsicher → pending_review
+    _llm_unsicher = (
+        _conf != "hoch" or
+        _pfad_fuer_queue == "Familie/Sonstiges"
+    )
+    if PENDING_MODE in ("always", "uncertain") and _llm_unsicher:
+        _add_pending_tag(PENDING_REVIEW_TAG,
+            f"confidence={_conf}" if _conf != "hoch" else "Fallback-Ordner")
+
+    # 3. QS-Modus aktiv → pending_qs (auch wenn LLM sicher war)
+    if PENDING_MODE == "always" and not _llm_unsicher and not pending_review_needed:
+        _add_pending_tag(PENDING_QS_TAG, "PENDING_MODE=always")
+
+    if tag_ids:
+        patch["tags"] = list(dict.fromkeys(tag_ids))
+
+    # Document Review Queue: bei pending_review oder pending_qs → Eintrag schreiben
+    # damit paper.manager alle pending Dokumente sieht (nicht nur neue Korrespondenten)
+    _has_pending_review = any(
+        _get_by_name("tags", t) in tag_ids
+        for t in [PENDING_REVIEW_TAG, PENDING_QS_TAG]
+        if _get_by_name("tags", t)
+    )
+    if _has_pending_review:
+        _pending_type = PENDING_REVIEW_TAG if _llm_unsicher else PENDING_QS_TAG
+        _grund = []
+        if _llm_unsicher: _grund.append(f"confidence={decision.get('confidence','?')}")
+        if _pending_type == PENDING_QS_TAG: _grund.append("PENDING_MODE=always")
+        enqueue_document_review(
+            document_id=DOCUMENT_ID,
+            pfad=decision.get("ordner", ""),
+            confidence=decision.get("confidence", "mittel"),
+            grund=_grund,
+            title=decision.get("titel", ""),
+        )
+
+    # Dokumenttyp — semantisch aus LLM (nicht visuell aus Vision)
+    dt_name = (decision.get("dokumenttyp_semantisch") or "").strip()
+    dt_id = resolve_document_type(dt_name, ocr_text=ocr_text, vision_meta=vision_meta)
+    if dt_id:
+        patch["document_type"] = dt_id
+
+    # Storage Path
+    pfad = (decision.get("ordner") or "").strip()
+    if pfad and STORAGE_MODE == "api":
+        sp_id = resolve_storage_path(pfad)
+        if sp_id:
+            patch["storage_path"] = sp_id
+            log.info("Storage Path: '%s' (ID=%s)", pfad, sp_id)
+
+    # ── Auto-Sampling VOR dem PATCH ───────────────────────────────────────────
+    # Datei liegt jetzt noch unter originals/0000XXX.pdf (unstrukturiert)
+    # Nach dem PATCH verschiebt Paperless sie in den strukturierten Pfad
+    confidence = (decision.get("confidence") or "tief").strip().lower()
+    log.info("Confidence: %s", confidence)
+    doc_id_padded = str(document_id).zfill(7)
+    original_pdf = f"{MEDIA_ROOT}/documents/originals/{doc_id_padded}.pdf"
+
+    if Path(original_pdf).exists() and pfad:
+        maybe_add_sample(original_pdf, pfad, confidence, str(document_id))
+    else:
+        log.info("Auto-Sample: originals/%s.pdf nicht gefunden", doc_id_padded)
+
+    # ── PATCH ausführen (Paperless verschiebt Datei danach) ───────────────────
+    if patch:
+        ok = paperless_patch(document_id, patch)
+        if ok:
+            log.info("✓ PATCH erfolgreich: %s", list(patch.keys()))
+        else:
+            log.error("✗ PATCH fehlgeschlagen")
+    else:
+        log.warning("Kein Patch-Payload")
+
+    elapsed = time.monotonic() - start_time
+    log.info("Fertig in %.1fs | Ordner='%s'", elapsed, pfad)
+    log.info("=" * 70)
+
+
+
+# ─── Escalation Queue ────────────────────────────────────────────────────────
+
+def enqueue_escalation(document_id: int, pfad: str, vision_meta: dict, ocr_text: str) -> None:
+    """Dokument in Eskalations-Queue schreiben (für spätere Tag-Nachbesserung)."""
+    entry = {
+        "document_id": document_id,
+        "pfad": pfad,
+        "vision_meta": vision_meta,
+        "ocr_text": ocr_text[:1000],  # kompakt halten
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    ESCALATION_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+    with open(ESCALATION_QUEUE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    log.info("Eskalation eingereiht: ID=%s Ordner='%s'", document_id, pfad)
+
+
+def read_qr_meta(document_source_path: str) -> dict:
+    """
+    QR-Sidecar-Datei lesen die pre_consume_qr.py geschrieben hat.
+    Gibt geparste Swiss QR Bill Daten zurück oder leeres Dict.
+    Löscht die Sidecar-Datei nach dem Lesen (Einmal-Verwendung).
+    """
+    if not document_source_path:
+        return {}
+    sidecar = Path(document_source_path).with_suffix("").as_posix() + "_qr_meta.json"
+    sidecar_path = Path(sidecar)
+    if not sidecar_path.exists():
+        return {}
+    try:
+        data = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        sidecar_path.unlink()  # einmalig lesen, dann löschen
+        if data.get("source") == "no_qr_found":
+            return {}
+        log.info("QR-Meta gelesen: Betrag=%s %s, Referenz=%s",
+                 data.get("betrag"), data.get("waehrung"), data.get("referenz"))
+        return data
+    except Exception as e:
+        log.warning("QR-Meta lesen fehlgeschlagen: %s", e)
+        return {}
+
+
+_SELECT_OPTION_CACHE: dict = {}
+
+def _get_select_option_id(field_id: int, label: str) -> Optional[str]:
+    """Paperless Select-Option ID für ein Label laden (gecacht).
+    Select-Felder haben interne IDs wie 'hHHKXezsAIjHqkKD', nicht Label-Strings.
+    """
+    cache_key = f"{field_id}:{label}"
+    if cache_key in _SELECT_OPTION_CACHE:
+        return _SELECT_OPTION_CACHE[cache_key]
+    try:
+        result = _http.get(
+            f"{PAPERLESS_URL}/api/custom_fields/{field_id}/",
+            headers=_headers(), timeout=15
+        ).json()
+        extra = result.get("extra_data", {})
+        options = extra.get("select_options", [])
+        for opt in options:
+            key = f"{field_id}:{opt.get('label','')}"
+            _SELECT_OPTION_CACHE[key] = opt.get("id")
+        cached = _SELECT_OPTION_CACHE.get(cache_key)
+        if not cached:
+            log.warning("Custom Field %d: Option '%s' nicht gefunden in %s",
+                        field_id, label, [o.get('label') for o in options])
+        return cached
+    except Exception as e:
+        log.warning("Custom Field %d Optionen laden fehlgeschlagen: %s", field_id, e)
+        return None
+
+
+def build_custom_fields(
+    decision: dict,
+    vision_meta: dict,
+    qr_meta: dict,
+    corr_entry: dict | None,
+) -> list[dict]:
+    """
+    Custom Fields für Paperless PATCH zusammenstellen.
+    Nur Felder setzen die wir extrahieren konnten — niemals leere Werte.
+
+    Quellen (Priorität):
+      1. QR-Meta (strukturiert, höchste Qualität)
+      2. Vision-Meta (visuell extrahiert)
+      3. LLM-Decision (semantisch)
+      4. Korrespondenten-Muster (aus correspondents.json, zukünftig)
+
+    Returns: Liste von {"field": ID, "value": Wert}
+    """
+    fields = []
+
+    def _add(field_id: int, value, label: str):
+        if value is not None and str(value).strip() not in ("", "null", "None"):
+            fields.append({"field": field_id, "value": value})
+            log.info("Custom Field %s (%d) = %s", label, field_id, value)
+
+    # ── Betrag ────────────────────────────────────────────────────────────────
+    # QR hat den zuverlässigsten Betrag (strukturiert)
+    betrag = (
+        qr_meta.get("betrag") or
+        vision_meta.get("betrag") or
+        decision.get("betrag")
+    )
+    if betrag:
+        # Betrag normalisieren: "CHF 314.80" → 314.80
+        import re as _re
+        betrag_str = str(betrag).replace("'", "").replace(",", ".")
+        betrag_clean = _re.sub(r"[^\d.]", "", betrag_str)
+        if betrag_clean:
+            try:
+                _add(CF_BETRAG, float(betrag_clean), "Betrag")
+            except ValueError:
+                pass
+
+    # ── QR-Referenz ───────────────────────────────────────────────────────────
+    _add(CF_QR_REFERENZ, qr_meta.get("referenz"), "QR-Referenz")
+
+    # ── Fällig am ─────────────────────────────────────────────────────────────
+    # QR hat es manchmal strukturiert, sonst Vision
+    faellig = (
+        qr_meta.get("faellig_bis") or
+        vision_meta.get("faellig_bis") or
+        decision.get("faellig_bis")
+    )
+    _add(CF_FAELLIG_AM, faellig, "Fällig am")
+
+    # ── Rechnungsnummer ───────────────────────────────────────────────────────
+    rechnung_nr = (
+        vision_meta.get("rechnungsnummer") or
+        decision.get("rechnungsnummer")
+    )
+    _add(CF_RECHNUNGSNUMMER, rechnung_nr, "Rechnungsnummer")
+
+    # ── Kundennummer ──────────────────────────────────────────────────────────
+    _add(CF_KUNDENNUMMER, vision_meta.get("kundennummer"), "Kundennummer")
+
+    # ── Policennummer ─────────────────────────────────────────────────────────
+    _add(CF_POLICENNUMMER, vision_meta.get("policennummer"), "Policennummer")
+
+    # ── Auto-Kennzeichen ──────────────────────────────────────────────────────
+    kennzeichen = vision_meta.get("kennzeichen")
+    if kennzeichen:
+        kz_norm_check = kennzeichen.replace(" ", "").upper()
+        kz_map_cf = _build_kennzeichen_map()
+        if kz_norm_check in kz_map_cf:
+            # Normalisiertes Format: "XX 000000" → "XX" + " " + Rest
+            kz_fmt = kz_norm_check[:2] + " " + kz_norm_check[2:]
+            # Kennzeichen ist Select-Feld → braucht interne Option-ID
+            kz_id = _get_select_option_id(CF_KENNZEICHEN, kz_fmt)
+        if kz_id:
+            _add(CF_KENNZEICHEN, kz_id, f"Kennzeichen={kz_fmt}")
+        else:
+            log.info("Custom Field Kennzeichen: Option-ID für '%s' nicht gefunden", kz_fmt)
+
+    # ── Status: Default "Offen" für Rechnungen — oder "Bezahlt" aus Handschrift ──
+    doc_type = (decision.get("dokumenttyp_semantisch") or "").lower()
+    is_rechnung = any(w in doc_type for w in ("rechnung", "abrechnung", "prämie", "invoice"))
+
+    handschrift = vision_meta.get("handschrift") if vision_meta else None
+    bezahlt_datum = parse_handschrift_bezahlt(handschrift)
+    if bezahlt_datum:
+        log.info("Handschrift erkannt: '%s' → bezahlt am %s", handschrift, bezahlt_datum)
+        bezahlt_id = _get_select_option_id(CF_STATUS, "Bezahlt")
+        if bezahlt_id:
+            _add(CF_STATUS, bezahlt_id, f"Status=Bezahlt (Handschrift: {handschrift})")
+        # ── Bezahlt am (ID 12) — Datum aus Handschrift ────────────────────────
+        # Ermöglicht Suche: "alle Dokumente die am 06.02.2026 bezahlt wurden"
+        # → Abgleich mit Onlinebanking-Zahllauf vom selben Tag
+        _add(CF_BEZAHLT_AM, bezahlt_datum, f"Bezahlt am (Handschrift: {handschrift})")
+    elif is_rechnung:
+        offen_id = _get_select_option_id(CF_STATUS, "Offen")
+        if offen_id:
+            _add(CF_STATUS, offen_id, "Status=Offen")
+        else:
+            log.info("Custom Field Status: Option-ID für 'Offen' nicht gefunden — übersprungen")
+
+    # ── Gescannt am (ID 13) — immer mit heutigem Datum setzen ─────────────────
+    # Physisches Scan-Datum — unabhängig vom Dokumentinhalt
+    import datetime as _dt2
+    _add(CF_GESCANNT_AM, _dt2.date.today().isoformat(), "Gescannt am")
+
+    return fields
+
+
+AUDIT_LOG_PATH = Path(os.environ.get(
+    "AUDIT_LOG_PATH",
+    "/opt/paperless-scripts/training/audit_log.jsonl"
+))
+
+
+def write_audit_entry(
+    document_id: int,
+    stage: str,
+    data: dict,
+    violations: list = None,
+) -> None:
+    """Immutable Audit-Log: jede Entscheidungs-Stufe wird festgehalten.
+    Ermöglicht später: "warum wurde Dok #X so klassifiziert?"
+
+    Stages: vision, llm_raw, sanitized, final_patch, review
+    """
+    entry = {
+        "ts":          time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "document_id": document_id,
+        "stage":       stage,
+        "data":        data,
+        "violations":  violations or [],
+    }
+    try:
+        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("Audit-Log schreiben fehlgeschlagen: %s", e)
+
+
+def enqueue_document_review(document_id: int, pfad: str, confidence: str,
+                             grund: list, title: str = "") -> None:
+    """Dokument in Document Review Queue schreiben.
+    Wird befüllt wenn: confidence!=hoch, Familie/Sonstiges, had_violations, neuer Korrespondent.
+    Der Correspondent Manager zeigt diese Queue zur manuellen Nachkontrolle an.
+
+    Dedupe: document_id ist unique in pending-Einträgen.
+    Bei re-consume / retry wird der bestehende Eintrag aktualisiert statt dupliziert.
+    """
+    import fcntl as _fcntl
+    DOCUMENT_REVIEW_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_path = DOCUMENT_REVIEW_QUEUE.parent / ".document_review_queue.lock"
+    lock_fd = open(lock_path, "w")
+    try:
+        _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+
+        # Bestehende Einträge lesen
+        existing = []
+        if DOCUMENT_REVIEW_QUEUE.exists():
+            with open(DOCUMENT_REVIEW_QUEUE, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            existing.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+
+        # Dedupe: bestehenden pending-Eintrag für diese doc_id aktualisieren
+        updated = False
+        for e in existing:
+            if e.get("document_id") == document_id and e.get("status") == "pending":
+                e["pfad"]       = pfad
+                e["confidence"] = confidence
+                e["grund"]      = grund
+                e["title"]      = title
+                e["timestamp"]  = time.strftime("%Y-%m-%dT%H:%M:%S")
+                updated = True
+                log.info("Document Review Queue: ID=%s aktualisiert (Dedupe)", document_id)
+                break
+
+        if not updated:
+            existing.append({
+                "document_id": document_id,
+                "pfad":        pfad,
+                "confidence":  confidence,
+                "grund":       grund,
+                "title":       title,
+                "status":      "pending",
+                "timestamp":   time.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+            log.info("Document Review Queue: ID=%s neu eingereiht, Grund=%s", document_id, grund)
+
+        # Atomar zurückschreiben
+        with open(DOCUMENT_REVIEW_QUEUE, "w", encoding="utf-8") as f:
+            for e in existing:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+    finally:
+        _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def save_correction(doc_id: int, pfad: str, tags_vorher: list, tags_nachher: list, grund: str) -> None:
+    """Korrektur in corrections.jsonl schreiben.
+    Idempotent: gleiche doc_id + gleicher Grund wird nicht doppelt gespeichert.
+    """
+    entry = {
+        "document_id": doc_id,
+        "vorher": f"{pfad} tags={tags_vorher}",
+        "nachher": f"{pfad} tags={tags_nachher}",
+        "grund": grund,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    CORRECTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CORRECTIONS_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def update_manifest_tags(pfad: str, new_tags: list[str]) -> None:
+    """Neue Tags in erlaubte_tags des Manifest-Eintrags schreiben und speichern."""
+    if not MANIFEST_PATH.exists():
+        return
+    try:
+        with open(MANIFEST_PATH, encoding="utf-8") as f:
+            manifest_data = json.load(f)
+        changed = False
+        for entry in manifest_data.get("ordner", []):
+            if entry.get("pfad") == pfad:
+                existing = set(entry.get("erlaubte_tags", []))
+                added = [t for t in new_tags if t not in existing]
+                if added:
+                    entry["erlaubte_tags"] = sorted(existing | set(new_tags))
+                    log.info("Manifest '%s': neue Tags ergänzt: %s", pfad, added)
+                    changed = True
+                break
+        if changed:
+            with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
+                json.dump(manifest_data, f, ensure_ascii=False, indent=2)
+            # Embedding-Cache invalidieren
+            cache_path = MANIFEST_PATH.parent / "manifest_embeddings.json"
+            if cache_path.exists():
+                cache_path.unlink()
+                log.info("Embedding-Cache gelöscht (Manifest geändert)")
+    except Exception as e:
+        log.warning("Manifest-Update fehlgeschlagen: %s", e)
+
+
+def process_escalation_queue() -> None:
+    """
+    Alle Einträge in der Escalation-Queue mit qwen3:32b nachbearbeiten.
+    Läuft nur wenn kein anderer post_consume Prozess mehr aktiv ist.
+    Tags die gefunden werden: PATCH + Manifest-Update + Korrektur schreiben.
+    """
+    if not ESCALATION_QUEUE.exists():
+        return
+
+    # Prozess-Check via PID-Registry (wird von __main__ sichergestellt)
+    # Hier kein zusätzlicher Check nötig — __main__ prüft bereits is_last_consumer()
+
+    # Queue lesen
+    entries = []
+    with open(ESCALATION_QUEUE, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+    if not entries:
+        ESCALATION_QUEUE.unlink(missing_ok=True)
+        return
+
+    log.info("=" * 70)
+    log.info("ESKALATION: %d Dokumente mit %s nachbearbeiten", len(entries), os.environ.get("OLLAMA_MODEL_ESCALATION", "llama3.3:70b"))
+
+    manifest = load_manifest()
+    # Standard: llama3.3:70b statt qwen3:32b — qwen3 Thinking-Modus stoert JSON-Extraktion
+    # Ueberschreibbar via: OLLAMA_MODEL_ESCALATION=qwen3:32b
+    escalation_model = os.environ.get("OLLAMA_MODEL_ESCALATION", "llama3.3:70b")
+
+    for entry in entries:
+        doc_id  = entry["document_id"]
+        pfad    = entry["pfad"]
+        vm      = entry.get("vision_meta", {})
+        ocr     = entry.get("ocr_text", "")
+
+        log.info("Eskalation ID=%s Ordner='%s'", doc_id, pfad)
+
+        # Constraints für diesen Ordner
+        ordner_entry = next((e for e in manifest if e.get("pfad") == pfad), {})
+        allowed = set(ordner_entry.get("erlaubte_tags", []))
+        verboten = set(ordner_entry.get("verbotene_tags", []))
+        allowed -= verboten
+        max_t = ordner_entry.get("max_tags", 4)
+
+        allowed_str = ", ".join(sorted(allowed)) if allowed else "(keine Einschränkung)"
+
+        escalation_prompt = f"""Du bist ein Dokumenten-Klassifikator. Das Dokument wurde bereits dem Ordner '{pfad}' zugeordnet.
+Deine Aufgabe: Bestimme passende Tags für dieses Dokument.
+
+VISUELLE ANALYSE:
+{json.dumps(vm, ensure_ascii=False)}
+
+OCR-TEXT:
+{ocr}
+
+ERLAUBTE TAGS (AUSSCHLIESSLICH aus dieser Liste!):
+{allowed_str}
+
+VERBOTENE TAGS: {", ".join(sorted(verboten)) if verboten else "(keine)"}
+MAXIMALE TAGS: {max_t}
+
+Antworte NUR mit JSON:
+{{"tags": ["Tag1", "Tag2"], "dokumenttyp_semantisch": "Typ", "begruendung": "1 Satz"}}"""
+
+        try:
+            resp = ollama_post(
+                "api/chat",
+                {
+                    "model": escalation_model,
+                    "messages": [{"role": "user", "content": escalation_prompt}],
+                    "system": "Antworte ausschliesslich mit einem validen JSON-Objekt. Kein Markdown.",
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.1, "num_predict": 256},
+                },
+                timeout=LLM_TIMEOUT,
+            )
+            raw = resp.get("message", {}).get("content", "")
+            esc_decision = extract_json_from_response(raw)
+        except Exception as e:
+            log.warning("Eskalation ID=%s fehlgeschlagen: %s", doc_id, e)
+            continue
+
+        if not esc_decision:
+            continue
+        esc_decision = normalize_decision_keys(esc_decision)
+
+        # Tags validieren
+        raw_tags = esc_decision.get("tags") or []
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]
+        elif not isinstance(raw_tags, list):
+            raw_tags = []
+
+        validated = [t for t in raw_tags if (not allowed or t in allowed) and t not in verboten]
+        validated = validated[:max_t]
+
+        if not validated:
+            log.info("Eskalation ID=%s: keine validen Tags gefunden", doc_id)
+            continue
+
+        # PATCH: nur Tags + Dokumenttyp — ADDITIV (bestehende Werte erhalten!)
+        # Paperless PATCH überschreibt Tags komplett → bestehende IDs vorher lesen
+        patch: dict = {}
+
+        # ── Bestehende Tags des Dokuments lesen ──────────────────────────────
+        existing_tag_ids: list = []
+        try:
+            doc_current = _http.get(
+                f"{PAPERLESS_URL}/api/documents/{doc_id}/",
+                headers=_headers(), timeout=15
+            ).json()
+            existing_tag_ids = doc_current.get("tags", [])
+            log.info("Eskalation ID=%s: bestehende Tags=%s", doc_id, existing_tag_ids)
+        except Exception as e:
+            log.warning("Eskalation ID=%s: bestehende Tags nicht lesbar: %s — Abbruch (kein PATCH)", doc_id, e)
+            continue  # Sicherheit: lieber nichts tun als Tags überschreiben
+
+        # Neue Tag-IDs auflösen
+        new_tag_ids = []
+        for tag_name in validated:
+            tid = resolve_tag(tag_name)
+            if tid:
+                new_tag_ids.append(tid)
+
+        # Merge: bestehende + neue, dedupliziert
+        merged_tag_ids = list(dict.fromkeys(existing_tag_ids + new_tag_ids))
+        if merged_tag_ids != existing_tag_ids:
+            patch["tags"] = merged_tag_ids
+            log.info("Eskalation ID=%s: Tags merged: %s + %s → %s",
+                     doc_id, existing_tag_ids, new_tag_ids, merged_tag_ids)
+        else:
+            log.info("Eskalation ID=%s: keine neuen Tags — PATCH wird minimal gehalten", doc_id)
+
+        # Dokumenttyp NUR setzen wenn noch keiner gesetzt ist
+        dt = (esc_decision.get("dokumenttyp_semantisch") or "").strip()
+        if dt:
+            existing_dt = doc_current.get("document_type")
+            if not existing_dt:  # nur setzen wenn leer
+                dtid = resolve_document_type(dt)
+                if dtid:
+                    patch["document_type"] = dtid
+            else:
+                log.info("Eskalation ID=%s: Dokumenttyp bereits gesetzt (%s) — nicht überschreiben", doc_id, existing_dt)
+
+        # NIEMALS storage_path, correspondent, title im Eskalations-PATCH anfassen!
+        # Owner + Permissions immer mitschicken via zentrale Funktion
+        patch.update(_default_permissions())
+
+        if patch:
+            ok = paperless_patch(doc_id, patch)
+            if ok:
+                log.info("Eskalation ID=%s PATCH erfolgreich: Tags=%s", doc_id, validated)
+                # Korrektur speichern (für RAG-Kontext beim nächsten Lauf)
+                save_correction(doc_id, pfad, [], validated, esc_decision.get("begruendung", "Eskalation"))
+                # Manifest NICHT automatisch updaten — verhindert Tag-Drift / Ontologie-Verschmutzung
+                # Manuelle Überprüfung nötig: update_manifest_tags(pfad, validated)
+                log.info("Eskalation: Manifest-Update übersprungen (manuelle Bestätigung nötig)")
+            else:
+                log.error("Eskalation ID=%s PATCH fehlgeschlagen", doc_id)
+
+    # Queue leeren
+    ESCALATION_QUEUE.unlink(missing_ok=True)
+    log.info("Eskalation abgeschlossen")
+    log.info("=" * 70)
+
+# ─── PID-Registry für Prozess-Koordination ──────────────────────────────────
+PID_REGISTRY   = Path("/tmp/paperless_consume.pids")
+ESCALATION_LOCK = Path("/tmp/paperless_escalation.lock")
+
+
+def _pid_locked_update(add_pid: int = None, remove_pid: int = None) -> set:
+    """
+    Atomar PIDs lesen/schreiben via flock.
+    Tote Prozesse werden automatisch bereinigt.
+    """
+    import fcntl
+    PID_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    # Öffne im read/write Modus, erstelle falls nötig
+    fd = open(PID_REGISTRY, "a+")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # exklusives Lock
+        fd.seek(0)
+        alive = set()
+        for line in fd.read().splitlines():
+            try:
+                pid = int(line.strip())
+                os.kill(pid, 0)  # Signal 0 = Prozess existiert noch?
+                alive.add(pid)
+            except (ValueError, OSError):
+                pass  # tot oder ungültig → ignorieren
+        if add_pid:
+            alive.add(add_pid)
+        if remove_pid:
+            alive.discard(remove_pid)
+        # Atomar zurückschreiben
+        fd.seek(0)
+        fd.truncate()
+        fd.write("\n".join(str(p) for p in alive))
+        fd.flush()
+        return alive
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
+
+
+def register_pid() -> None:
+    """Eigene PID atomar in Registry eintragen."""
+    _pid_locked_update(add_pid=os.getpid())
+
+
+def unregister_pid() -> set:
+    """Eigene PID atomar aus Registry entfernen. Gibt verbleibende PIDs zurück."""
+    return _pid_locked_update(remove_pid=os.getpid())
+
+
+def _read_pids() -> set:
+    """PIDs lesen (ohne Schreiben) — für is_last_consumer_check."""
+    return _pid_locked_update()  # kein add/remove → nur lesen + bereinigen
+
+
+def is_last_consumer() -> bool:
+    """True wenn keine anderen post_consume Prozesse mehr laufen."""
+    return len(_read_pids()) == 0
+
+
+if __name__ == "__main__":
+    register_pid()
+    try:
+        main()
+    except Exception:
+        log.critical("Unbehandelter Fehler:\n%s", traceback.format_exc())
+    finally:
+        # Prüfen ob wir der letzte sind BEVOR wir uns deregistrieren
+        # remaining = alle anderen noch aktiven Prozesse (wir selbst ausgenommen)
+        remaining = unregister_pid()
+
+        if not remaining and ESCALATION_QUEUE.exists():
+            # Atomares Lock — verhindert Doppelstart bei exakt gleichzeitigem Finish
+            try:
+                fd = os.open(str(ESCALATION_LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+            except FileExistsError:
+                log.info("Eskalation: anderer Prozess hat Lock — überspringe")
+                sys.exit(0)
+            try:
+                process_escalation_queue()
+            finally:
+                ESCALATION_LOCK.unlink(missing_ok=True)
+        sys.exit(0)

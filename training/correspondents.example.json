@@ -1,0 +1,79 @@
+{
+  "version": "1.0",
+  "beschreibung": "Bekannte Korrespondenten mit Matching-Konfiguration. Wird von post_consume.py für Fuzzy-Matching und deterministisches Routing verwendet. Pflegbar via paper.manager → Korrespondenten.",
+  "eintraege": [
+    {
+      "name": "Beispiel Versicherung AG",
+      "varianten": [
+        "Beispiel Versicherungen",
+        "Beispiel AG Versicherung"
+      ],
+      "match": [
+        "beispiel versicherung",
+        "beispiel ag versicherung"
+      ],
+      "matching_algorithm": "any",
+      "default_dokumenttyp": "Versicherungsabrechnung",
+      "default_dokumenttyp_id": null,
+      "typische_ordner": [
+        "Familie/Versicherung"
+      ],
+      "notiz": "Hausrat- und Haftpflichtversicherung",
+      "extraktion_muster": {
+        "policennummer": {
+          "regex": "(?P<policennummer>\\d{3}\\.\\d{3}\\.\\d{3})",
+          "label_hints": ["Police Nr.", "Policennummer"],
+          "beispiel": "123.456.789",
+          "custom_field_id": 10
+        }
+      },
+      "erwartungen": {
+        "hat_qr_rechnung": true,
+        "hat_faelligkeitsdatum": true,
+        "hat_betrag": true
+      },
+      "_paperless": {
+        "id": null,
+        "is_insensitive": true,
+        "owner": null,
+        "permissions": {
+          "view": {"users": [], "groups": []},
+          "change": {"users": [], "groups": []}
+        }
+      }
+    },
+    {
+      "name": "Arbeitgeber Muster GmbH",
+      "varianten": [
+        "Muster GmbH",
+        "Muster Arbeitgeber"
+      ],
+      "match": [
+        "muster gmbh",
+        "arbeitgeber muster"
+      ],
+      "matching_algorithm": "any",
+      "default_dokumenttyp": "Lohnabrechnung",
+      "default_dokumenttyp_id": null,
+      "typische_ordner": [
+        "Person1/Arbeit"
+      ],
+      "notiz": "Arbeitgeber Person1",
+      "extraktion_muster": {},
+      "erwartungen": {
+        "hat_qr_rechnung": false,
+        "hat_faelligkeitsdatum": false,
+        "hat_betrag": true
+      },
+      "_paperless": {
+        "id": null,
+        "is_insensitive": true,
+        "owner": null,
+        "permissions": {
+          "view": {"users": [], "groups": []},
+          "change": {"users": [], "groups": []}
+        }
+      }
+    }
+  ]
+}
