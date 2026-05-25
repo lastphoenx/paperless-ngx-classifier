@@ -227,6 +227,44 @@ Available at `http://SERVER_IP:8100` after installation.
 
 ---
 
+## ⚠️ Paperless-NGX Classifier deaktivieren (Pflicht)
+
+Paperless-NGX has its own built-in ML classifier that assigns correspondents, tags, and document types **before** `post_consume.py` runs.
+
+This causes a critical conflict:
+- Paperless assigns e.g. "Reformierte Kirche" to a document
+- The assigned correspondent ends up in the filename passed to `post_consume.py`
+- `post_consume.py` receives wrong context → the LLM makes a wrong routing decision
+
+### Fix — two mandatory steps
+
+**1. Disable training** (in `/opt/paperless/.env`):
+```bash
+PAPERLESS_TRAIN_TASK_CRON=disable
+```
+
+**2. Set all existing correspondents to "no auto-assignment":**
+```bash
+curl -s "http://localhost:8000/api/correspondents/?page_size=100" \
+  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
+  grep -o '[0-9]*' | while read id; do
+    curl -s -X PATCH "http://localhost:8000/api/correspondents/$id/" \
+      -H "Authorization: Token $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"matching_algorithm": 0}'
+done
+```
+
+> **Why:** Paperless embeds the assigned correspondent into the filename passed to `post_consume.py`. Even if Vision correctly identifies the sender, a wrong filename confuses the LLM during routing.
+>
+> `correspondent_manager_app.py` creates new correspondents with `matching_algorithm=0` automatically — but existing ones must be reset once manually.
+>
+> After this: **our script is the sole classifier** — no more conflicts.
+
+See [INSTALL.md](INSTALL.md#schritt-7b----paperless-classifier-deaktivieren-pflicht) for the full step-by-step procedure.
+
+---
+
 ## Security note
 
 - **Never** commit `.env` — it contains API tokens, DB password, and secret key

@@ -458,7 +458,7 @@ def _set_document_type_on_documents(doc_ids: list[int], dt_name: str) -> None:
             dt_id = results[0]["id"]
         else:
             # Neu anlegen
-            payload = {"name": dt_name}
+            payload = {"name": dt_name, "matching_algorithm": 0}
             payload.update(_default_permissions())
             new_dt = pl_post("/document_types/", payload)
             dt_id = new_dt.get("id")
@@ -490,7 +490,7 @@ def _resolve_or_create_doctype_id(dt_name: str) -> Optional[int]:
         results = result.get("results", [])
         if results:
             return results[0]["id"]
-        payload = {"name": dt_name}
+        payload = {"name": dt_name, "matching_algorithm": 0}
         payload.update(_default_permissions())
         new_dt = pl_post("/document_types/", payload)
         dt_id = new_dt.get("id")
@@ -1580,7 +1580,7 @@ def api_create_tag(body: dict = Body(...)):
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "name fehlt")
-    payload = {"name": name}
+    payload = {"name": name, "matching_algorithm": 0}
     payload.update(_default_permissions())
     try:
         result = pl_post("/tags/", payload)
@@ -1612,8 +1612,7 @@ def api_create_doctype(body: dict = Body(...)):
         if conflicts:
             raise HTTPException(409, f"Bereits vergeben: {', '.join(conflicts)}")
 
-    # In Paperless anlegen
-    payload = {"name": name}
+    payload = {"name": name, "matching_algorithm": 0}
     payload.update(_default_permissions())
     try:
         result = pl_post("/document_types/", payload)

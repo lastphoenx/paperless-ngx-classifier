@@ -247,6 +247,44 @@ Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
 
 ---
 
+## ⚠️ Paperless-NGX Classifier deaktivieren (Pflicht)
+
+Paperless-NGX hat einen eigenen integrierten ML-Classifier der Korrespondenten, Tags und Dokumenttypen automatisch zuweist — **bevor** `post_consume.py` läuft.
+
+Das führt zu einem kritischen Konflikt:
+- Paperless weist z.B. «Reformierte Kirche» einem Dokument zu
+- Der zugewiesene Korrespondent landet im Dateinamen der an `post_consume.py` übergeben wird
+- `post_consume.py` bekommt falschen Kontext → LLM entscheidet falsch
+
+### Lösung — zwei Massnahmen zwingend erforderlich
+
+**1. Training deaktivieren** (in `/opt/paperless/.env`):
+```bash
+PAPERLESS_TRAIN_TASK_CRON=disable
+```
+
+**2. Alle bestehenden Korrespondenten auf «Keine Zuweisung» setzen:**
+```bash
+curl -s "http://localhost:8000/api/correspondents/?page_size=100" \
+  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
+  grep -o '[0-9]*' | while read id; do
+    curl -s -X PATCH "http://localhost:8000/api/correspondents/$id/" \
+      -H "Authorization: Token $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"matching_algorithm": 0}'
+done
+```
+
+> **Warum:** Paperless baut den zugewiesenen Korrespondenten in den Dateinamen ein der an `post_consume.py` übergeben wird. Auch wenn Vision den richtigen Absender erkennt, verwirrt ein falscher Dateiname den LLM beim Routing-Entscheid.
+>
+> `correspondent_manager_app.py` legt neue Korrespondenten automatisch mit `matching_algorithm=0` an — bestehende müssen einmalig manuell zurückgesetzt werden.
+>
+> Danach gilt: **unser Script ist der einzige Klassifizierer** — kein Konflikt mehr.
+
+Vollständige Schritt-für-Schritt-Anleitung → [INSTALL.md](INSTALL.md#schritt-7b----paperless-classifier-deaktivieren-pflicht)
+
+---
+
 ## Sicherheitshinweis
 
 - **Niemals** `.env` committen — enthält API-Tokens, DB-Passwort und Secret Key
