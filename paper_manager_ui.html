@@ -709,7 +709,20 @@ function showView(name) {
   if (name === 'docreview') { loadDocReview(); loadDocReviewMeta(); }
   if (name === 'doctypes') loadDocTypes();
   if (name === 'tags') loadTags();
-  if (name === 'manifest') loadManifest();
+  if (name === 'manifest') {
+    loadManifest();
+    // Dokumenttypen + Tags für Autocomplete laden falls noch nicht vorhanden
+    if (!window._allDocTypes) {
+      fetch(`${API_BASE}/paperless/document_types`)
+        .then(r => r.json())
+        .then(d => { window._allDocTypes = d.results || []; });
+    }
+    if (!allTags || !allTags.length) {
+      fetch(`${API_BASE}/paperless/tags`)
+        .then(r => r.json())
+        .then(d => { allTags = d.results || []; });
+    }
+  }
   if (name === 'family') loadFamilyConfig();
 }
 
@@ -2030,32 +2043,77 @@ function filterManifest(q) {
   ));
 }
 
-function openMfEdit(eid) {
+async function openMfEdit(eid) {
   const entry = _mfEntries[eid];
+  if (!entry) return;
+
+  // Sicherstellen dass Tags + Dokumenttypen geladen sind
+  if (!allTags || !allTags.length) {
+    try {
+      const r = await fetch(`${API_BASE}/paperless/tags`);
+      const d = await r.json();
+      allTags = d.results || [];
+    } catch(e) {}
+  }
+  if (!window._allDocTypes) {
+    try {
+      const r = await fetch(`${API_BASE}/paperless/document_types`);
+      const d = await r.json();
+      window._allDocTypes = d.results || [];
+    } catch(e) {}
+  }
   if (!entry) return;
   const pfad = entry.pfad;
   const view = document.getElementById(`mf-view-${eid}`);
   const edit = document.getElementById(`mf-edit-${eid}`);
   if (!edit) return;
   view.style.display = 'none';
+
+  // Verfügbare Tags + Dokumenttypen aus geladenen Daten
+  // Pending-Tags ausfiltern
+  const pendingTagNames = ['pending_review','pending_new_correspondent','pending_qs'];
+  const availTags = (allTags||[])
+    .filter(t => !pendingTagNames.includes(t.name))
+    .map(t => t.name).sort();
+  const availTypes = (window._allDocTypes||[]).map(t => t.name).sort();
+
+  const currentTags  = entry.erlaubte_tags || [];
+  const currentTypes = entry.erlaubte_dokumenttypen || [];
+
+  // Tag-Checkboxen
+  const tagCheckboxes = availTags.map(t => `
+    <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer">
+      <input type="checkbox" value="${t}" ${currentTags.includes(t)?'checked':''}>
+      ${t}
+    </label>`).join('');
+
+  // Dokumenttyp-Checkboxen
+  const typeCheckboxes = availTypes.map(t => `
+    <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0;font-size:12px;cursor:pointer">
+      <input type="checkbox" value="${t}" ${currentTypes.includes(t)?'checked':''}>
+      ${t}
+    </label>`).join('');
+
   edit.innerHTML = `
     <div style="margin-top:12px">
-      <div class="field-group"><label>Erlaubte Tags (Vorschläge)</label>
-        <div class="tags-input" id="mft-${eid}" data-tags='${JSON.stringify(entry.erlaubte_tags||[])}'>
-          ${(entry.erlaubte_tags||[]).map(t=>tagChip(t,`mft-${eid}`)).join('')}
-          <input type="text" placeholder="Tag..." onkeydown="addTag(event,'mft-${eid}')">
-        </div></div>
-      <div class="field-group"><label>Erlaubte Dokumenttypen</label>
-        <div class="tags-input" id="mfd-${eid}" data-tags='${JSON.stringify(entry.erlaubte_dokumenttypen||[])}'>
-          ${(entry.erlaubte_dokumenttypen||[]).map(t=>tagChip(t,`mfd-${eid}`)).join('')}
-          <input type="text" placeholder="Dokumenttyp..." onkeydown="addTag(event,'mfd-${eid}')">
-        </div></div>
+      <div class="field-group">
+        <label>Erlaubte Tags <span style="color:var(--muted);font-weight:normal;font-size:11px">(Vorschläge für KI)</span></label>
+        <div id="mft-cb-${eid}" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:140px;overflow-y:auto;line-height:1.8">
+          ${tagCheckboxes}
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Erlaubte Dokumenttypen <span style="color:var(--muted);font-weight:normal;font-size:11px">(nur existierende Typen)</span></label>
+        <div id="mfdt-cb-${eid}" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:140px;overflow-y:auto;line-height:1.8">
+          ${typeCheckboxes}
+        </div>
+      </div>
       <div class="field-group"><label>Max Tags</label>
         <input type="number" id="mfmax-${eid}" value="${entry.max_tags||4}" min="1" max="8" style="max-width:80px"></div>
       <div class="field-group"><label>Abgrenzung</label>
         <textarea id="mfabgr-${eid}">${entry.abgrenzung||''}</textarea></div>
       <div class="btn-row">
-        <button class="btn btn-success" onclick="saveMfEdit('${pfad}','${eid}')">✓ Speichern</button>
+        <button class="btn btn-success" onclick="saveMfEditCb('${pfad}','${eid}')">✓ Speichern</button>
         <button class="btn btn-ghost" onclick="closeMfEdit('${eid}')">Abbrechen</button>
       </div>
     </div>`;
@@ -2072,6 +2130,27 @@ function closeMfEdit(eid) {
 function toggleMfEdit(eid, pfad, entryJson) {
   // Legacy-Wrapper — nicht mehr direkt aufgerufen
   closeMfEdit(eid);
+}
+
+async function saveMfEditCb(pfad, eid) {
+  // Checkbox-Werte lesen
+  const tagCbs  = document.querySelectorAll(`#mft-cb-${eid} input[type=checkbox]:checked`);
+  const typeCbs = document.querySelectorAll(`#mfdt-cb-${eid} input[type=checkbox]:checked`);
+  const erlaubte_tags          = Array.from(tagCbs).map(cb => cb.value);
+  const erlaubte_dokumenttypen = Array.from(typeCbs).map(cb => cb.value);
+  const max_tags    = parseInt(document.getElementById(`mfmax-${eid}`)?.value || '4');
+  const abgrenzung  = document.getElementById(`mfabgr-${eid}`)?.value || '';
+
+  const body = { erlaubte_tags, erlaubte_dokumenttypen, max_tags, abgrenzung };
+  const r = await fetch(`${API_BASE}/manifest/ordner/${encodeURIComponent(pfad)}`,{
+    method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if (r.ok) {
+    showToast('Speicherpfad gespeichert', 'success');
+    loadManifest();
+  } else {
+    const err = await r.json().catch(()=>({}));
+    showToast('Fehler: ' + (err.detail||JSON.stringify(err)), 'error');
+  }
 }
 
 async function saveMfEdit(pfad, eid) {

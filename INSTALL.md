@@ -219,6 +219,78 @@ docker compose logs webserver | grep "pre_consume\|post_consume"
 
 ---
 
+## Schritt 7b — Paperless Classifier deaktivieren (Pflicht)
+
+Dies ist ein kritischer Schritt der oft vergessen wird.
+
+### Hintergrund
+
+Paperless-NGX betreibt einen eigenen ML-Classifier parallel zu unserem Script.
+Dieser läuft **vor** `post_consume.py` und beeinflusst den Dateinamen den das Script
+als Kontext erhält. Das führt zu Fehlklassifizierungen.
+
+### Symptome wenn dieser Schritt fehlt
+
+- Dokumente landen im falschen Ordner obwohl Vision den richtigen Absender erkannt hat
+- Dateiname in den Logs enthält einen falschen Korrespondenten-Namen
+- Confidence ist mittel/tief obwohl das Dokument klar klassifizierbar wäre
+- Re-konsumierte Dokumente werden noch schlechter klassifiziert als beim ersten Mal
+
+### Massnahmen
+
+**1. In `/opt/paperless/.env` ergänzen:**
+```bash
+PAPERLESS_TRAIN_TASK_CRON=disable
+```
+
+**2. Docker neu starten:**
+```bash
+cd /opt/paperless
+docker compose down && docker compose up -d
+```
+
+**3. Alle Korrespondenten auf «Keine automatische Zuweisung» setzen:**
+```bash
+# Einmalig nach der Installation ausführen.
+# correspondent_manager_app.py setzt matching_algorithm=0 bei neu angelegten
+# Korrespondenten automatisch — bestehende müssen einmalig manuell zurückgesetzt werden.
+
+curl -s "http://localhost:8000/api/correspondents/?page_size=100" \
+  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
+  grep -o '[0-9]*' | while read id; do
+    curl -s -X PATCH "http://localhost:8000/api/correspondents/$id/" \
+      -H "Authorization: Token $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"matching_algorithm": 0}' > /dev/null
+    echo "Korrespondent $id → Keine Zuweisung"
+done
+```
+
+**4. Gleiches für Tags und Dokumenttypen (empfohlen):**
+```bash
+# Tags
+curl -s "http://localhost:8000/api/tags/?page_size=100" \
+  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
+  grep -o '[0-9]*' | while read id; do
+    curl -s -X PATCH "http://localhost:8000/api/tags/$id/" \
+      -H "Authorization: Token $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"matching_algorithm": 0}' > /dev/null
+done
+
+# Dokumenttypen
+curl -s "http://localhost:8000/api/document_types/?page_size=100" \
+  -H "Authorization: Token $TOKEN" | python3 -m json.tool | grep '"id"' | \
+  grep -o '[0-9]*' | while read id; do
+    curl -s -X PATCH "http://localhost:8000/api/document_types/$id/" \
+      -H "Authorization: Token $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"matching_algorithm": 0}' > /dev/null
+done
+```
+
+---
+
 ## Schritt 8 — systemd Units einrichten
 
 ### correspondent-manager (paper.manager Backend)
