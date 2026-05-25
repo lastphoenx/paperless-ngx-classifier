@@ -2402,7 +2402,16 @@ async function selectDocReview(i) {
   const thumbUrl = `${window.PAPERLESS_INTERNAL||window.PAPERLESS_URL||''}/api/documents/${entry.document_id}/thumb/`;
   const paperlessUrl = `${window.PAPERLESS_URL||''}/documents/${entry.document_id}`;
 
-  // Select Options
+  // Dokumenttypen laden falls noch nicht vorhanden — VOR dem Rendern
+  if (!window._allDocTypes) {
+    try {
+      const r = await fetch(`${API_BASE}/paperless/document_types`);
+      const d = await r.json();
+      window._allDocTypes = d.results || [];
+    } catch(e) {}
+  }
+
+  // Select Options — Vorauswahl basierend auf aktuellem Dokument-Zustand
   const spOptions = allStoragePaths.map(sp =>
     `<option value="${sp.id}" ${sp.name===entry.pfad?'selected':''}>${sp.name}</option>`).join('');
   const corrOptions = `<option value="">— kein Korrespondent —</option>` +
@@ -2411,7 +2420,7 @@ async function selectDocReview(i) {
   const tagOptions = allTags.map(t =>
     `<option value="${t.id}" ${currentTagIds.includes(t.id)?'selected':''}>${t.name}</option>`).join('');
 
-  // Dokumenttyp Options
+  // Dokumenttyp Options — jetzt synchron da _allDocTypes bereits geladen
   const dtOptions = `<option value="">— kein Typ —</option>` +
     (window._allDocTypes||[]).map(dt =>
       `<option value="${dt.id}" ${dt.id===doc?.document_type?'selected':''}>${dt.name}</option>`).join('');
@@ -2518,19 +2527,12 @@ async function selectDocReview(i) {
       </div>
     </div>`;
 
-  // Dokumenttypen für Select laden falls noch nicht da
-  if (!window._allDocTypes) {
+  // Tags nachladen falls nötig (für Tag-Checkboxen im Manifest-Editor)
+  if (!allTags || !allTags.length) {
     try {
-      const r = await fetch(`${API_BASE}/paperless/document_types`);
+      const r = await fetch(`${API_BASE}/paperless/tags`);
       const d = await r.json();
-      window._allDocTypes = d.results || [];
-      // Select neu befüllen
-      const dtSel = document.getElementById('dr-dt');
-      if (dtSel) {
-        dtSel.innerHTML = `<option value="">— kein Typ —</option>` +
-          window._allDocTypes.map(dt =>
-            `<option value="${dt.id}" ${dt.id===doc?.document_type?'selected':''}>${dt.name}</option>`).join('');
-      }
+      allTags = d.results || [];
     } catch(e) {}
   }
 }
