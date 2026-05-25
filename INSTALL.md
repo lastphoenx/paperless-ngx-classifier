@@ -204,7 +204,7 @@ Falls eigene Typen hinzugefügt werden, Sync-Check ausführen:
 python3 /opt/paperless-scripts/fix_document_types_v2.py
 ```
 
-> **Wichtig:** Jeder Ordner in `manifest.json` hat eine Whitelist erlaubter Typen. Ein Typ der nicht in der Whitelist steht landet als Fallback — auch wenn das Dokument klar einem Absender zuzuordnen wäre.
+> **Hinweis:** Jeder Ordner in `manifest.json` hat eine Whitelist erlaubter Typen. Ist ein Typ in `document_types.json` bekannt aber noch nicht in der Manifest-Whitelist, ergänzt der Sanitizer ihn **automatisch** und setzt Confidence auf `mittel` — beim nächsten Dokument läuft es direkt durch (Self-healing). Komplett unbekannte Typen werden leer gelassen, kein Fallback mehr.
 
 ---
 
@@ -397,7 +397,7 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | Kennzeichen-Routing funktioniert nicht | family.json leer oder falsch | paper.manager → Familie → Fahrzeuge prüfen |
 | Permissions-Fehler auf Dokumenten | Gruppen-IDs falsch | PAPERLESS_VIEW_GROUP_IDS in .env |
 | Falscher Ordner trotz korrekter Vision | Paperless Classifier noch aktiv | Schritt 7b — alle 3 Objekttypen zurücksetzen |
-| Absurder Fallback-Typ (z.B. Arztbericht) | Typ nicht im Manifest für diesen Ordner | Typ in Speicherpfade-Whitelist ergänzen |
+| Erster Scan mit unerwartetem Typ, danach korrekt | Typ neu für diesen Ordner → Manifest automatisch ergänzt (Self-healing) | Erwartet — kein Handlungsbedarf |
 | `Scan_` Titel / Dateien als `0000xxx.pdf` | post_consume.py Absturz (KRITISCH) | Fehler beheben, PDF re-konsumieren |
 
 ---

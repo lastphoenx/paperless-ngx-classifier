@@ -35,7 +35,8 @@ post_consume.py       — Main pipeline (runs after every successful scan)
   │                     licence plate, handwritten notes ("bez. 6.2.26" → paid)
   ├─ RAG              — Embeddings (bge-m3) match document to known folders
   ├─ LLM              — Classifies document type, tags, storage path
-  ├─ Sanitiser        — Validates against manifest, exclusion keywords
+  ├─ Sanitiser        — Validates against manifest, exclusion keywords;
+  │                     known type not in folder manifest → auto-add + confidence mittel
   ├─ Deterministic    — Licence plates from family.json bypass LLM entirely
   │   routing           (faster + more reliable for known patterns)
   └─ Paperless API    — Patches correspondent, tags, path, custom fields
@@ -51,6 +52,7 @@ Every correction you make in paper.manager feeds back into the system:
 
 - Approved correspondents → added to `correspondents.json` with match strings
 - Reclassified documents → allowed tags updated in the manifest
+- Document type known but not in folder manifest → manifest auto-updated, confidence mittel (self-healing)
 - Known senders → never go into the review queue again
 - Deterministic routing → grows over time, reducing LLM calls
 
@@ -319,7 +321,7 @@ The LLM reliably hits broad categories. Avoid creating a type for every edge cas
 | Problem | Solution |
 |---|---|
 | Wrong folder despite correct Vision | Paperless classifier not disabled — run the reset above |
-| `Arztbericht` or absurd type as fallback | Document type not in manifest for that folder — add it in Speicherpfade |
+| `Arztbericht` as type on first scan of new doc type | Type was known but not yet in folder manifest — auto-added, next scan routes correctly (self-healing) |
 | Confidence always mittel | Check `CONFIDENCE_IGNORE_TAG_PATTERNS` in `.env` |
 | `Scan_` titles, files as `0000xxx.pdf` | `post_consume.py` crashed — re-consume PDF after fixing the error |
 | `Field required` on document approve | Deploy `correspondent_manager_app.py` v2.2+ |
