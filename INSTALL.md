@@ -138,9 +138,9 @@ OLLAMA_MODEL_LLM=llama3.3:70b
 OLLAMA_MODEL=llama3.3:70b
 
 # Berechtigungen (IDs aus Paperless Admin → Gruppen)
-PAPERLESS_OWNER_ID=1
-PAPERLESS_VIEW_GROUP_IDS=1
-PAPERLESS_CHANGE_GROUP_IDS=1
+# PAPERLESS_OWNER_ID=1  # deprecated — nicht mehr verwenden (s. Hinweis unten)
+PAPERLESS_VIEW_GROUP_IDS=1,2
+PAPERLESS_CHANGE_GROUP_IDS=2
 
 # Custom Fields (IDs aus Schritt 2)
 CF_BETRAG_ID=1
@@ -159,6 +159,8 @@ PAPER_MANAGER_TOKEN=REPLACE_WITH_RANDOM_TOKEN
 ```
 
 > **Paperless API-Token erstellen:** Paperless → Admin → Tokens → Token hinzufügen
+
+> **Hinweis Berechtigungen:** `PAPERLESS_OWNER_ID` wird nicht mehr verwendet. Neu angelegte Objekte (Korrespondenten, Tags, Dokumenttypen, Storage Paths) erhalten **keinen Owner** — nur Gruppen-Permissions (`VIEW_GROUP_IDS`, `CHANGE_GROUP_IDS`). Ein gesetzter Owner würde das Objekt für alle anderen Benutzer unsichtbar machen.
 
 ---
 
