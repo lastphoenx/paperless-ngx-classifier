@@ -64,9 +64,10 @@ def _load_family() -> dict:
     try:
         if FAMILY_JSON.exists():
             _FAMILY_DATA = json.loads(FAMILY_JSON.read_text(encoding="utf-8"))
-            log.info("family.json geladen: %d Personen, %d Fahrzeuge",
+            log.info("family.json geladen: %d Personen, %d Fahrzeuge, %d Beziehungen",
                      len(_FAMILY_DATA.get("personen", [])),
-                     len(_FAMILY_DATA.get("fahrzeuge", [])))
+                     len(_FAMILY_DATA.get("fahrzeuge", [])),
+                     len(_FAMILY_DATA.get("beziehungen", [])))
         else:
             _FAMILY_DATA = {}
     except Exception as e:
@@ -81,9 +82,7 @@ def _get_haushalt_name() -> str:
 
 
 def _build_kennzeichen_map() -> dict[str, dict]:
-    """Kennzeichen → {ordner, person_id} Map aus family.json.
-    Normalisiert: Leerzeichen entfernt, Grossbuchstaben.
-    """
+    """Kennzeichen → {ordner, person_id} Map aus family.json."""
     result = {}
     for fz in _load_family().get("fahrzeuge", []):
         kz = fz.get("kennzeichen", "").replace(" ", "").upper()
@@ -94,6 +93,43 @@ def _build_kennzeichen_map() -> dict[str, dict]:
                 "kennzeichen_display": fz.get("kennzeichen", kz),
             }
     return result
+
+
+def _build_beziehungen_map() -> list[dict]:
+    """Beziehungen aus family.json — für deterministisches Routing + Vision-Prompt."""
+    return _load_family().get("beziehungen", [])
+
+
+def _get_haushalt_personen_namen() -> list[str]:
+    """Alle Personennamen im Haushalt — für Vision-Prompt (sind NIE Absender)."""
+    namen = []
+    for p in _load_family().get("personen", []):
+        if p.get("anzeigename"):
+            namen.append(p["anzeigename"])
+    return namen
+
+
+def _match_beziehung(absender: str) -> dict | None:
+    """Prüft ob Absender (Vision) zu einer bekannten Beziehung passt.
+    Fuzzy-Match: Absender muss im Beziehungs-Korrespondenten enthalten sein oder umgekehrt.
+    Gibt Beziehungs-Dict zurück oder None.
+    """
+    if not absender:
+        return None
+    absender_lower = absender.lower().strip()
+    for bez in _build_beziehungen_map():
+        korr = bez.get("korrespondent", "").lower().strip()
+        if not korr:
+            continue
+        # Einfacher fuzzy-Match: einer enthält den anderen
+        if korr in absender_lower or absender_lower in korr:
+            return bez
+        # Wort-Match: mind. 2 Wörter übereinstimmend
+        korr_words  = set(korr.split())
+        abs_words   = set(absender_lower.split())
+        if len(korr_words & abs_words) >= 2:
+            return bez
+    return None
 
 # ── Tag-Ausschluss-Cache ──────────────────────────────────────────────────────
 _TAG_AUSSCHLUSS_MAP:    dict[str, list[str]] = {}
@@ -594,10 +630,36 @@ VISION_SYSTEM = "Du bist ein JSON-Extraktor für Schweizer Dokumente. Antworte A
 
 def vision_analyze(image_b64: Optional[str], ocr_text: str) -> dict:
     """Vision-LLM Analyse — Ollama natives Format (images-Array, nicht image_url)."""
+
+    # Haushalt-Kontext für Vision-Prompt aufbauen
+    personen_namen = _get_haushalt_personen_namen()
+    beziehungen    = _build_beziehungen_map()
+
+    haushalt_kontext = ""
+    if personen_namen:
+        haushalt_kontext += (
+            f"\nHAUSHALT-KONTEXT (wichtig für Absender-Erkennung):\n"
+            f"Haushaltsmitglieder (sind NIEMALS der Absender, immer der Empfänger): "
+            f"{', '.join(personen_namen)}\n"
+        )
+    if beziehungen:
+        arbeitgeber = [b for b in beziehungen if b.get("typ") == "arbeitgeber"]
+        if arbeitgeber:
+            ag_liste = ", ".join(
+                f"{b['korrespondent']} (Arbeitgeber von {b.get('person','')})"
+                for b in arbeitgeber
+            )
+            haushalt_kontext += (
+                f"Bekannte Arbeitgeber: {ag_liste}\n"
+                f"→ Bei Lohnausweis/Lohnabrechnung: Arbeitgeber = Absender, "
+                f"Haushaltsmitglied = Empfänger\n"
+            )
+
     user_content = (
         f"Extrahiere aus diesem Schweizer Dokument folgende Felder als JSON.\n"
         f"Achte besonders auf handschriftliche Notizen oben rechts am Rand "
-        f"(meist ein Bezahlt-Vermerk wie 'bez. 6.2.26' oder 'bez 26.3.26' oder 'EZ 26.3.26').\n\n"
+        f"(meist ein Bezahlt-Vermerk wie 'bez. 6.2.26' oder 'bez 26.3.26' oder 'EZ 26.3.26').\n"
+        f"{haushalt_kontext}\n"
         f'{{"absender": "Firmenname oder Behörde nicht Empfänger", '
         f'"empfaenger": "Name des Empfängers", '
         f'"datum": "Datum des Dokuments als JJJJ-MM-TT oder null", '
@@ -1839,14 +1901,16 @@ def main():
     log.info("Vision: %s", json.dumps(vision_meta, ensure_ascii=False))
     write_audit_entry(document_id, "vision", vision_meta)
 
+    # Vision leer → confidence später auf mittel setzen (Doc-Review erzwingen)
+    _vision_empty = not vision_meta or vision_meta == {}
+
     # ── Schritt 3: bge-m3 RAG ─────────────────────────────────────────────────
     log.info("Schritt 3: bge-m3 RAG (Top-%d)", RAG_TOP_K)
     rag_text = ocr_text or f"{DOCUMENT_FILE_NAME} {vision_meta.get('dokumenttyp_visuell', '')}"
     similar_entries = find_similar_manifest_entries(rag_text, manifest, manifest_embeddings, top_k=RAG_TOP_K)
 
     # ── Schritt 3.5: Deterministisches Pre-Routing ───────────────────────────
-    # Kennzeichen aus BEIDEN Quellen prüfen: vision_meta UND OCR-Text
-    # (Vision kann übersprungen sein → OCR ist die Fallback-Quelle)
+    # Reihenfolge: 1) Kennzeichen, 2) Beziehungen (Arbeitgeber, Bank, etc.)
     kz_vision = str(vision_meta.get("kennzeichen") or "").upper().replace(" ", "")
     kz_ocr    = ocr_text.upper().replace(" ", "")
     pre_decision = None
@@ -1914,6 +1978,31 @@ def main():
             pre_decision = _pre_route(ordner, kz_display, source)
             break  # erstes Match gewinnt
 
+    # ── Beziehungs-Routing (Arbeitgeber, Bank, etc.) ─────────────────────────
+    if not pre_decision:
+        vision_absender = (vision_meta.get("absender") or "").strip()
+        bez = _match_beziehung(vision_absender)
+        if bez:
+            bez_ordner = bez.get("ordner", "")
+            bez_korr   = bez.get("korrespondent", vision_absender)
+            bez_typ    = bez.get("typ", "beziehung")
+            log.info("Pre-Routing: Beziehung '%s' (%s) → %s (kein LLM)", bez_korr, bez_typ, bez_ordner)
+            ordner_entry = next((e for e in manifest if e.get("pfad") == bez_ordner), {})
+            manifest_tags = ordner_entry.get("erlaubte_tags", [])
+            _max = ordner_entry.get("max_tags", 4)
+            auto_tags = [t for t in manifest_tags[:_max]]
+            pre_decision = {
+                "ordner":                bez_ordner,
+                "tags":                  auto_tags,
+                "korrespondent":         bez_korr,
+                "titel":                 vision_meta.get("dokumenttyp_visuell") or bez_typ.capitalize(),
+                "datum":                 vision_meta.get("datum"),
+                "betrag":                vision_meta.get("betrag"),
+                "dokumenttyp_semantisch": "",
+                "confidence":            "hoch",
+                "begruendung":           f"Deterministisch: Beziehung {bez_typ} '{bez_korr}' → {bez_ordner}"
+            }
+
     # ── Schritt 4: LLM Entscheidung ───────────────────────────────────────────
     log.info("Schritt 4: %s Entscheidung", MODEL_LLM)
 
@@ -1935,8 +2024,12 @@ def main():
         decision = normalize_decision_keys(decision)
 
     # ── Sanitization direkt nach LLM-Output ──────────────────────────────────
-    # sanitize_decision ist die einzige Validation-Stelle — kein doppelter Code
     decision, had_violations = sanitize_decision(decision, manifest, similar_entries)
+
+    # Vision leer → confidence auf mittel erzwingen (Doc-Review)
+    if _vision_empty and decision.get("confidence") == "hoch":
+        decision["confidence"] = "mittel"
+        log.warning("Vision leer — Confidence hoch→mittel (Doc-Review erzwungen)")
 
     # Constraints für nachgelagerte Nutzung (Tags-PATCH, Eskalation etc.)
     final_constraints     = build_constraints(similar_entries, target_ordner=decision["ordner"])

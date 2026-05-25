@@ -1866,9 +1866,9 @@ def api_family():
 @app.patch("/api/family")
 def api_patch_family(body: dict = Body(...)):
     """Haushaltskonfiguration speichern (family.json).
-    Schreibt haushalt, personen, fahrzeuge atomar zurück.
+    Schreibt haushalt, personen, fahrzeuge, beziehungen atomar zurück.
     """
-    allowed = {"haushalt", "personen", "fahrzeuge"}
+    allowed = {"haushalt", "personen", "fahrzeuge", "beziehungen"}
     if not set(body.keys()) <= allowed:
         raise HTTPException(400, f"Unbekannte Felder: {set(body.keys()) - allowed}")
 
@@ -1882,26 +1882,36 @@ def api_patch_family(body: dict = Body(...)):
 
     data.setdefault("version", "1.0")
 
-    # Validierung: Kennzeichen müssen unique sein (nur wenn fahrzeuge gepatcht werden)
+    # Validierung: Kennzeichen müssen unique sein
     if "fahrzeuge" in body:
         kennzeichen_list = [f.get("kennzeichen", "").replace(" ", "").upper()
                             for f in data.get("fahrzeuge", [])]
         if len(kennzeichen_list) != len(set(k for k in kennzeichen_list if k)):
             raise HTTPException(409, "Kennzeichen müssen eindeutig sein")
-
-        # person_id Validierung nur wenn fahrzeuge UND personen bekannt
         person_ids = {p["id"] for p in data.get("personen", []) if "id" in p}
         for fz in data.get("fahrzeuge", []):
             if fz.get("person_id") and fz["person_id"] not in person_ids:
                 raise HTTPException(409, f"person_id '{fz['person_id']}' nicht in personen definiert — zuerst Personen speichern")
+
+    # Validierung: Beziehungen
+    if "beziehungen" in body:
+        valid_typen = {"arbeitgeber", "bank", "krankenkasse", "arzt", "versicherung", "sonstiges"}
+        for bez in data.get("beziehungen", []):
+            if bez.get("typ") and bez["typ"] not in valid_typen:
+                raise HTTPException(400, f"Unbekannter Beziehungstyp: {bez['typ']}")
+            if not bez.get("korrespondent", "").strip():
+                raise HTTPException(400, "Korrespondent darf nicht leer sein")
+            if not bez.get("ordner", "").strip():
+                raise HTTPException(400, f"Ziel-Ordner fehlt bei «{bez.get('korrespondent')}»")
 
     FAMILY_JSON.parent.mkdir(parents=True, exist_ok=True)
     tmp = FAMILY_JSON.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(FAMILY_JSON)
 
-    log.info("family.json gespeichert: %d Personen, %d Fahrzeuge",
-             len(data.get("personen", [])), len(data.get("fahrzeuge", [])))
+    log.info("family.json gespeichert: %d Personen, %d Fahrzeuge, %d Beziehungen",
+             len(data.get("personen", [])), len(data.get("fahrzeuge", [])),
+             len(data.get("beziehungen", [])))
     return {"status": "updated"}
 def api_regex_assistent(body: dict = Body(...)):
     """

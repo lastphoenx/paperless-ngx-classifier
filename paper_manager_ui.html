@@ -531,6 +531,30 @@
         <span style="color:var(--muted);font-size:11px">Aktiv beim nächsten Scan.</span>
       </div>
     </div>
+
+    <!-- BEREICH 3: Beziehungen -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header"><span class="card-title">3 — Beziehungen</span></div>
+      <p style="color:var(--muted);font-size:11px;margin:8px 0 12px;line-height:1.7">
+        Bekannte Absender-Beziehungen ermöglichen <strong>deterministisches Routing</strong> ohne LLM —
+        und verbessern die Vision-Erkennung (z.B. Arbeitgeber ≠ Haushaltsmitglied).<br>
+        <strong>Typen:</strong> Arbeitgeber, Bank, Krankenkasse, Arzt, Versicherung, Sonstiges.
+      </p>
+      <div style="display:grid;grid-template-columns:120px 1fr 100px 1fr 32px;gap:6px;margin-bottom:6px">
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">TYP</div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">KORRESPONDENT <span style="font-weight:normal">(Name des Absenders)</span></div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">PERSON</div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ZIEL-ORDNER <span style="font-weight:normal">(z.B. Vorname/Arbeit)</span></div>
+        <div></div>
+      </div>
+      <div id="family-beziehungen"></div>
+      <button class="btn btn-primary" style="margin-top:8px;font-size:11px" onclick="addFamilyBeziehung()">+ Beziehung hinzufügen</button>
+      <div id="family-beziehungen-error" style="display:none;color:#f87171;font-size:12px;margin-top:8px"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <button class="btn btn-success" onclick="saveFamilyBeziehungen()">✓ Beziehungen speichern</button>
+        <span style="color:var(--muted);font-size:11px">Aktiv beim nächsten Scan.</span>
+      </div>
+    </div>
   </div>
 
 </main>
@@ -2590,6 +2614,7 @@ async function loadFamilyConfig() {
     _familyData = await r.json();
     renderFamilyPersonen(_familyData);
     renderFamilyFahrzeuge(_familyData);
+    renderFamilyBeziehungen(_familyData);
     document.getElementById('fam-name').value    = _familyData.haushalt?.name    || '';
     document.getElementById('fam-land').value    = _familyData.haushalt?.land    || 'CH';
     document.getElementById('fam-sprache').value = _familyData.haushalt?.sprache || 'de';
@@ -2784,6 +2809,88 @@ async function saveFamilyFahrzeuge() {
   }
 }
 
+// ── BEZIEHUNGEN ──────────────────────────────────────────────────────────────
+const BEZ_TYPEN = ['arbeitgeber','bank','krankenkasse','arzt','versicherung','sonstiges'];
+
+function renderFamilyBeziehungen(d) {
+  const container = document.getElementById('family-beziehungen');
+  if (!container) return;
+  const beziehungen = d?.beziehungen || [];
+  const personen    = d?.personen    || [];
+  if (!beziehungen.length) {
+    container.innerHTML = '<div style="color:var(--muted);font-size:12px;font-style:italic;padding:8px 0">Noch keine Beziehungen erfasst.</div>';
+    return;
+  }
+  const personOptions = personen.map(p =>
+    `<option value="${p.id}">${p.anzeigename||p.id}</option>`).join('');
+  container.innerHTML = beziehungen.map((bez, i) => `
+    <div style="display:grid;grid-template-columns:120px 1fr 100px 1fr 32px;gap:6px;margin-bottom:4px;align-items:center">
+      <select onchange="_updateBeziehung(${i},'typ',this.value)" style="font-size:12px">
+        ${BEZ_TYPEN.map(t => `<option value="${t}" ${bez.typ===t?'selected':''}>${t.charAt(0).toUpperCase()+t.slice(1)}</option>`).join('')}
+      </select>
+      <input type="text" value="${bez.korrespondent||''}"
+        onchange="_updateBeziehung(${i},'korrespondent',this.value)"
+        placeholder="z.B. Reformierte Kirche Wegenstettertal" style="font-size:12px">
+      <select onchange="_updateBeziehung(${i},'person',this.value)" style="font-size:12px">
+        <option value="">— alle —</option>
+        ${personen.map(p => `<option value="${p.id}" ${bez.person===p.id?'selected':''}>${p.anzeigename||p.id}</option>`).join('')}
+      </select>
+      <input type="text" value="${bez.ordner||''}"
+        onchange="_updateBeziehung(${i},'ordner',this.value)"
+        placeholder="z.B. Vorname/Arbeit" style="font-size:12px">
+      <button class="btn btn-danger" style="padding:4px 8px;font-size:11px"
+        onclick="_removeBeziehung(${i})">✕</button>
+    </div>`).join('');
+}
+
+function _updateBeziehung(i, field, value) {
+  if (!_familyData) return;
+  if (!_familyData.beziehungen) _familyData.beziehungen = [];
+  if (!_familyData.beziehungen[i]) _familyData.beziehungen[i] = {};
+  _familyData.beziehungen[i][field] = value;
+}
+
+function _removeBeziehung(i) {
+  if (!_familyData?.beziehungen) return;
+  _familyData.beziehungen.splice(i, 1);
+  renderFamilyBeziehungen(_familyData);
+}
+
+function addFamilyBeziehung() {
+  if (!_familyData) return;
+  if (!_familyData.beziehungen) _familyData.beziehungen = [];
+  _familyData.beziehungen.push({typ:'arbeitgeber', korrespondent:'', person:'', ordner:''});
+  renderFamilyBeziehungen(_familyData);
+}
+
+async function saveFamilyBeziehungen() {
+  if (!_familyData) return;
+  _showFamilyError('family-beziehungen-error', null);
+  const beziehungen = (_familyData.beziehungen||[]).filter(b => b.korrespondent);
+
+  for (const bez of beziehungen) {
+    if (!bez.korrespondent?.trim()) {
+      _showFamilyError('family-beziehungen-error', 'Korrespondent darf nicht leer sein.'); return;
+    }
+    if (!bez.ordner?.trim()) {
+      _showFamilyError('family-beziehungen-error', `Ziel-Ordner fehlt bei «${bez.korrespondent}».`); return;
+    }
+  }
+
+  const r = await fetch(`${API_BASE}/family`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ beziehungen })
+  });
+  if (r.ok) {
+    showToast('Beziehungen gespeichert', 'success');
+    await loadFamilyConfig();
+  } else {
+    const err = await r.json().catch(()=>({}));
+    _showFamilyError('family-beziehungen-error',
+      typeof err.detail==='string' ? err.detail : JSON.stringify(err.detail||err));
+  }
+}
 
 </script>
 </body>
