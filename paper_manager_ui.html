@@ -549,18 +549,12 @@
     <div class="card" style="margin-bottom:16px">
       <div class="card-header"><span class="card-title">3 — Beziehungen</span></div>
       <p style="color:var(--muted);font-size:11px;margin:8px 0 12px;line-height:1.7">
-        Bekannte Absender-Beziehungen ermöglichen <strong>deterministisches Routing</strong> ohne LLM —
-        und verbessern die Vision-Erkennung (z.B. Arbeitgeber ≠ Haushaltsmitglied).<br>
-        <strong>Typen:</strong> Arbeitgeber, Bank, Krankenkasse, Arzt, Versicherung, Sonstiges.
+        Bekannte Beziehungen zwischen Personen und Korrespondenten ermöglichen
+        <strong>deterministisches Routing</strong> ohne LLM.<br>
+        Werden in <strong>correspondents.json → beziehungen[]</strong> gespeichert.
+        Referenznummer (Police, Patientennr., etc.) erhöht Treffsicherheit.
       </p>
-      <div style="display:grid;grid-template-columns:120px 1fr 100px 1fr 32px;gap:6px;margin-bottom:6px">
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">TYP</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">KORRESPONDENT <span style="font-weight:normal">(Name des Absenders)</span></div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">PERSON</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ZIEL-ORDNER <span style="font-weight:normal">(z.B. Vorname/Arbeit)</span></div>
-        <div></div>
-      </div>
-      <div id="family-beziehungen"></div>
+      <div id="family-beziehungen-list"></div>
       <button class="btn btn-primary" style="margin-top:8px;font-size:11px" onclick="addFamilyBeziehung()">+ Beziehung hinzufügen</button>
       <div id="family-beziehungen-error" style="display:none;color:#f87171;font-size:12px;margin-top:8px"></div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
@@ -2879,105 +2873,196 @@ async function saveFamilyFahrzeuge() {
 }
 
 // ── BEZIEHUNGEN ──────────────────────────────────────────────────────────────
-const BEZ_TYPEN = ['arbeitgeber','bank','krankenkasse','arzt','versicherung','sonstiges'];
+// ── BEZIEHUNGEN (correspondents.json) ────────────────────────────────────────
+// Beziehungen werden NICHT in family.json gespeichert, sondern pro Korrespondent
+// in correspondents.json → beziehungen[]. Familie-Tab zeigt aggregierte Übersicht.
 
-async function renderFamilyBeziehungen(d) {
-  const container = document.getElementById('family-beziehungen');
-  if (!container) return;
-  const beziehungen = d?.beziehungen || [];
-  const personen    = d?.personen    || [];
+let _bezKorrOptions  = '';
+let _bezSpOptions    = '';
+let _bezPersonen     = [];
+let _bezKorrMap      = {}; // name → eintrag
 
-  // Korrespondenten aus API laden
-  let korrOptions = '<option value="">— Korrespondent wählen —</option>';
+async function _loadBezResources() {
   try {
     const r = await fetch(`${API_BASE}/correspondents`);
-    const data = await r.json();
-    const korrs = (data.eintraege || []).sort((a,b) => a.name.localeCompare(b.name));
-    korrOptions += korrs.map(k =>
-      `<option value="${k.name}">${k.name}</option>`).join('');
+    const d = await r.json();
+    _bezKorrMap = {};
+    const korrs = (d.eintraege || []).sort((a,b) => a.name.localeCompare(b.name));
+    korrs.forEach(k => { _bezKorrMap[k.name] = k; });
+    _bezKorrOptions = '<option value="">— Korrespondent wählen —</option>' +
+      korrs.map(k => `<option value="${k.name}">${k.name}</option>`).join('');
   } catch(e) {}
-
-  // Speicherpfade aus API laden
-  let spOptions = '<option value="">— Ordner wählen —</option>';
   try {
     const r = await fetch(`${API_BASE}/paperless/storage-paths`);
-    const data = await r.json();
-    const paths = (data.results || []).sort((a,b) => a.name.localeCompare(b.name));
-    spOptions += paths.map(p =>
-      `<option value="${p.name}">${p.name}</option>`).join('');
+    const d = await r.json();
+    const paths = (d.results || []).sort((a,b) => a.name.localeCompare(b.name));
+    _bezSpOptions = '<option value="">— Ordner wählen —</option>' +
+      paths.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
   } catch(e) {}
+}
 
-  if (!beziehungen.length) {
-    container.innerHTML = '<div style="color:var(--muted);font-size:12px;font-style:italic;padding:8px 0">Noch keine Beziehungen erfasst.</div>';
+// _bezData: [{korrespondent_name, beziehung_idx, ...beziehung}]
+let _bezData = [];
+
+async function renderFamilyBeziehungen(d) {
+  const container = document.getElementById('family-beziehungen-list');
+  if (!container) return;
+  const personen = d?.personen || [];
+  _bezPersonen = personen;
+
+  await _loadBezResources();
+
+  // Alle Beziehungen aus allen Korrespondenten aggregieren
+  _bezData = [];
+  for (const [korrName, korrEntry] of Object.entries(_bezKorrMap)) {
+    const beziehungen = korrEntry.beziehungen || [];
+    beziehungen.forEach((bez, idx) => {
+      _bezData.push({ _korrespondent: korrName, _idx: idx, ...bez });
+    });
+  }
+
+  if (!_bezData.length) {
+    container.innerHTML = '<div style="color:var(--muted);font-size:12px;font-style:italic;padding:8px 0">Noch keine Beziehungen erfasst — in Korrespondenten-Edit pflegen.</div>';
     return;
   }
 
-  container.innerHTML = beziehungen.map((bez, i) => `
-    <div style="display:grid;grid-template-columns:120px 1fr 120px 1fr 32px;gap:6px;margin-bottom:4px;align-items:center">
-      <select onchange="_updateBeziehung(${i},'typ',this.value)" style="font-size:12px">
-        ${BEZ_TYPEN.map(t => `<option value="${t}" ${bez.typ===t?'selected':''}>${t.charAt(0).toUpperCase()+t.slice(1)}</option>`).join('')}
-      </select>
-      <select onchange="_updateBeziehung(${i},'korrespondent',this.value)" style="font-size:12px">
-        ${korrOptions.replace(`value="${bez.korrespondent}"`, `value="${bez.korrespondent}" selected`)}
-      </select>
-      <select onchange="_updateBeziehung(${i},'person',this.value)" style="font-size:12px">
-        <option value="">— alle —</option>
-        ${personen.map(p => `<option value="${p.id}" ${bez.person===p.id?'selected':''}>${p.anzeigename||p.id}</option>`).join('')}
-      </select>
-      <select onchange="_updateBeziehung(${i},'ordner',this.value)" style="font-size:12px">
-        ${spOptions.replace(`value="${bez.ordner}"`, `value="${bez.ordner}" selected`)}
-      </select>
-      <button class="btn btn-danger" style="padding:4px 8px;font-size:11px"
-        onclick="_removeBeziehung(${i})">✕</button>
-    </div>`).join('');
+  const personOptions = personen.map(p =>
+    `<option value="${p.id}">${p.anzeigename||p.id}</option>`).join('');
+
+  container.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 80px 100px 1fr 1fr 32px;gap:4px;margin-bottom:4px">
+      ${['KORRESPONDENT','BEZEICHNUNG','REF-NR','PERSON','ERLAUBTE DOCTYPEN','ORDNER',''].map(h =>
+        `<div style="font-size:10px;color:var(--muted);padding:0 4px">${h}</div>`).join('')}
+    </div>` +
+    _bezData.map((bez, i) => {
+      const dtChips = (bez.erlaubte_doctypen||[]).map(dt =>
+        `<span style="background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:1px 5px;font-size:10px;margin:1px">${dt}</span>`
+      ).join('');
+      return `
+      <div style="display:grid;grid-template-columns:1fr 1fr 80px 100px 1fr 1fr 32px;gap:4px;margin-bottom:6px;align-items:start;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px">
+        <div style="font-size:12px;color:var(--accent);font-weight:500">${bez._korrespondent}</div>
+        <input type="text" value="${bez.bezeichnung||''}" style="font-size:11px"
+          onchange="_bezUpdate(${i},'bezeichnung',this.value)" placeholder="z.B. Arbeitgeber">
+        <input type="text" value="${bez.referenznummer||''}" style="font-size:11px"
+          onchange="_bezUpdate(${i},'referenznummer',this.value)" placeholder="z.B. LV_889">
+        <select style="font-size:11px" onchange="_bezUpdate(${i},'person',this.value)">
+          <option value="">— alle —</option>
+          ${personen.map(p => `<option value="${p.id}" ${bez.person===p.id?'selected':''}>${p.anzeigename||p.id}</option>`).join('')}
+        </select>
+        <div>
+          <div style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:3px">${dtChips}</div>
+          <select style="font-size:10px;width:100%" onchange="_bezAddDoctyp(${i},this.value);this.value=''">
+            <option value="">+ Doctyp</option>
+            ${(window._allDocTypes||[]).map(t => `<option value="${t.name}">${t.name}</option>`).join('')}
+          </select>
+        </div>
+        <select style="font-size:11px" onchange="_bezUpdate(${i},'ordner',this.value)">
+          ${_bezSpOptions.replace(`value="${bez.ordner}"`, `value="${bez.ordner}" selected`)}
+        </select>
+        <button class="btn btn-danger" style="padding:3px 7px;font-size:10px"
+          onclick="_bezRemove(${i})">✕</button>
+      </div>`;
+    }).join('');
 }
 
-function _updateBeziehung(i, field, value) {
-  if (!_familyData) return;
-  if (!_familyData.beziehungen) _familyData.beziehungen = [];
-  if (!_familyData.beziehungen[i]) _familyData.beziehungen[i] = {};
-  _familyData.beziehungen[i][field] = value;
+function _bezUpdate(i, field, value) {
+  if (!_bezData[i]) return;
+  _bezData[i][field] = value;
 }
 
-async function _removeBeziehung(i) {
-  if (!_familyData?.beziehungen) return;
-  _familyData.beziehungen.splice(i, 1);
-  await renderFamilyBeziehungen(_familyData);
+function _bezAddDoctyp(i, value) {
+  if (!value || !_bezData[i]) return;
+  const dts = _bezData[i].erlaubte_doctypen || [];
+  if (!dts.includes(value)) {
+    _bezData[i].erlaubte_doctypen = [...dts, value];
+    renderFamilyBeziehungen(_familyData);
+  }
+}
+
+async function _bezRemove(i) {
+  if (!_bezData[i]) return;
+  const { _korrespondent, _idx } = _bezData[i];
+  // Aus correspondents.json entfernen via PATCH
+  const korrEntry = _bezKorrMap[_korrespondent];
+  if (!korrEntry) return;
+  const newBez = (korrEntry.beziehungen || []).filter((_, idx) => idx !== _idx);
+  const r = await fetch(`${API_BASE}/correspondents/${encodeURIComponent(_korrespondent)}`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ beziehungen: newBez })
+  });
+  if (r.ok) { showToast('Beziehung entfernt', 'success'); await loadFamilyConfig(); }
+  else showToast('Fehler beim Entfernen', 'error');
 }
 
 async function addFamilyBeziehung() {
-  if (!_familyData) return;
-  if (!_familyData.beziehungen) _familyData.beziehungen = [];
-  _familyData.beziehungen.push({typ:'arbeitgeber', korrespondent:'', person:'', ordner:''});
-  await renderFamilyBeziehungen(_familyData);
+  // Neuen Eintrag: Korrespondent wählen → Beziehung hinzufügen
+  await _loadBezResources();
+  const korrName = await _promptKorrSelect();
+  if (!korrName) return;
+  const korrEntry = _bezKorrMap[korrName] || {};
+  const newBez = [...(korrEntry.beziehungen || []),
+    { person: '', bezeichnung: '', referenznummer: '', erlaubte_doctypen: [], ordner: '' }];
+  const r = await fetch(`${API_BASE}/correspondents/${encodeURIComponent(korrName)}`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ beziehungen: newBez })
+  });
+  if (r.ok) { showToast('Beziehung hinzugefügt', 'success'); await loadFamilyConfig(); }
+  else showToast('Fehler', 'error');
+}
+
+async function _promptKorrSelect() {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:24px;min-width:320px">
+        <div style="font-size:14px;margin-bottom:12px;font-weight:600">Korrespondent wählen</div>
+        <select id="_korrPickSel" style="width:100%;margin-bottom:12px">
+          ${_bezKorrOptions}
+        </select>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-success" onclick="document.body.removeChild(this.closest('[style*=fixed]'));window._bezResolve(document.getElementById('_korrPickSel').value)">Hinzufügen</button>
+          <button class="btn btn-ghost" onclick="document.body.removeChild(this.closest('[style*=fixed]'));window._bezResolve(null)">Abbrechen</button>
+        </div>
+      </div>`;
+    window._bezResolve = resolve;
+    document.body.appendChild(overlay);
+  });
 }
 
 async function saveFamilyBeziehungen() {
-  if (!_familyData) return;
+  // Speichert alle geänderten Beziehungen zurück in correspondents.json
   _showFamilyError('family-beziehungen-error', null);
-  const beziehungen = (_familyData.beziehungen||[]).filter(b => b.korrespondent);
 
-  for (const bez of beziehungen) {
-    if (!bez.korrespondent?.trim()) {
-      _showFamilyError('family-beziehungen-error', 'Korrespondent darf nicht leer sein.'); return;
-    }
-    if (!bez.ordner?.trim()) {
-      _showFamilyError('family-beziehungen-error', `Ziel-Ordner fehlt bei «${bez.korrespondent}».`); return;
-    }
+  // Gruppieren nach Korrespondent
+  const byKorr = {};
+  for (const bez of _bezData) {
+    const { _korrespondent, _idx, ...data } = bez;
+    if (!byKorr[_korrespondent]) byKorr[_korrespondent] = [];
+    byKorr[_korrespondent].push(data);
   }
 
-  const r = await fetch(`${API_BASE}/family`, {
-    method: 'PATCH',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ beziehungen })
-  });
-  if (r.ok) {
+  let errors = [];
+  for (const [korrName, beziehungen] of Object.entries(byKorr)) {
+    for (const bez of beziehungen) {
+      if (!bez.ordner) { errors.push(`Ordner fehlt bei ${korrName}`); break; }
+    }
+    if (errors.length) break;
+    const r = await fetch(`${API_BASE}/correspondents/${encodeURIComponent(korrName)}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ beziehungen })
+    });
+    if (!r.ok) errors.push(`Fehler bei ${korrName}`);
+  }
+
+  if (errors.length) {
+    _showFamilyError('family-beziehungen-error', errors.join('; '));
+  } else {
     showToast('Beziehungen gespeichert', 'success');
     await loadFamilyConfig();
-  } else {
-    const err = await r.json().catch(()=>({}));
-    _showFamilyError('family-beziehungen-error',
-      typeof err.detail==='string' ? err.detail : JSON.stringify(err.detail||err));
   }
 }
 
