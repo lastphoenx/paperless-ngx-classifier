@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.4.py — Paperless-NGX Post-Consume Pipeline v12.4
+post_consume_v12.5.py — Paperless-NGX Post-Consume Pipeline v12.5
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.4"  # 12.4: Pipeline v2 Beziehungen, fix_tags alle Ebenen, verbotene_*, pending_beziehungen
+POST_CONSUME_VERSION = "12.5"  # 12.5: Kommentare Kollegen-Review, Cache-Doku, verbotene_tags Klarheit
 import sys
 import json
 import logging
@@ -248,7 +248,11 @@ _DT_FIX_TAGS_MAP:    dict[str, list[str]] = {}
 _DT_FIX_TAGS_LOADED: bool = False
 
 def _load_dt_fix_tags_map() -> None:
-    """Dokumenttyp → fix_tags Map aus document_types.json."""
+    """Dokumenttyp → fix_tags Map aus document_types.json.
+    In-Process-Singleton — konsistent mit Korrespondenten-Cache und Tag-Ausschluss-Cache.
+    post_consume.py wird pro Scan neu gestartet → kein manueller Reload nötig.
+    Änderungen in document_types.json wirken beim nächsten Scan automatisch.
+    """
     global _DT_FIX_TAGS_LOADED
     if _DT_FIX_TAGS_LOADED:
         return
@@ -364,7 +368,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-log = logging.getLogger("post_consume_v12.4")
+log = logging.getLogger("post_consume_v12.5")
 
 # ─── Paperless ENV ────────────────────────────────────────────────────────────
 
@@ -2072,7 +2076,7 @@ def ensure_all_storage_paths(manifest: list[dict]):
 
 def main():
     log.info("=" * 70)
-    log.info("post_consume_v12.4 | ID=%s | Datei=%s", DOCUMENT_ID, DOCUMENT_FILE_NAME)
+    log.info("post_consume_v12.5 | ID=%s | Datei=%s", DOCUMENT_ID, DOCUMENT_FILE_NAME)
     log.info("Storage-Modus: %s | Vision-Modell: %s", STORAGE_MODE, MODEL_VISION)
 
     if not DOCUMENT_ID:
@@ -2341,6 +2345,9 @@ def main():
         if bez_doctypen_offen and not pre_decision.get("dokumenttyp_semantisch"):
             log.info("Stufe 1: LLM wählt Doctyp aus %s", bez_doctypen_offen)
             dt_constraints = {**constraints, "allowed_dokumenttypen": set(bez_doctypen_offen)}
+            # Hinweis: verbotene_tags/_ordner/_doctypen hier nicht relevant —
+            # LLM wählt nur noch den Doctyp aus einer expliziten Positivliste (bez_doctypen_offen).
+            # verbotene_* greifen nur im Stufe-2/3 Pfad (voller LLM-Call).
             dt_prompt = build_llm_prompt(
                 ocr_text, vision_meta, similar_entries, manifest, corrections,
                 DOCUMENT_FILE_NAME, dt_constraints,
