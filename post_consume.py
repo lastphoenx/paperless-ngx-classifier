@@ -96,7 +96,7 @@ def _build_kennzeichen_map() -> dict[str, dict]:
 
 
 def _build_beziehungen_map() -> list[dict]:
-    """Beziehungen aus family.json — für deterministisches Routing + Vision-Prompt."""
+    """Beziehungen aus family.json — für Vision-Prompt Haushalt-Kontext."""
     return _load_family().get("beziehungen", [])
 
 
@@ -109,10 +109,124 @@ def _get_haushalt_personen_namen() -> list[str]:
     return namen
 
 
+def _match_korrespondent_eintrag(corr_map: dict, absender: str) -> dict | None:
+    """Findet Korrespondenten-Eintrag via Fuzzy-Match auf Absender.
+    Gibt vollständigen Eintrag zurück oder None.
+    """
+    if not absender or not corr_map:
+        return None
+    absender_lower = absender.lower().strip()
+    for entry in corr_map.get("eintraege", []):
+        kandidaten = (
+            [entry["name"].lower()] +
+            [v.lower() for v in entry.get("varianten", [])] +
+            [m.lower() for m in entry.get("match", [])]
+        )
+        for k in kandidaten:
+            if not k or len(k) < 3:
+                continue
+            if k in absender_lower or absender_lower in k:
+                return entry
+            k_words   = {w for w in k.split() if w not in _TOKEN_OVERLAP_STOPWORDS}
+            abs_words = {w for w in absender_lower.split() if w not in _TOKEN_OVERLAP_STOPWORDS}
+            if k_words and abs_words and len(k_words & abs_words) >= 2:
+                return entry
+    return None
+
+
+def _match_beziehung_v2(
+    corr_entry: dict,
+    vision_empfaenger: str,
+    ocr_text: str,
+) -> dict | None:
+    """Stufe 1: Beziehungs-Match auf Korrespondenten-Eintrag.
+
+    Match-Reihenfolge (stärkster zuerst):
+      1. referenznummer in OCR (direkt ODER via extraktion_muster Regex)
+      2. nur eine Beziehung → deterministisch
+      3. empfaenger (Vision) stimmt mit person überein
+
+    EINDEUTIGKEIT: Jede Stufe gibt nur zurück wenn genau 1 Match — sonst None → LLM.
+    """
+    import re as _re
+    beziehungen = corr_entry.get("beziehungen", [])
+    if not beziehungen:
+        return None
+
+    personen_map = {
+        p.get("id", "").lower(): p.get("anzeigename", "")
+        for p in _load_family().get("personen", [])
+    }
+    ocr_lower = ocr_text.lower()
+
+    # Extraktions-Muster des Korrespondenten vorab auswerten → extrahierte Werte
+    extrahierte_werte: set[str] = set()
+    for muster_key, muster in corr_entry.get("extraktion_muster", {}).items():
+        regex = muster.get("regex", "")
+        if not regex:
+            continue
+        try:
+            for m in _re.finditer(regex, ocr_text, _re.IGNORECASE):
+                # Named group oder ganzer Match
+                val = next(iter(m.groupdict().values()), None) or m.group(0)
+                if val:
+                    extrahierte_werte.add(val.strip().lower())
+        except Exception:
+            pass
+
+    # Match 1: Referenznummer in OCR — direkt oder via extraktion_muster
+    ref_matches = []
+    for bez in beziehungen:
+        ref = (bez.get("referenznummer") or "").strip()
+        if not ref:
+            continue
+        ref_lower = ref.lower()
+        # Direkt im OCR
+        if ref_lower in ocr_lower:
+            ref_matches.append(bez)
+            continue
+        # Via Regex-Extraktion: normalisiert vergleichen
+        ref_norm = _re.sub(r'[\s_\-\.]', '', ref_lower)
+        for val in extrahierte_werte:
+            val_norm = _re.sub(r'[\s_\-\.]', '', val)
+            if ref_norm == val_norm:
+                ref_matches.append(bez)
+                break
+
+    if len(ref_matches) == 1:
+        log.info("Beziehungs-Match via Referenznummer → person=%s", ref_matches[0].get("person"))
+        return ref_matches[0]
+    elif len(ref_matches) > 1:
+        log.warning("Beziehungs-Match: %d Referenznummer-Matches — nicht eindeutig → LLM", len(ref_matches))
+        return None
+
+    # Match 2: Einzige Beziehung → deterministisch
+    if len(beziehungen) == 1:
+        log.info("Beziehungs-Match: einzige Beziehung → person=%s", beziehungen[0].get("person"))
+        return beziehungen[0]
+
+    # Match 3: Empfänger aus Vision — nur wenn genau 1 Match
+    if vision_empfaenger:
+        empf_lower = vision_empfaenger.lower().strip()
+        empf_matches = []
+        for bez in beziehungen:
+            person_id   = bez.get("person", "").lower()
+            anzeigename = personen_map.get(person_id, person_id).lower()
+            if person_id in empf_lower or anzeigename in empf_lower:
+                empf_matches.append(bez)
+        if len(empf_matches) == 1:
+            log.info("Beziehungs-Match via Empfänger '%s' → person=%s",
+                     vision_empfaenger, empf_matches[0].get("person"))
+            return empf_matches[0]
+        elif len(empf_matches) > 1:
+            log.warning("Beziehungs-Match: %d Empfänger-Matches — nicht eindeutig → LLM", len(empf_matches))
+
+    return None
+
+
 def _match_beziehung(absender: str) -> dict | None:
-    """Prüft ob Absender (Vision) zu einer bekannten Beziehung passt.
-    Fuzzy-Match: Absender muss im Beziehungs-Korrespondenten enthalten sein oder umgekehrt.
-    Gibt Beziehungs-Dict zurück oder None.
+    """Legacy: Beziehungs-Match aus family.json (für Vision-Prompt-Kontext).
+    Hauptrouting läuft jetzt via correspondents.json (_match_beziehung_v2).
     """
     if not absender:
         return None
@@ -121,13 +235,11 @@ def _match_beziehung(absender: str) -> dict | None:
         korr = bez.get("korrespondent", "").lower().strip()
         if not korr:
             continue
-        # Einfacher fuzzy-Match: einer enthält den anderen
         if korr in absender_lower or absender_lower in korr:
             return bez
-        # Wort-Match: mind. 2 Wörter übereinstimmend
-        korr_words  = set(korr.split())
-        abs_words   = set(absender_lower.split())
-        if len(korr_words & abs_words) >= 2:
+        korr_words = {w for w in korr.split() if w not in _TOKEN_OVERLAP_STOPWORDS}
+        abs_words  = {w for w in absender_lower.split() if w not in _TOKEN_OVERLAP_STOPWORDS}
+        if korr_words and abs_words and len(korr_words & abs_words) >= 2:
             return bez
     return None
 
@@ -793,6 +905,7 @@ def build_llm_prompt(
     filename: str,
     constraints: dict,
     corr_map: dict = None,
+    stufe1_kontext: dict = None,
 ) -> str:
     """Optimierter Prompt — kompakt und fokussiert.
 
@@ -803,6 +916,7 @@ def build_llm_prompt(
     - Vision: nur relevante Felder, kein JSON-Dump des ganzen Objekts
     - Korrekturen: nur letzte 5 statt 8
     - Struktur: Constraints direkt nach Vision (höhere Aufmerksamkeit am Anfang)
+    - stufe1_kontext: Beziehungen + verbotene_* aus correspondents.json
     """
     allowed_tags          = constraints["allowed_tags"]
     verboten_tags         = constraints["verboten_tags"]
@@ -877,11 +991,65 @@ def build_llm_prompt(
                     )
                 break
 
+    # Stufe1-Kontext für Prompt aufbauen
+    stufe1_block = ""
+    verbotene_doctypen_prompt = []
+    verbotene_ordner_prompt   = []
+    nur_doctyp_modus          = False
+
+    if stufe1_kontext:
+        nur_doctyp_modus = stufe1_kontext.get("nur_doctyp", False)
+        beziehungen_korr = stufe1_kontext.get("beziehungen_korrespondent", [])
+        stufe1_grund     = stufe1_kontext.get("stufe1_grund", "")
+        verbotene_doctypen_prompt = stufe1_kontext.get("verbotene_doctypen", [])
+        verbotene_ordner_prompt   = stufe1_kontext.get("verbotene_ordner", [])
+        bevorzugte_ordner         = stufe1_kontext.get("bevorzugte_ordner", [])
+
+        if beziehungen_korr:
+            bez_lines = "\n".join(
+                f"  - {b.get('person','?')}: {b.get('bezeichnung','?')} "
+                f"(Ref: {b.get('referenznummer','—')}) → {b.get('ordner','?')}"
+                for b in beziehungen_korr
+            )
+            stufe1_block = f"\nBEKANNTE BEZIEHUNGEN DIESES KORRESPONDENTEN:\n{bez_lines}\n"
+        if stufe1_grund:
+            stufe1_block += f"KEIN STUFE-1-MATCH WEIL: {stufe1_grund}\n"
+        if bevorzugte_ordner:
+            stufe1_block += (
+                f"BEVORZUGTE ORDNER (typisch für diesen Korrespondenten, "
+                f"nicht zwingend): {', '.join(bevorzugte_ordner)}\n"
+            )
+        if verbotene_doctypen_prompt:
+            stufe1_block += f"VERBOTENE DOKUMENTTYPEN: {', '.join(verbotene_doctypen_prompt)}\n"
+        if verbotene_ordner_prompt:
+            stufe1_block += f"VERBOTENE ORDNER: {', '.join(verbotene_ordner_prompt)}\n"
+
     # Kennzeichen-Hinweise für Prompt dynamisch aus family.json
     kz_map = _build_kennzeichen_map()
     kz_prioritaeten = ""
     for i, (kz_norm, fz) in enumerate(kz_map.items(), 1):
         kz_prioritaeten += f"{i}. Kennzeichen {fz['kennzeichen_display']} → {fz['ordner']}\n"
+
+    # Beziehungsvorschlag-Aufforderung (nur wenn kein Stufe-1-Match + Korrespondent bekannt)
+    beziehung_vorschlag_block = ""
+    if stufe1_kontext and stufe1_kontext.get("stufe1_grund") and not nur_doctyp_modus:
+        beziehung_vorschlag_block = (
+            '\nFalls du Person + Ordner sicher erkennst, füge OPTIONAL hinzu:\n'
+            '"beziehungs_vorschlag":{"person":"thomas|monika|giulia",'
+            '"bezeichnung":"z.B. Arzt","referenznummer":"falls sichtbar",'
+            '"erlaubte_doctypen":["..."],"ordner":"..."}}\n'
+        )
+
+    if nur_doctyp_modus:
+        return (
+            f"Wähle den passenden Dokumenttyp aus dieser Liste: "
+            f"{', '.join(sorted(constraints.get('allowed_dokumenttypen', set())))}\n"
+            f"DATEI: {filename}\n"
+            f"VISION: {json.dumps(vision_meta, ensure_ascii=False)[:500]}\n"
+            f"OCR: {ocr_text[:500]}\n"
+            f"{stufe1_block}\n"
+            'Antworte NUR mit JSON: {"dokumenttyp_semantisch":"..."}'
+        )
 
     return (
         f"Klassifiziere dieses Dokument für {_get_haushalt_name()} (Schweiz).\n"
@@ -889,8 +1057,9 @@ def build_llm_prompt(
         f"DATEI: {filename}\n"
         f"VISION: {json.dumps(vision_kompakt, ensure_ascii=False)}{kennzeichen_hinweis}\n\n"
         f"OCR (erste 2000 Zeichen):\n{ocr_short}\n\n"
+        f"{stufe1_block}"
         f"KANDIDATEN (RAG):\n{similar_text or '  (keine)'}\n"
-        f"ALLE ORDNER: {', '.join(ordner_priorisiert)}\n\n"
+        f"ALLE ORDNER: {', '.join(o for o in ordner_priorisiert if o not in verbotene_ordner_prompt)}\n\n"
         f"ERLAUBTE TAGS (NUR DIESE!): {allowed_tags_str}\n"
         f"VERBOTENE TAGS: {verboten_str}\n"
         f"ERLAUBTE DOKUMENTTYPEN: {typen_str}\n"
@@ -903,6 +1072,7 @@ def build_llm_prompt(
         f"{len(kz_map)+4}. SVA/AHV/Gemeinde → Familie/Behörde\n"
         f"{len(kz_map)+5}. Steueramt → Person/Steuern\n"
         + (f"\nKORREKTUREN:\n{recent_corrections}" if recent_corrections else "") +
+        f"{beziehung_vorschlag_block}"
         '\n{"ordner":"...","tags":[...],"korrespondent":"...","titel":"...","datum":"YYYY-MM-DD",'
         '"betrag":"CHF XX.XX","dokumenttyp_semantisch":"...","confidence":"hoch|mittel|tief",'
         '"begruendung":"1 Satz"}'
@@ -1242,6 +1412,10 @@ PENDING_CORR_PATH = Path(os.environ.get(
     "PENDING_JSONL",
     "/opt/paperless-scripts/training/pending_correspondents.jsonl"
 ))
+PENDING_BEZIEHUNGEN_PATH = Path(os.environ.get(
+    "PENDING_BEZIEHUNGEN_JSONL",
+    "/opt/paperless-scripts/training/pending_beziehungen.jsonl"
+))
 PENDING_REVIEW_TAG       = os.environ.get("PENDING_REVIEW_TAG",       "pending_review")
 PENDING_QS_TAG           = os.environ.get("PENDING_QS_TAG",           "pending_qs")
 PENDING_NEW_CORR_TAG     = os.environ.get("PENDING_NEW_CORR_TAG",      "pending_new_correspondent")
@@ -1469,6 +1643,32 @@ def _append_pending_corr(entry: dict) -> None:
             _fcntl.flock(f, _fcntl.LOCK_UN)
     log.info("Pending-Korrespondent: aktion=%s name=%s",
              entry.get("aktion"), entry.get("vorgeschlagener_eintrag", {}).get("name", "?"))
+
+
+def write_pending_beziehung(vorschlag: dict, document_id: int, korrespondent_name: str) -> None:
+    """Beziehungs-Vorschlag in pending_beziehungen.jsonl schreiben."""
+    import time as _time
+    import fcntl as _fcntl
+    entry = {
+        "status":           "pending",
+        "timestamp":        _time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "document_id":      document_id,
+        "korrespondent":    korrespondent_name,
+        "person":           vorschlag.get("person", ""),
+        "bezeichnung":      vorschlag.get("bezeichnung", ""),
+        "referenznummer":   vorschlag.get("referenznummer", ""),
+        "erlaubte_doctypen": vorschlag.get("erlaubte_doctypen", []),
+        "ordner":           vorschlag.get("ordner", ""),
+    }
+    PENDING_BEZIEHUNGEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(PENDING_BEZIEHUNGEN_PATH, "a", encoding="utf-8") as f:
+        _fcntl.flock(f, _fcntl.LOCK_EX)
+        try:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        finally:
+            _fcntl.flock(f, _fcntl.LOCK_UN)
+    log.info("Pending-Beziehung: korrespondent=%s person=%s ordner=%s",
+             korrespondent_name, entry["person"], entry["ordner"])
 
 
 def _build_pending_entry(aktion: str, raw_name: str, document_id: int,
@@ -1997,19 +2197,77 @@ def main():
             pre_decision = _pre_route(ordner, kz_display, source)
             break  # erstes Match gewinnt
 
-    # ── Beziehungs-Routing (Arbeitgeber, Bank, etc.) ─────────────────────────
+    # ── Stufe 1: Beziehungs-Routing aus correspondents.json ──────────────────
+    corr_map       = _load_corr_map()
+    vision_absender  = (vision_meta.get("absender") or "").strip()
+    vision_empfaenger = (vision_meta.get("empfaenger") or "").strip()
+    _corr_entry    = None   # gefundener Korrespondenten-Eintrag
+    _beziehung     = None   # gefundene Beziehung
+    _stufe1_grund  = ""     # warum kein Stufe-1-Match (für LLM-Prompt)
+
     if not pre_decision:
-        vision_absender = (vision_meta.get("absender") or "").strip()
+        _corr_entry = _match_korrespondent_eintrag(corr_map, vision_absender)
+        if _corr_entry:
+            log.info("Stufe 1: Korrespondent '%s' gefunden", _corr_entry["name"])
+            _beziehung = _match_beziehung_v2(_corr_entry, vision_empfaenger, ocr_text)
+            if _beziehung:
+                bez_ordner   = _beziehung.get("ordner", "")
+                bez_doctypen = _beziehung.get("erlaubte_doctypen", [])
+                bez_person   = _beziehung.get("person", "")
+                bez_bez      = _beziehung.get("bezeichnung", "")
+                log.info("Stufe 1: Beziehungs-Match '%s' → person=%s ordner=%s",
+                         bez_bez, bez_person, bez_ordner)
+
+                # Ordner: immer deterministisch (1 Ordner pro Beziehung)
+                # Doctyp: nur wenn genau 1 Option → deterministisch
+                if len(bez_doctypen) == 1:
+                    bez_doctyp = bez_doctypen[0]
+                    log.info("Stufe 1: Doctyp deterministisch → %s", bez_doctyp)
+                else:
+                    bez_doctyp = None  # LLM wählt aus bez_doctypen
+                    log.info("Stufe 1: %d Doctypen → LLM wählt aus %s", len(bez_doctypen), bez_doctypen)
+
+                # fix_tags vom Korrespondenten (immer, deterministisch)
+                fix_tags = _corr_entry.get("fix_tags", [])
+
+                pre_decision = {
+                    "ordner":                bez_ordner,
+                    "tags":                  fix_tags,
+                    "korrespondent":         _corr_entry["name"],
+                    "titel":                 vision_meta.get("dokumenttyp_visuell") or bez_bez,
+                    "datum":                 vision_meta.get("datum"),
+                    "betrag":                vision_meta.get("betrag"),
+                    "dokumenttyp_semantisch": bez_doctyp or "",
+                    "confidence":            "hoch",
+                    "begruendung":           f"Stufe 1: Beziehung '{bez_bez}' (person={bez_person}) → {bez_ordner}",
+                    "_bez_doctypen_offen":   bez_doctypen if not bez_doctyp else [],
+                }
+            else:
+                _stufe1_grund = (
+                    f"Korrespondent '{_corr_entry['name']}' bekannt, "
+                    f"aber keine passende Beziehung für Empfänger='{vision_empfaenger}'"
+                )
+                log.info("Stufe 1: kein Beziehungs-Match — %s", _stufe1_grund)
+        else:
+            _stufe1_grund = f"Korrespondent '{vision_absender}' nicht in correspondents.json"
+
+    # ── Stufe 2: fix_tags + Beziehungs-Routing aus family.json (Legacy-Fallback) ──
+    if not pre_decision:
+        # Stufe 2a: fix_tags aus Korrespondent (falls gefunden aber kein Beziehungs-Match)
+        # Diese werden später dem LLM-Ergebnis hinzugefügt
+        _corr_fix_tags = _corr_entry.get("fix_tags", []) if _corr_entry else []
+
+        # Stufe 2b: family.json Beziehungen (Legacy — Arbeitgeber etc.)
         bez = _match_beziehung(vision_absender)
         if bez:
             bez_ordner = bez.get("ordner", "")
             bez_korr   = bez.get("korrespondent", vision_absender)
             bez_typ    = bez.get("typ", "beziehung")
-            log.info("Pre-Routing: Beziehung '%s' (%s) → %s (kein LLM)", bez_korr, bez_typ, bez_ordner)
+            log.info("Stufe 2b: family.json Beziehung '%s' (%s) → %s", bez_korr, bez_typ, bez_ordner)
             ordner_entry = next((e for e in manifest if e.get("pfad") == bez_ordner), {})
             manifest_tags = ordner_entry.get("erlaubte_tags", [])
             _max = ordner_entry.get("max_tags", 4)
-            auto_tags = [t for t in manifest_tags[:_max]]
+            auto_tags = list(dict.fromkeys(_corr_fix_tags + manifest_tags[:_max]))
             pre_decision = {
                 "ordner":                bez_ordner,
                 "tags":                  auto_tags,
@@ -2019,7 +2277,8 @@ def main():
                 "betrag":                vision_meta.get("betrag"),
                 "dokumenttyp_semantisch": "",
                 "confidence":            "hoch",
-                "begruendung":           f"Deterministisch: Beziehung {bez_typ} '{bez_korr}' → {bez_ordner}"
+                "begruendung":           f"Stufe 2b: family.json Beziehung '{bez_typ}' '{bez_korr}' → {bez_ordner}",
+                "_bez_doctypen_offen":   [],
             }
 
     # ── Schritt 4: LLM Entscheidung ───────────────────────────────────────────
@@ -2032,18 +2291,82 @@ def main():
     allowed_dokumenttypen = constraints["allowed_dokumenttypen"]
     max_tags              = constraints["max_tags"]
 
+    # Korrespondenten-Constraints (Stufe 2: verbotene_* + fix_tags)
+    _verbotene_doctypen = []
+    _verbotene_ordner   = []
+    _corr_fix_tags_global = []
+    if _corr_entry:
+        _verbotene_doctypen   = _corr_entry.get("verbotene_doctypen", [])
+        _verbotene_ordner     = _corr_entry.get("verbotene_ordner", [])
+        _corr_fix_tags_global = _corr_entry.get("fix_tags", [])
+
     if pre_decision:
+        # Stufe 1 erfolgreich — fix_tags immer hinzufügen
+        if _corr_fix_tags_global:
+            existing = pre_decision.get("tags", [])
+            merged = list(dict.fromkeys(existing + _corr_fix_tags_global))
+            pre_decision["tags"] = merged
+
+        # Offene Doctypen (2+ Optionen) → LLM nur für Doctyp-Wahl
+        bez_doctypen_offen = pre_decision.pop("_bez_doctypen_offen", [])
+        if bez_doctypen_offen and not pre_decision.get("dokumenttyp_semantisch"):
+            log.info("Stufe 1: LLM wählt Doctyp aus %s", bez_doctypen_offen)
+            dt_constraints = {**constraints, "allowed_dokumenttypen": set(bez_doctypen_offen)}
+            dt_prompt = build_llm_prompt(
+                ocr_text, vision_meta, similar_entries, manifest, corrections,
+                DOCUMENT_FILE_NAME, dt_constraints,
+                corr_map=corr_map,
+                stufe1_kontext={
+                    "beziehung": _beziehung,
+                    "korrespondent": _corr_entry,
+                    "nur_doctyp": True,
+                }
+            )
+            dt_decision = llm_decide(dt_prompt)
+            if dt_decision:
+                dt_decision = normalize_decision_keys(dt_decision)
+                pre_decision["dokumenttyp_semantisch"] = dt_decision.get("dokumenttyp_semantisch", "")
+
         decision = pre_decision
+
     else:
-        prompt   = build_llm_prompt(ocr_text, vision_meta, similar_entries, manifest, corrections, DOCUMENT_FILE_NAME, constraints, corr_map=_load_corr_map())
+        # Stufe 2/3: LLM mit vollem Kontext + verbotene_* + fix_tags
+        # fix_tags werden nach LLM hinzugefügt
+        stufe_kontext = {
+            "beziehungen_korrespondent": _corr_entry.get("beziehungen", []) if _corr_entry else [],
+            "stufe1_grund":    _stufe1_grund,
+            "verbotene_doctypen": _verbotene_doctypen,
+            "verbotene_ordner":   _verbotene_ordner,
+            "bevorzugte_ordner":  _corr_entry.get("typische_ordner", []) if _corr_entry else [],
+        }
+        prompt = build_llm_prompt(
+            ocr_text, vision_meta, similar_entries, manifest, corrections,
+            DOCUMENT_FILE_NAME, constraints,
+            corr_map=corr_map,
+            stufe1_kontext=stufe_kontext,
+        )
         decision = llm_decide(prompt)
         if not decision:
             log.error("Keine verwertbare Entscheidung — Exit 0")
             sys.exit(0)
         decision = normalize_decision_keys(decision)
 
+        # fix_tags aus Korrespondent immer hinzufügen (Stufe 2)
+        if _corr_fix_tags_global:
+            existing = decision.get("tags", [])
+            decision["tags"] = list(dict.fromkeys(existing + _corr_fix_tags_global))
+            log.info("Stufe 2: fix_tags hinzugefügt: %s", _corr_fix_tags_global)
+
     # ── Sanitization direkt nach LLM-Output ──────────────────────────────────
     decision, had_violations = sanitize_decision(decision, manifest, similar_entries)
+
+    # Beziehungsvorschlag aus LLM-Output extrahieren (Stufe 3 → pending_beziehungen)
+    bez_vorschlag = decision.pop("beziehungs_vorschlag", None)
+    if bez_vorschlag and isinstance(bez_vorschlag, dict) and bez_vorschlag.get("person") and bez_vorschlag.get("ordner"):
+        korr_name = _corr_entry["name"] if _corr_entry else (vision_meta.get("absender") or "")
+        write_pending_beziehung(bez_vorschlag, document_id, korr_name)
+        log.info("Beziehungs-Vorschlag gespeichert: person=%s ordner=%s",
+                 bez_vorschlag.get("person"), bez_vorschlag.get("ordner"))
 
     # Vision leer → confidence auf mittel erzwingen (Doc-Review)
     if _vision_empty and decision.get("confidence") == "hoch":

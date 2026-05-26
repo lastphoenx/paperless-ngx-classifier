@@ -956,6 +956,106 @@ def api_pending():
     return {"count": len(pending), "entries": pending}
 
 
+@app.get("/api/pending-beziehungen", response_class=JSONResponse)
+def api_pending_beziehungen():
+    """Alle pending Beziehungs-Vorschläge."""
+    path = Path(os.environ.get("PENDING_BEZIEHUNGEN_JSONL",
+        "/opt/paperless-scripts/training/pending_beziehungen.jsonl"))
+    if not path.exists():
+        return {"count": 0, "entries": []}
+    entries = []
+    for i, line in enumerate(path.read_text(encoding="utf-8").strip().split("\n")):
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+            entries.append({"index": i, **e})
+        except Exception:
+            pass
+    pending = [e for e in entries if e.get("status") == "pending"]
+    return {"count": len(pending), "entries": pending}
+
+
+@app.post("/api/pending-beziehungen/{index}/approve")
+def api_approve_beziehung(index: int, body: dict = Body(...)):
+    """Beziehungs-Vorschlag freigeben — optional in correspondents.json speichern.
+    body: { als_regel: bool, beziehung: {...editierter Vorschlag...} }
+    """
+    path = Path(os.environ.get("PENDING_BEZIEHUNGEN_JSONL",
+        "/opt/paperless-scripts/training/pending_beziehungen.jsonl"))
+    if not path.exists():
+        raise HTTPException(404, "pending_beziehungen.jsonl nicht gefunden")
+
+    lines = path.read_text(encoding="utf-8").strip().split("\n")
+    if index >= len(lines):
+        raise HTTPException(404, f"Index {index} nicht gefunden")
+
+    entry = json.loads(lines[index])
+    bez   = body.get("beziehung") or {
+        "person":           entry.get("person", ""),
+        "bezeichnung":      entry.get("bezeichnung", ""),
+        "referenznummer":   entry.get("referenznummer", ""),
+        "erlaubte_doctypen": entry.get("erlaubte_doctypen", []),
+        "ordner":           entry.get("ordner", ""),
+    }
+
+    # Als Regel speichern → in correspondents.json eintragen
+    if body.get("als_regel", False):
+        corr_name = entry.get("korrespondent", "")
+        corr_map  = load_corr_map()
+        corr_entry = next(
+            (e for e in corr_map.get("eintraege", []) if e["name"] == corr_name), None)
+        if not corr_entry:
+            raise HTTPException(404, f"Korrespondent '{corr_name}' nicht gefunden")
+        beziehungen = corr_entry.setdefault("beziehungen", [])
+        # Prüfen ob bereits vorhanden (gleiche person + bezeichnung)
+        def _bez_konflikt(b: dict, neu: dict) -> bool:
+            """True wenn b und neu als Duplikat gelten."""
+            if b.get("person") != neu.get("person"):
+                return False
+            # Gleiche Bezeichnung
+            if b.get("bezeichnung") and b.get("bezeichnung") == neu.get("bezeichnung"):
+                return True
+            # Gleiche Referenznummer (nicht leer)
+            ref_b = (b.get("referenznummer") or "").strip()
+            ref_n = (neu.get("referenznummer") or "").strip()
+            if ref_b and ref_n and ref_b == ref_n:
+                return True
+            return False
+
+        exists = any(_bez_konflikt(b, bez) for b in beziehungen)
+        if exists:
+            log.info("Beziehung bereits vorhanden — nicht doppelt gespeichert")
+        else:
+            beziehungen.append(bez)
+            save_corr_map(corr_map)
+            log.info("Beziehung gespeichert: %s → person=%s", corr_name, bez.get("person"))
+
+    # Status auf approved setzen
+    entry["status"] = "approved"
+    lines[index] = json.dumps(entry, ensure_ascii=False)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return {"status": "approved", "als_regel": body.get("als_regel", False)}
+
+
+@app.post("/api/pending-beziehungen/{index}/reject")
+def api_reject_beziehung(index: int):
+    """Beziehungs-Vorschlag ablehnen."""
+    path = Path(os.environ.get("PENDING_BEZIEHUNGEN_JSONL",
+        "/opt/paperless-scripts/training/pending_beziehungen.jsonl"))
+    if not path.exists():
+        raise HTTPException(404, "pending_beziehungen.jsonl nicht gefunden")
+    lines = path.read_text(encoding="utf-8").strip().split("\n")
+    if index >= len(lines):
+        raise HTTPException(404, f"Index {index} nicht gefunden")
+    entry = json.loads(lines[index])
+    entry["status"] = "rejected"
+    lines[index] = json.dumps(entry, ensure_ascii=False)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"status": "rejected"}
+
+
 @app.get("/api/correspondents", response_class=JSONResponse)
 def api_correspondents():
     """Kanonisierungs-Map als JSON."""
@@ -1729,7 +1829,8 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
 @app.patch("/api/correspondents/{entry_name:path}")
 def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     """Korrespondenten-Eintrag in correspondents.json aktualisieren.
-    Pflegbare Felder: varianten, match, default_dokumenttyp, typische_ordner, notiz.
+    Pflegbare Felder: varianten, match, default_dokumenttyp, typische_ordner,
+                      notiz, fix_tags, verbotene_doctypen, verbotene_ordner, beziehungen.
     NICHT pflegbar via API: name (Primary Key), _paperless (intern).
     """
     corr_map = load_corr_map()
@@ -1738,10 +1839,19 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     if not entry:
         raise HTTPException(404, f"Korrespondent '{entry_name}' nicht gefunden")
 
-    allowed = ["varianten", "match", "default_dokumenttyp", "typische_ordner", "notiz"]
+    allowed = [
+        "varianten", "match", "default_dokumenttyp", "typische_ordner", "notiz",
+        "fix_tags", "verbotene_doctypen", "verbotene_ordner", "beziehungen",
+    ]
     for field in allowed:
         if field in body:
             entry[field] = body[field]
+
+    # Defaults setzen falls neu
+    entry.setdefault("fix_tags", [])
+    entry.setdefault("verbotene_doctypen", [])
+    entry.setdefault("verbotene_ordner", [])
+    entry.setdefault("beziehungen", [])
 
     save_corr_map(corr_map)
     return {"status": "updated", "name": entry_name}
