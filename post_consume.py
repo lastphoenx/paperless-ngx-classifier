@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.py — Paperless-NGX Post-Consume Pipeline v12
+post_consume_v12.4.py — Paperless-NGX Post-Consume Pipeline v12.4
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -15,7 +15,7 @@ Umgebungsvariablen (.env):
   OLLAMA_MODEL_VISION     mistral-small3.1  (oder qwen2.5vl:32b)
   MANIFEST_PATH           /opt/paperless-scripts/training/manifest.json
   CORRECTIONS_PATH        /opt/paperless-scripts/training/corrections.jsonl
-  LOG_PATH                /opt/paperless-scripts/logs/post_consume_v11.log
+  LOG_PATH                /opt/paperless-scripts/logs/post_consume_v12.log
   RAG_TOP_K               5
   VISION_TIMEOUT          120
   LLM_TIMEOUT             180
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.3"  # 12.3: CF12 Bezahlt am, CF13 Gescannt am, Tag+Doctype Ausschluss, EZ-Fix
+POST_CONSUME_VERSION = "12.4"  # 12.4: Pipeline v2 Beziehungen, fix_tags alle Ebenen, verbotene_*, pending_beziehungen
 import sys
 import json
 import logging
@@ -244,6 +244,31 @@ def _match_beziehung(absender: str) -> dict | None:
     return None
 
 # ── Tag-Ausschluss-Cache ──────────────────────────────────────────────────────
+_DT_FIX_TAGS_MAP:    dict[str, list[str]] = {}
+_DT_FIX_TAGS_LOADED: bool = False
+
+def _load_dt_fix_tags_map() -> None:
+    """Dokumenttyp → fix_tags Map aus document_types.json."""
+    global _DT_FIX_TAGS_LOADED
+    if _DT_FIX_TAGS_LOADED:
+        return
+    try:
+        if DOCUMENT_TYPES_JSON.exists():
+            data = json.loads(DOCUMENT_TYPES_JSON.read_text(encoding="utf-8"))
+            for t in data.get("typen", []):
+                tags = t.get("fix_tags", [])
+                if tags:
+                    _DT_FIX_TAGS_MAP[t["name"].lower()] = tags
+        _DT_FIX_TAGS_LOADED = True
+        if _DT_FIX_TAGS_MAP:
+            log.info("DocType fix_tags Map: %d Typen geladen", len(_DT_FIX_TAGS_MAP))
+    except Exception as e:
+        log.warning("DocType fix_tags Map laden fehlgeschlagen: %s", e)
+
+def _get_doctype_fix_tags(doctyp_name: str) -> list[str]:
+    """fix_tags für einen Dokumenttyp zurückgeben."""
+    _load_dt_fix_tags_map()
+    return _DT_FIX_TAGS_MAP.get((doctyp_name or "").lower(), [])
 _TAG_AUSSCHLUSS_MAP:    dict[str, list[str]] = {}
 _TAG_AUSSCHLUSS_LOADED: bool = False
 
@@ -313,7 +338,7 @@ CONFIDENCE_IGNORE_TAG_PATTERNS = [
 def _is_trivial_tag_violation(tag: str) -> bool:
     """True wenn der Tag trivial ist und keinen Confidence-Downgrade rechtfertigt."""
     return any(p.match(tag) for p in CONFIDENCE_IGNORE_TAG_PATTERNS)
-LOG_PATH          = Path(os.environ.get("LOG_PATH", "/opt/paperless-scripts/logs/post_consume_v11.log"))
+LOG_PATH          = Path(os.environ.get("LOG_PATH", "/opt/paperless-scripts/logs/post_consume_v12.log"))
 RAG_TOP_K         = int(os.environ.get("RAG_TOP_K", "5"))
 VISION_TIMEOUT    = int(os.environ.get("VISION_TIMEOUT", "120"))
 LLM_TIMEOUT       = int(os.environ.get("LLM_TIMEOUT", "300"))
@@ -339,7 +364,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-log = logging.getLogger("post_consume_v12")
+log = logging.getLogger("post_consume_v12.4")
 
 # ─── Paperless ENV ────────────────────────────────────────────────────────────
 
@@ -995,6 +1020,7 @@ def build_llm_prompt(
     stufe1_block = ""
     verbotene_doctypen_prompt = []
     verbotene_ordner_prompt   = []
+    verbotene_tags_prompt     = []
     nur_doctyp_modus          = False
 
     if stufe1_kontext:
@@ -1003,6 +1029,7 @@ def build_llm_prompt(
         stufe1_grund     = stufe1_kontext.get("stufe1_grund", "")
         verbotene_doctypen_prompt = stufe1_kontext.get("verbotene_doctypen", [])
         verbotene_ordner_prompt   = stufe1_kontext.get("verbotene_ordner", [])
+        verbotene_tags_prompt     = stufe1_kontext.get("verbotene_tags", [])
         bevorzugte_ordner         = stufe1_kontext.get("bevorzugte_ordner", [])
 
         if beziehungen_korr:
@@ -1023,6 +1050,8 @@ def build_llm_prompt(
             stufe1_block += f"VERBOTENE DOKUMENTTYPEN: {', '.join(verbotene_doctypen_prompt)}\n"
         if verbotene_ordner_prompt:
             stufe1_block += f"VERBOTENE ORDNER: {', '.join(verbotene_ordner_prompt)}\n"
+        if verbotene_tags_prompt:
+            stufe1_block += f"VERBOTENE TAGS (KORRESPONDENT): {', '.join(verbotene_tags_prompt)}\n"
 
     # Kennzeichen-Hinweise für Prompt dynamisch aus family.json
     kz_map = _build_kennzeichen_map()
@@ -2043,7 +2072,7 @@ def ensure_all_storage_paths(manifest: list[dict]):
 
 def main():
     log.info("=" * 70)
-    log.info("post_consume_v12 | ID=%s | Datei=%s", DOCUMENT_ID, DOCUMENT_FILE_NAME)
+    log.info("post_consume_v12.4 | ID=%s | Datei=%s", DOCUMENT_ID, DOCUMENT_FILE_NAME)
     log.info("Storage-Modus: %s | Vision-Modell: %s", STORAGE_MODE, MODEL_VISION)
 
     if not DOCUMENT_ID:
@@ -2227,8 +2256,10 @@ def main():
                     bez_doctyp = None  # LLM wählt aus bez_doctypen
                     log.info("Stufe 1: %d Doctypen → LLM wählt aus %s", len(bez_doctypen), bez_doctypen)
 
-                # fix_tags vom Korrespondenten (immer, deterministisch)
-                fix_tags = _corr_entry.get("fix_tags", [])
+                # fix_tags: Beziehungsebene + Korrespondenten-Ebene kombinieren
+                bez_fix_tags  = _beziehung.get("fix_tags", [])
+                korr_fix_tags = _corr_entry.get("fix_tags", [])
+                fix_tags = list(dict.fromkeys(bez_fix_tags + korr_fix_tags))
 
                 pre_decision = {
                     "ordner":                bez_ordner,
@@ -2294,20 +2325,18 @@ def main():
     # Korrespondenten-Constraints (Stufe 2: verbotene_* + fix_tags)
     _verbotene_doctypen = []
     _verbotene_ordner   = []
+    _verbotene_tags     = []
     _corr_fix_tags_global = []
     if _corr_entry:
         _verbotene_doctypen   = _corr_entry.get("verbotene_doctypen", [])
         _verbotene_ordner     = _corr_entry.get("verbotene_ordner", [])
+        _verbotene_tags       = _corr_entry.get("verbotene_tags", [])
         _corr_fix_tags_global = _corr_entry.get("fix_tags", [])
 
     if pre_decision:
-        # Stufe 1 erfolgreich — fix_tags immer hinzufügen
-        if _corr_fix_tags_global:
-            existing = pre_decision.get("tags", [])
-            merged = list(dict.fromkeys(existing + _corr_fix_tags_global))
-            pre_decision["tags"] = merged
-
-        # Offene Doctypen (2+ Optionen) → LLM nur für Doctyp-Wahl
+        # Stufe 1: fix_tags aus Beziehung + Korrespondent bereits in pre_decision["tags"]
+        # (gesetzt in _match_beziehung_v2 Block oben) — kein zweites Hinzufügen nötig
+        # Nur noch: offene Doctypen via LLM wählen lassen
         bez_doctypen_offen = pre_decision.pop("_bez_doctypen_offen", [])
         if bez_doctypen_offen and not pre_decision.get("dokumenttyp_semantisch"):
             log.info("Stufe 1: LLM wählt Doctyp aus %s", bez_doctypen_offen)
@@ -2337,6 +2366,7 @@ def main():
             "stufe1_grund":    _stufe1_grund,
             "verbotene_doctypen": _verbotene_doctypen,
             "verbotene_ordner":   _verbotene_ordner,
+            "verbotene_tags":     _verbotene_tags,
             "bevorzugte_ordner":  _corr_entry.get("typische_ordner", []) if _corr_entry else [],
         }
         prompt = build_llm_prompt(
@@ -2372,6 +2402,14 @@ def main():
     if _vision_empty and decision.get("confidence") == "hoch":
         decision["confidence"] = "mittel"
         log.warning("Vision leer — Confidence hoch→mittel (Doc-Review erzwungen)")
+
+    # fix_tags aus Dokumenttyp hinzufügen (deterministisch, nach Sanitizer)
+    doctyp_name = decision.get("dokumenttyp_semantisch", "")
+    dt_fix_tags = _get_doctype_fix_tags(doctyp_name)
+    if dt_fix_tags:
+        existing = decision.get("tags", [])
+        decision["tags"] = list(dict.fromkeys(existing + dt_fix_tags))
+        log.info("DocType fix_tags '%s' → %s", doctyp_name, dt_fix_tags)
 
     # Constraints für nachgelagerte Nutzung (Tags-PATCH, Eskalation etc.)
     final_constraints     = build_constraints(similar_entries, target_ordner=decision["ordner"])
