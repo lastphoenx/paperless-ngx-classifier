@@ -38,8 +38,11 @@ post_consume.py       — Main pipeline (runs after every successful scan)
   ├─ LLM              — Classifies document type, tags, storage path
   ├─ Sanitiser        — Validates against manifest, exclusion keywords;
   │                     known type not in folder manifest → auto-add + confidence mittel
-  ├─ Deterministic    — Licence plates + relationships (employer, bank, health insurer,
-  │   routing           doctor) from family.json bypass LLM entirely (~100% accurate)
+  ├─ Deterministic    — Licence plates (family.json) + relationship matches from
+  │   routing           correspondents.json: ref-number, single-match, Vision recipient
+  │                     bypass LLM entirely (~100% accurate)
+  ├─ fix_tags         — Deterministic tags from 3 levels merged in order:
+  │                     relationship → correspondent → document type
   └─ Paperless API    — Patches correspondent, tags, path, custom fields
   ↓
 paper.manager         — Browser UI for reviewing uncertain documents,
@@ -82,17 +85,33 @@ Automatically extracts and populates:
 - Due date (`Fällig am`)
 
 ### Deterministic routing
-Configure relationships in `family.json`: vehicle licence plates, employers, banks, health insurers, and doctors. When the vision model identifies a known sender, the document is routed directly — no LLM call needed.
 
-| Trigger | Condition | Routes to |
+Two sources bypass the LLM entirely:
+
+**Licence plates** — configured as vehicles in `family.json`. When Vision spots a known plate, the document is routed directly.
+
+**Correspondent relationships (`beziehungen`)** — configured per correspondent in `correspondents.json` and managed via the paper.manager UI. Three match modes:
+
+| Mode | Condition | Result |
 |---|---|---|
-| Licence plate | Plate spotted in image | `Person/Auto` |
-| Employer | Sender = known employer of Person X | `Person/Work` |
-| Bank | Sender = known bank of Person X | `Person/Finances` |
-| Health insurer | Sender = known insurer of Person X | `Person/Health` |
-| Doctor | Sender = known doctor of Person X | `Person/Health` |
+| Licence plate | Plate spotted in image | Folder from `family.json` |
+| Ref. number | OCR/Vision text matches `extraktion_muster` regex | Fixed folder + doc type from relationship |
+| Single relationship | Correspondent has exactly 1 configured relationship | Folder deterministic; doc type if uniquely defined |
+| Vision recipient | Vision identifies recipient = known person in relationship | Fixed folder; doc type if uniquely defined |
 
-Household member names and employer names are also injected into every Vision prompt so the model knows these are never the document sender.
+Household member names are injected into every Vision prompt so the model knows these are never the document sender.
+
+### fix_tags — deterministic tag assignment
+
+Tags can be defined at three levels and are applied in order, fully merged and deduplicated, **without any LLM involvement**:
+
+| Level | Source | Applies when |
+|---|---|---|
+| 1 — Relationship | `beziehungen[].fix_tags` | This specific relationship matched |
+| 2 — Correspondent | `correspondents.json fix_tags` | Any document from this sender |
+| 3 — Document type | `document_types.json fix_tags` | Document classified as this type |
+
+Combined with `verbotene_tags`, `verbotene_doctypen`, and `verbotene_ordner` per correspondent, the pipeline enforces hard constraints before the LLM is consulted.
 
 ### Custom fields — automatically filled
 
@@ -128,7 +147,7 @@ A single-page browser UI (no framework, no build step) for:
 | Sender detection | OCR text matching only | Vision + fuzzy matching + learning |
 | Document type | Manual or simple rules | LLM + synonym resolution + exclusions |
 | Handwriting | Not possible | Recognised and parsed |
-| Deterministic routing | Manual rule per document | Licence plates + relationships (employer/bank/doctor) — configured in UI, ~100% accurate |
+| Deterministic routing | Manual rule per document | Licence plates (family.json) + relationships per correspondent (3 match modes: ref-nr, single, Vision) — configured in UI, ~100% accurate |
 | Custom fields | Manual | Automatic (QR-Bill + Vision) |
 | Unknown senders | Silent failure | Review queue with suggested values |
 | Corrections | Lost | Feed back into next classification |
@@ -193,8 +212,8 @@ nano /opt/paperless/.env
 
 | File | Purpose |
 |---|---|
-| `family.json` | Household: persons, vehicles, and relationships — basis for folder structure, deterministic routing, and Vision prompt context |
-| `correspondents.json` | Known senders with fuzzy match rules and extraction patterns |
+| `family.json` | Household: persons and vehicles — basis for folder structure, licence-plate routing, and Vision prompt context |
+| `correspondents.json` | Known senders: fuzzy match rules, extraction patterns, relationships (`beziehungen[]`), `fix_tags[]`, `verbotene_doctypen`, `verbotene_ordner`, `verbotene_tags` |
 | `document_types.json` | Document types with synonyms and exclusion keywords |
 | `manifest.json` | Storage folder structure with allowed tags and document types |
 | `tags.json` | Tags with exclusion keywords |
@@ -231,12 +250,12 @@ Available at `http://SERVER_IP:8100` after installation.
 |---|---|
 | Home | System overview, feature summary, component versions |
 | Correspondent Review | Approve / reject / merge unknown senders |
-| Correspondents | Edit known senders |
+| Correspondents | Edit known senders — match rules, fix_tags, verbotene_*, beziehungen |
 | Document Review | Thumbnail + AI fields + colour-coded confidence + LLM reasoning + correction form |
 | Document Types | Synonyms + exclusion keywords |
 | Tags | Exclusion keywords per tag |
 | Speicherpfade | Folder configuration |
-| Familie | Household name, persons, vehicles |
+| Familie | Household name, persons, vehicles; relationship overview across all correspondents |
 
 ---
 
