@@ -19,7 +19,7 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.2"  # 2.2: Body(...) Fix alle Endpoints, Tag-Edit+Ausschluss, Versioning
+__version__ = "2.5"  # 2.5: PUT Endpoint neue Felder, View verboten rot
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -1296,9 +1296,17 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
 
     # Nur erlaubte Felder updaten
     for field in ["varianten", "match", "default_dokumenttyp", "default_dokumenttyp_id",
-                  "typische_ordner", "notiz", "extraktion_muster", "erwartungen"]:
+                  "typische_ordner", "notiz", "extraktion_muster", "erwartungen",
+                  "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags", "beziehungen"]:
         if field in body:
             entry[field] = body[field]
+
+    # Defaults setzen falls neu
+    entry.setdefault("fix_tags", [])
+    entry.setdefault("verbotene_doctypen", [])
+    entry.setdefault("verbotene_ordner", [])
+    entry.setdefault("verbotene_tags", [])
+    entry.setdefault("beziehungen", [])
 
     # default_dokumenttyp_id synchronisieren falls nur Name geändert
     if "default_dokumenttyp" in body and "default_dokumenttyp_id" not in body:
@@ -1789,13 +1797,14 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
     dt_data = json.loads(dt_json_path.read_text(encoding="utf-8"))
     new_synonyme      = body.get("synonyme", [])
     new_beschreibung  = body.get("beschreibung", "")
-    new_ausschliessen = body.get("ausschliessen", [])  # kein Unique-Check — darf mehrfach vorkommen
+    new_ausschliessen = body.get("ausschliessen", [])
+    new_fix_tags      = body.get("fix_tags", [])
 
     # Unique-Check: neue Synonyme dürfen nicht bei anderen Typen vorkommen
     all_strings = set()
     for t in dt_data.get("typen", []):
         if t["name"].lower() == dt_name.lower():
-            continue  # eigenen Eintrag überspringen
+            continue
         all_strings.add(t["name"].lower())
         for s in t.get("synonyme", []):
             all_strings.add(s.lower())
@@ -1803,13 +1812,13 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
     if conflicts:
         raise HTTPException(409, f"Synonym bereits vergeben: {', '.join(conflicts)}")
 
-    # Eintrag aktualisieren oder neu anlegen
     found = False
     for t in dt_data.get("typen", []):
         if t["name"].lower() == dt_name.lower():
             t["synonyme"]      = new_synonyme
             t["beschreibung"]  = new_beschreibung
             t["ausschliessen"] = new_ausschliessen
+            t["fix_tags"]      = new_fix_tags
             t["_paperless_id"] = dt_id
             found = True
             break
@@ -1819,11 +1828,12 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
             "synonyme":      new_synonyme,
             "beschreibung":  new_beschreibung,
             "ausschliessen": new_ausschliessen,
+            "fix_tags":      new_fix_tags,
             "_paperless_id": dt_id,
         })
 
     dt_json_path.write_text(json.dumps(dt_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"status": "updated", "name": dt_name, "synonyme": new_synonyme, "ausschliessen": new_ausschliessen}
+    return {"status": "updated", "name": dt_name, "synonyme": new_synonyme, "fix_tags": new_fix_tags}
 
 
 @app.patch("/api/correspondents/{entry_name:path}")
@@ -1841,7 +1851,7 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
 
     allowed = [
         "varianten", "match", "default_dokumenttyp", "typische_ordner", "notiz",
-        "fix_tags", "verbotene_doctypen", "verbotene_ordner", "beziehungen",
+        "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags", "beziehungen",
     ]
     for field in allowed:
         if field in body:
@@ -1851,6 +1861,7 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     entry.setdefault("fix_tags", [])
     entry.setdefault("verbotene_doctypen", [])
     entry.setdefault("verbotene_ordner", [])
+    entry.setdefault("verbotene_tags", [])
     entry.setdefault("beziehungen", [])
 
     save_corr_map(corr_map)
@@ -2021,6 +2032,9 @@ def api_patch_family(body: dict = Body(...)):
              len(data.get("personen", [])), len(data.get("fahrzeuge", [])),
              len(data.get("beziehungen", [])))
     return {"status": "updated"}
+
+
+@app.post("/api/regex-assistent")
 def api_regex_assistent(body: dict = Body(...)):
     """
     Regex-Assistent: aus Beispiel-String einen Regex ableiten via Ollama (lokal).
