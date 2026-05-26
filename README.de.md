@@ -37,8 +37,11 @@ post_consume.py       — Haupt-Pipeline (läuft nach jedem erfolgreichen Scan)
   ├─ RAG              — Embeddings (bge-m3) gleichen Dokument mit bekannten Ordnern ab
   ├─ LLM              — Klassifiziert Dokumenttyp, Tags, Speicherpfad
   ├─ Sanitiser        — Validiert gegen Manifest, Ausschluss-Keywords
-  ├─ Deterministisch  — Kennzeichen + Beziehungen (Arbeitgeber, Bank, Krankenversicherung,
-  │   Routing           Arzt) aus family.json umgehen das LLM vollständig (~100% treffsicher)
+  ├─ Deterministisch  — Kennzeichen (family.json) + Beziehungsabgleich aus
+  │   Routing           correspondents.json: Referenznummer, Einzel-Beziehung, Vision-Empfänger
+  │                     umgehen LLM vollständig (~100% treffsicher)
+  ├─ fix_tags         — Deterministische Tags aus 3 Ebenen zusammengeführt:
+  │                     Beziehung → Korrespondent → Dokumenttyp
   └─ Paperless API    — Setzt Korrespondent, Tags, Pfad, benutzerdefinierte Felder
   ↓
 paper.manager         — Browser-UI zum Reviewen unsicherer Dokumente,
@@ -85,17 +88,32 @@ Automatisch extrahiert und befüllt:
 
 ### Deterministisches Routing
 
-Beziehungen in `family.json` konfigurieren: Fahrzeugkennzeichen, Arbeitgeber, Banken, Krankenversicherungen und Ärzte. Wenn das Vision-Modell einen bekannten Absender identifiziert, wird das Dokument direkt weitergeleitet — kein LLM-Aufruf nötig.
+Zwei Quellen umgehen das LLM vollständig:
 
-| Auslöser | Bedingung | Weiterleitung |
+**Kennzeichen** — als Fahrzeuge in `family.json` konfiguriert. Erkennt Vision ein bekanntes Kennzeichen, wird das Dokument direkt weitergeleitet.
+
+**Korrespondenten-Beziehungen (`beziehungen`)** — pro Korrespondent in `correspondents.json` konfiguriert und über die paper.manager-UI verwaltbar. Drei Abgleichmodi:
+
+| Modus | Bedingung | Ergebnis |
 |---|---|---|
-| Kennzeichen | Kennzeichen im Bild erkannt | `Person/Auto` |
-| Arbeitgeber | Absender = bekannter Arbeitgeber von Person X | `Person/Arbeit` |
-| Bank | Absender = bekannte Bank von Person X | `Person/Finanzen` |
-| Krankenversicherung | Absender = bekannte KK von Person X | `Person/Gesundheit` |
-| Arzt | Absender = bekannter Arzt von Person X | `Person/Gesundheit` |
+| Kennzeichen | Kennzeichen im Bild erkannt | Ordner aus `family.json` |
+| Referenznummer | OCR/Vision-Text matched `extraktion_muster`-Regex | Fester Ordner + Dokumenttyp aus Beziehung |
+| Einzel-Beziehung | Korrespondent hat genau 1 konfigurierte Beziehung | Ordner deterministisch; Typ wenn eindeutig |
+| Vision-Empfänger | Vision identifiziert Empfänger = bekannte Person in Beziehung | Fester Ordner; Typ wenn eindeutig |
 
-Haushaltsmitglieder und Arbeitgebernamen werden ausserdem in jeden Vision-Prompt injiziert, damit das Modell weiss, dass diese nie der Dokumentabsender sind.
+Haushaltsmitglieder werden in jeden Vision-Prompt injiziert, damit das Modell weiss, dass diese nie der Absender sind.
+
+### fix_tags — deterministische Tag-Zuweisung
+
+Tags können auf drei Ebenen definiert werden und werden der Reihe nach zusammengeführt und dedupliziert — **ohne LLM-Beteiligung**:
+
+| Ebene | Quelle | Gilt wenn |
+|---|---|---|
+| 1 — Beziehung | `beziehungen[].fix_tags` | Diese spezifische Beziehung hat gematcht |
+| 2 — Korrespondent | `correspondents.json fix_tags` | Jedes Dokument dieses Absenders |
+| 3 — Dokumenttyp | `document_types.json fix_tags` | Dokument als dieser Typ klassifiziert |
+
+Kombiniert mit `verbotene_tags`, `verbotene_doctypen` und `verbotene_ordner` pro Korrespondent erzwingt die Pipeline harte Constraints, bevor das LLM überhaupt aufgerufen wird.
 
 ### Benutzerdefinierte Felder — automatisch befüllt
 
@@ -120,7 +138,7 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Dokumenttypen** — Synonyme und Ausschluss-Keywords verwalten
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
-- **Familie** — Personen, Fahrzeuge, Beziehungen (Arbeitgeber, Bank, Krankenversicherung, Arzt), Haushaltsname (keine Hardcodierung im Code)
+- **Familie** — Personen, Fahrzeuge, Haushaltsname (keine Hardcodierung im Code); Beziehungsübersicht über alle Korrespondenten
 - **Versionsanzeige** — zeigt aktive Versionen aller Komponenten in der Seitenleiste
 
 ---
@@ -132,7 +150,7 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 | Absendererkennung | Nur OCR-Textabgleich | Vision + Fuzzy-Matching + Lernen |
 | Dokumenttyp | Manuell oder einfache Regeln | LLM + Synonymauflösung + Ausschlüsse |
 | Handschrift | Nicht möglich | Erkannt und geparst |
-| Deterministisches Routing | Manuelle Regel pro Dokument | Kennzeichen + Beziehungen (Arbeitgeber/Bank/Arzt) — in UI konfiguriert, ~100% treffsicher |
+| Deterministisches Routing | Manuelle Regel pro Dokument | Kennzeichen (family.json) + Beziehungen pro Korrespondent (3 Modi: Ref-Nr, Einzel, Vision) — in UI konfiguriert, ~100% treffsicher |
 | Benutzerdefinierte Felder | Manuell | Automatisch (QR-Rechnung + Vision) |
 | Unbekannte Absender | Stille Fehler | Review-Warteschlange mit Vorschlägen |
 | Korrekturen | Verloren | Fliessen in nächste Klassifizierung zurück |
@@ -197,8 +215,8 @@ nano /opt/paperless/.env
 
 | Datei | Funktion |
 |---|---|
-| `family.json` | Haushalt: Personen, Fahrzeuge und Beziehungen — Basis für Ordnerstruktur, deterministisches Routing und Vision-Prompt-Kontext |
-| `correspondents.json` | Bekannte Absender mit Fuzzy-Match-Regeln und Extraktionsmustern |
+| `family.json` | Haushalt: Personen und Fahrzeuge — Basis für Ordnerstruktur, Kennzeichen-Routing und Vision-Prompt-Kontext |
+| `correspondents.json` | Bekannte Absender: Fuzzy-Match-Regeln, Extraktionsmuster, Beziehungen (`beziehungen[]`), `fix_tags[]`, `verbotene_doctypen`, `verbotene_ordner`, `verbotene_tags` |
 | `document_types.json` | Dokumenttypen mit Synonymen und Ausschluss-Keywords |
 | `manifest.json` | Speicherordner-Struktur mit erlaubten Tags und Dokumenttypen |
 | `tags.json` | Tags mit Ausschluss-Keywords |
@@ -250,12 +268,12 @@ Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
 |---|---|
 | Home | Systemübersicht, Feature-Zusammenfassung, Komponentenversionen |
 | Correspondent Review | Unbekannte Absender bestätigen / ablehnen / zusammenführen |
-| Correspondents | Bekannte Absender bearbeiten |
+| Correspondents | Bekannte Absender bearbeiten — Match-Regeln, fix_tags, verbotene_*, beziehungen |
 | Document Review | Vorschaubild + KI-Felder + farbige Confidence + LLM-Begründung + Korrekturformular |
 | Document Types | Synonyme + Ausschluss-Keywords |
 | Tags | Ausschluss-Keywords pro Tag |
 | Speicherpfade | Ordnerkonfiguration |
-| Familie | Haushaltsname, Personen, Fahrzeuge, Beziehungen |
+| Familie | Haushaltsname, Personen, Fahrzeuge; Beziehungsübersicht über alle Korrespondenten |
 
 ---
 
