@@ -19,7 +19,7 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.5"  # 2.5: PUT Endpoint neue Felder, View verboten rot
+__version__ = "2.6"  # 2.6: Regex-Assistent Prompt fix (Format-Muster statt exakt), OLLAMA_REGEX_MODEL
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -2037,8 +2037,10 @@ def api_patch_family(body: dict = Body(...)):
 @app.post("/api/regex-assistent")
 def api_regex_assistent(body: dict = Body(...)):
     """
-    Regex-Assistent: aus Beispiel-String einen Regex ableiten via Ollama (lokal).
-    body: {beispiel: "LV_889.117", feldname: "Policennummer", kontext: "Zürich Versicherung"}
+    Regex-Assistent: aus Beispiel-String einen Regex ableiten via Ollama.
+    Verwendet OLLAMA_REGEX_MODEL (default llama3.3:70b) — NICHT das Vision-Modell.
+    body: {beispiel: "LV_889.117", feldname: "Policennummer", kontext: "Zürich Versicherung",
+           weitere_beispiele: ["LV_123.456"]}
     """
     beispiel  = (body.get("beispiel") or "").strip()
     feldname  = (body.get("feldname") or "Wert").strip()
@@ -2048,23 +2050,29 @@ def api_regex_assistent(body: dict = Body(...)):
     if not beispiel:
         raise HTTPException(400, "beispiel fehlt")
 
+    # Dediziertes Modell für Regex — unabhängig vom Vision-Modell
     ollama_url   = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-    ollama_model = os.environ.get("OLLAMA_MODEL", "llama3.3:70b")
+    ollama_model = os.environ.get("OLLAMA_REGEX_MODEL",
+                   os.environ.get("OLLAMA_MODEL", "llama3.3:70b"))
 
-    weitere_str = ("\nWeitere Beispiele: " + ", ".join(weitere)) if weitere else ""
-    kontext_str = ("\nKontext (Absender): " + kontext) if kontext else ""
-    fg_name = feldname.lower().replace(" ", "_")
+    alle_beispiele = [beispiel] + [w for w in weitere if w]
+    beispiele_str  = "\n".join(f"  - {b}" for b in alle_beispiele)
+    kontext_str    = f"\nKontext (Absender): {kontext}" if kontext else ""
+    fg_name        = feldname.lower().replace(" ", "_")
 
     prompt = (
-        "Du bist ein Regex-Experte. Leite einen Python-Regex fuer folgendes ab:\n\n"
-        "Feldname: " + feldname + "\n"
-        "Hauptbeispiel: " + beispiel + weitere_str + kontext_str + "\n\n"
-        "Regeln:\n"
-        "- Der Regex soll den Wert exakt matchen (nicht zu breit, nicht zu eng)\n"
-        "- Verwende Named Groups: (?P<" + fg_name + "> ... )\n"
-        "- Beruecksichtige Varianten (Leerzeichen, Bindestriche, Gross/Kleinschreibung)\n"
-        "- Antworte NUR mit einem JSON-Objekt, kein Markdown:\n"
-        '{"regex": "...", "erklaerung": "1 Satz", "test_matches": ["..."], "test_no_matches": ["..."]}'
+        "Du bist ein Regex-Experte fuer deutschsprachige Dokumente.\n\n"
+        "Aufgabe: Erstelle einen Python-Regex, der das FORMAT des Feldes '" + feldname + "' erkennt.\n\n"
+        "Beispielwerte (alle sollen matchen):\n" + beispiele_str + kontext_str + "\n\n"
+        "Wichtige Regeln:\n"
+        "- Erkenne das MUSTER/FORMAT, nicht den exakten Wert\n"
+        "- Beispiel: '70.735.634' hat Format NN.NNN.NNN → Regex: \\d{2}\\.\\d{3}\\.\\d{3}\n"
+        "- Beispiel: 'LV_889.117' hat Format LV_NNN.NNN → Regex: LV_\\d{3}\\.\\d{3}\n"
+        "- Verwende Named Group: (?P<" + fg_name + ">MUSTER)\n"
+        "- Kein re.IGNORECASE noetig ausser Buchstaben im Muster variieren\n"
+        "- Antworte NUR mit JSON, kein Markdown, keine Erklaerung ausserhalb:\n"
+        '{"regex": "(?P<' + fg_name + '>...)", "erklaerung": "1 Satz was das Muster beschreibt", '
+        '"test_matches": ["Wert1", "Wert2"], "test_no_matches": ["FalscherWert"]}'
     )
 
     try:
@@ -2074,7 +2082,7 @@ def api_regex_assistent(body: dict = Body(...)):
             "prompt": prompt,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.1}
+            "options": {"temperature": 0.05, "num_predict": 256}
         }).encode()
         req = _ur.Request(
             f"{ollama_url}/api/generate",
@@ -2085,17 +2093,16 @@ def api_regex_assistent(body: dict = Body(...)):
         with _ur.urlopen(req, timeout=60) as r:
             result = json.loads(r.read())
         raw = result.get("response", "{}")
-        # JSON aus Response extrahieren
         import re as _re
         json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
         if json_match:
             parsed = json.loads(json_match.group())
-            return {"status": "ok", **parsed}
-        return {"status": "ok", "regex": raw.strip(), "erklaerung": "", "test_matches": [], "test_no_matches": []}
+            return {"status": "ok", "model_used": ollama_model, **parsed}
+        return {"status": "ok", "model_used": ollama_model, "regex": raw.strip(),
+                "erklaerung": "", "test_matches": [], "test_no_matches": []}
     except Exception as e:
         log.error("Regex-Assistent Ollama-Fehler: %s", e)
         raise HTTPException(502, f"Ollama nicht erreichbar: {e}")
-
 
 @app.get("/api/korr-typen", response_class=JSONResponse)
 def api_korr_typen():

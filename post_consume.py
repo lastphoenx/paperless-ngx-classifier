@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.5.py — Paperless-NGX Post-Consume Pipeline v12.5
+post_consume_v12.7.py — Paperless-NGX Post-Consume Pipeline v12.7
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.5"  # 12.5: Kommentare Kollegen-Review, Cache-Doku, verbotene_tags Klarheit
+POST_CONSUME_VERSION = "12.7"  # 12.7: Beziehungs-Tiebreaker via dokumenttyp_visuell + Synonym-Match
 import sys
 import json
 import logging
@@ -134,15 +134,42 @@ def _match_korrespondent_eintrag(corr_map: dict, absender: str) -> dict | None:
     return None
 
 
+def _doctyp_matches_visuell(visuell: str, erlaubte_doctypen: list[str]) -> bool:
+    """Prüft ob dokumenttyp_visuell (Vision-Freitext) einem der erlaubten Doctypen entspricht.
+
+    Löst beide Seiten über _SYNONYM_MAP auf → kanonischen Namen → Vergleich.
+    Damit matcht "Gehaltsabrechnung" gegen erlaubte=["Lohnabrechnung"] wenn beide
+    auf den gleichen kanonischen Typ zeigen.
+    """
+    if not visuell or not erlaubte_doctypen:
+        return False
+    _load_known_doctypes()
+
+    def _kanonisch(name: str) -> str:
+        """Gibt kanonischen Typ-Namen zurück (über Direktname oder Synonym)."""
+        n = name.lower().strip()
+        if n in _KNOWN_DOCTYPE_CACHE:
+            return n
+        return _SYNONYM_MAP.get(n, n)  # Synonym → kanonisch, sonst original
+
+    visuell_kan = _kanonisch(visuell)
+    for erlaubt in erlaubte_doctypen:
+        if _kanonisch(erlaubt) == visuell_kan:
+            return True
+    return False
+
+
 def _match_beziehung_v2(
     corr_entry: dict,
     vision_empfaenger: str,
     ocr_text: str,
+    dokumenttyp_visuell: str = "",
 ) -> dict | None:
     """Stufe 1: Beziehungs-Match auf Korrespondenten-Eintrag.
 
     Match-Reihenfolge (stärkster zuerst):
       1. referenznummer in OCR (direkt ODER via extraktion_muster Regex)
+         1b. Tiebreaker: dokumenttyp_visuell gegen erlaubte_doctypen (Synonym-aware)
       2. nur eine Beziehung → deterministisch
       3. empfaenger (Vision) stimmt mit person überein
 
@@ -197,7 +224,31 @@ def _match_beziehung_v2(
         log.info("Beziehungs-Match via Referenznummer → person=%s", ref_matches[0].get("person"))
         return ref_matches[0]
     elif len(ref_matches) > 1:
-        log.warning("Beziehungs-Match: %d Referenznummer-Matches — nicht eindeutig → LLM", len(ref_matches))
+        # Tiebreaker: dokumenttyp_visuell gegen erlaubte_doctypen (Synonym-aware)
+        if dokumenttyp_visuell:
+            dt_matches = [
+                bez for bez in ref_matches
+                if bez.get("erlaubte_doctypen")
+                and _doctyp_matches_visuell(dokumenttyp_visuell, bez["erlaubte_doctypen"])
+            ]
+            if len(dt_matches) == 1:
+                log.info(
+                    "Beziehungs-Match: %d Ref-Matches → Tiebreaker via dokumenttyp_visuell='%s' → person=%s",
+                    len(ref_matches), dokumenttyp_visuell, dt_matches[0].get("person")
+                )
+                return dt_matches[0]
+            elif len(dt_matches) > 1:
+                log.warning(
+                    "Beziehungs-Match: Tiebreaker uneindeutig (%d Matches für '%s') → LLM",
+                    len(dt_matches), dokumenttyp_visuell
+                )
+            else:
+                log.warning(
+                    "Beziehungs-Match: Tiebreaker kein Treffer für '%s' (erlaubte_doctypen fehlen oder kein Synonym) → LLM",
+                    dokumenttyp_visuell
+                )
+        else:
+            log.warning("Beziehungs-Match: %d Referenznummer-Matches — nicht eindeutig → LLM", len(ref_matches))
         return None
 
     # Match 2: Einzige Beziehung → deterministisch
@@ -368,7 +419,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-log = logging.getLogger("post_consume_v12.5")
+log = logging.getLogger("post_consume_v12.7")
 
 # ─── Paperless ENV ────────────────────────────────────────────────────────────
 
@@ -1066,11 +1117,28 @@ def build_llm_prompt(
     # Beziehungsvorschlag-Aufforderung (nur wenn kein Stufe-1-Match + Korrespondent bekannt)
     beziehung_vorschlag_block = ""
     if stufe1_kontext and stufe1_kontext.get("stufe1_grund") and not nur_doctyp_modus:
+        # Valide Werte dynamisch aus JSON-Dateien laden
+        _personen_ids = [p.get("id","") for p in _load_family().get("personen", [])]
+        _ordner_liste = [e.get("pfad","") for e in manifest if e.get("pfad")]
+        _dt_liste     = sorted(constraints.get("allowed_dokumenttypen", set()) or
+                               {t["name"] for t in
+                                (json.loads(DOCUMENT_TYPES_JSON.read_text(encoding="utf-8"))
+                                 .get("typen", []) if DOCUMENT_TYPES_JSON.exists() else [])})
+
         beziehung_vorschlag_block = (
-            '\nFalls du Person + Ordner sicher erkennst, füge OPTIONAL hinzu:\n'
-            '"beziehungs_vorschlag":{"person":"thomas|monika|giulia",'
-            '"bezeichnung":"z.B. Arzt","referenznummer":"falls sichtbar",'
-            '"erlaubte_doctypen":["..."],"ordner":"..."}}\n'
+            f'\nBEZIEHUNGS-VORSCHLAG — falls du Person + Ordner sicher erkennst:\n'
+            f'person:           NUR diese IDs: {" | ".join(_personen_ids)}\n'
+            f'bezeichnung:      Arzt | Zahnarzt | Arbeitgeber | Bank | Krankenkasse |\n'
+            f'                  Versicherung | Steueramt | Stromanbieter | Verein |\n'
+            f'                  Abonnement | Sonstiges  (kurz, Deutsch)\n'
+            f'referenznummer:   Die eindeutige Nummer im Dokument für diese Person —\n'
+            f'                  egal ob Kunden-Nr, Patienten-Nr, Police-Nr, Personal-Nr.\n'
+            f'                  Nur den Wert: "19235" | "LV_889.117" | null wenn nicht sichtbar\n'
+            f'erlaubte_doctypen: NUR aus: {", ".join(_dt_liste)}\n'
+            f'ordner:           NUR aus: {", ".join(_ordner_liste)}\n'
+            f'\n"beziehungs_vorschlag":{{"person":"...","bezeichnung":"...",'
+            f'"referenznummer":"...|null","erlaubte_doctypen":["..."],"ordner":"..."}}\n'
+            f'(weglassen wenn unsicher)\n'
         )
 
     if nur_doctyp_modus:
@@ -2076,7 +2144,7 @@ def ensure_all_storage_paths(manifest: list[dict]):
 
 def main():
     log.info("=" * 70)
-    log.info("post_consume_v12.5 | ID=%s | Datei=%s", DOCUMENT_ID, DOCUMENT_FILE_NAME)
+    log.info("post_consume_v12.6 | ID=%s | Datei=%s", DOCUMENT_ID, DOCUMENT_FILE_NAME)
     log.info("Storage-Modus: %s | Vision-Modell: %s", STORAGE_MODE, MODEL_VISION)
 
     if not DOCUMENT_ID:
@@ -2242,7 +2310,8 @@ def main():
         _corr_entry = _match_korrespondent_eintrag(corr_map, vision_absender)
         if _corr_entry:
             log.info("Stufe 1: Korrespondent '%s' gefunden", _corr_entry["name"])
-            _beziehung = _match_beziehung_v2(_corr_entry, vision_empfaenger, ocr_text)
+            _beziehung = _match_beziehung_v2(_corr_entry, vision_empfaenger, ocr_text,
+                                                      dokumenttyp_visuell=vision_meta.get("dokumenttyp_visuell", ""))
             if _beziehung:
                 bez_ordner   = _beziehung.get("ordner", "")
                 bez_doctypen = _beziehung.get("erlaubte_doctypen", [])
