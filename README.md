@@ -96,6 +96,7 @@ Two sources bypass the LLM entirely:
 |---|---|---|
 | Licence plate | Plate spotted in image | Folder from `family.json` |
 | Ref. number | OCR/Vision text matches `extraktion_muster` regex | Fixed folder + doc type from relationship |
+| Ref. number + tiebreaker | Multiple ref-matches: `dokumenttyp_visuell` from Vision resolved via synonym map against `erlaubte_doctypen` | Deterministic, no LLM |
 | Single relationship | Correspondent has exactly 1 configured relationship | Folder deterministic; doc type if uniquely defined |
 | Vision recipient | Vision identifies recipient = known person in relationship | Fixed folder; doc type if uniquely defined |
 
@@ -228,6 +229,7 @@ nano /opt/paperless/.env
 | `CONFIDENCE_IGNORE_TAG_PATTERNS` | `^\d{4}$,^\d{1,2}\.\d{4}$` | Regex patterns for tags that do **not** lower confidence (year numbers, month.year). Comma-separated. Set empty to disable. |
 | `CF_BEZAHLT_AM_ID` | — | Paperless custom field ID for "paid on" date |
 | `CF_GESCANNT_AM_ID` | — | Paperless custom field ID for "scanned on" date |
+| `OLLAMA_REGEX_MODEL` | `llama3.3:70b` | Separate Ollama model for the Regex-Assistent in paper.manager (falls back to `OLLAMA_MODEL`) |
 
 See `.env.example` for all variables with descriptions.
 
