@@ -24,7 +24,7 @@
 
   /* Layout */
   .shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
-  .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 20px 0; }
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 20px 0; height: 100vh; display: flex; flex-direction: column; position: sticky; top: 0; overflow-y: auto; }
   .main { padding: 32px; overflow-y: auto; }
 
   /* Sidebar */
@@ -192,6 +192,13 @@
   <div class="nav-item" onclick="showView('family')" id="nav-family">
     <span>👪</span> Familie
   </div>
+  <div style="flex:1"></div>
+  <a id="nav-paperless-link" href="#" target="_blank" rel="noopener"
+    style="display:flex;align-items:center;gap:8px;padding:10px 16px;margin:4px 8px 8px;border-radius:6px;background:rgba(79,156,249,.1);border:1px solid rgba(79,156,249,.25);color:var(--accent);text-decoration:none;font-size:12px;font-weight:600;transition:background .15s"
+    onmouseover="this.style.background='rgba(79,156,249,.2)'" onmouseout="this.style.background='rgba(79,156,249,.1)'"
+    title="Paperless-NGX öffnen">
+    <span style="font-size:14px">📄</span> Paperless öffnen ↗
+  </a>
 </nav>
 
 <!-- MAIN -->
@@ -235,6 +242,19 @@
           <span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa">100% lokal</span>
         </div>
       </div>
+
+      <!-- Absprung zu Paperless -->
+      <a class="paperless-open-btn" href="#" target="_blank" rel="noopener"
+        style="display:none;align-items:center;gap:12px;background:linear-gradient(135deg,rgba(79,156,249,.15),rgba(124,58,237,.12));border:1px solid rgba(79,156,249,.35);border-radius:8px;padding:14px 20px;margin-bottom:16px;text-decoration:none;color:var(--text);transition:border-color .2s"
+        onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='rgba(79,156,249,.35)'">
+        <span style="font-size:24px">📄</span>
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:600;color:var(--accent)">Paperless-NGX öffnen</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">Dokumente anzeigen, suchen, bearbeiten — in einem neuen Tab</div>
+          <div class="paperless-url-hint" style="font-size:10px;color:var(--warn);margin-top:2px"></div>
+        </div>
+        <span style="font-size:18px;color:var(--muted)">↗</span>
+      </a>
 
       <!-- Vor/Nachher -->
       <div class="card" style="margin-bottom:16px">
@@ -342,7 +362,7 @@
         <div class="card-header"><span class="card-title">Abgrenzung</span></div>
         <div style="font-size:12px;color:var(--muted);line-height:1.8;margin-top:8px">
           ✗ <strong>Kein Ersatz für Paperless-NGX</strong> — paper.manager ergänzt, ersetzt nicht.<br>
-          ✗ <strong>Kein Dokumenten-Viewer</strong> — PDFs öffnen via «In Paperless öffnen».<br>
+          ✗ <strong>Kein Dokumenten-Viewer</strong> — PDFs öffnen via <a class="paperless-open-btn" href="#" target="_blank" rel="noopener" style="color:var(--accent)">Paperless-NGX öffnen ↗</a>.<br>
           ✗ <strong>Keine Buchhaltung</strong> — Status=Bezahlt ist eine Markierung, kein Buchungssystem.<br>
           ✗ <strong>Kein Backup-System</strong> — Backup läuft separat.<br>
           ✗ <strong>Kein Echtzeitmonitor</strong> — Review-Queue nach dem Scan manuell öffnen.
@@ -678,6 +698,14 @@ window.addEventListener('popstate', () => {
 document.addEventListener('DOMContentLoaded', () => { init(); });
 
 async function init() {
+  // Sidebar Paperless-Link sofort beim Start befüllen
+  fetch(`${API_BASE}/config`).then(r=>r.json()).then(cfg => {
+    const url = cfg.paperless_url || '';
+    if (url) {
+      const sl = document.getElementById('nav-paperless-link');
+      if (sl) sl.href = url;
+    }
+  }).catch(()=>{});
   // Config zuerst laden — pending_mode direkt in DOM schreiben
   try {
     const cfg = await (await fetch(`${API_BASE}/config`)).json();
@@ -685,7 +713,7 @@ async function init() {
     if (cfg.versions) {
       const v = cfg.versions;
       const el = document.getElementById('version-text');
-      if (el) el.innerHTML = `UI&nbsp;v2.11 | be&nbsp;v${v.backend||'?'} | pipe&nbsp;v${v.post_consume||'?'}`;
+      if (el) el.innerHTML = `UI&nbsp;v2.16 | be&nbsp;v${v.backend||'?'} | pipe&nbsp;v${v.post_consume||'?'}`;
     }
     if (cfg.pending_mode) {
       // Direkt setzen ohne Umweg über updatePendingModeUI
@@ -747,6 +775,48 @@ function showView(name) {
   document.getElementById('view-' + name).style.display = '';
   document.getElementById('nav-' + name).classList.add('active');
   if (name === 'home') {
+    // Paperless-URL für Absprung-Button laden
+    fetch(`${API_BASE}/config`).then(r=>r.json()).then(cfg => {
+      let url = cfg.paperless_url || '';
+      // Falls Backend localhost/127.0.0.1 meldet aber Browser von aussen kommt:
+      // hostname aus Browser übernehmen, nur Port aus paperless_url
+      if (url) {
+        try {
+          const parsed = new URL(url);
+          const isLocal = ['localhost','127.0.0.1','::1'].includes(parsed.hostname);
+          const browserHost = window.location.hostname;
+          const browserIsLocal = ['localhost','127.0.0.1'].includes(browserHost);
+          if (isLocal && !browserIsLocal) {
+            // Externer Zugriff: paperless_url Port beibehalten falls nicht 80/443,
+            // aber Hostname aus Browser nehmen — Fallback: cfg.paperless_url direkt
+            url = cfg.paperless_url; // bleibt wie konfiguriert — Nutzer muss PAPERLESS_URL korrekt setzen
+          }
+        } catch(e) {}
+        document.querySelectorAll('.paperless-open-btn').forEach(btn => {
+          btn.href = url;
+          btn.style.display = 'inline-flex';
+          btn.title = url;
+        });
+        // Sidebar-Link ebenfalls setzen
+        const sidebarLink = document.getElementById('nav-paperless-link');
+        if (sidebarLink) sidebarLink.href = url;
+      } else {
+        // Kein paperless_url konfiguriert — Hinweis anzeigen
+        document.querySelectorAll('.paperless-open-btn').forEach(btn => {
+          btn.style.display = 'inline-flex';
+          btn.href = '#';
+          btn.title = 'PAPERLESS_URL in .env nicht gesetzt';
+          btn.querySelector?.('.paperless-url-hint') && (btn.querySelector('.paperless-url-hint').textContent = '⚠ PAPERLESS_URL in .env setzen');
+        });
+      }
+    }).catch(()=>{
+      // Config nicht erreichbar — Button trotzdem zeigen mit Warnung
+      document.querySelectorAll('.paperless-open-btn').forEach(btn => {
+        btn.style.display = 'inline-flex';
+        btn.href = '#';
+        btn.title = 'Backend nicht erreichbar';
+      });
+    });
     ['home-ui-version','home-ui-version2'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.textContent = UI_VERSION;
@@ -1392,7 +1462,10 @@ function renderCorrMap(eintraege) {
     return `
     <div class="card" id="corr-card-${idx}">
       <div class="card-header">
-        <span class="card-title">${e.name}</span>
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <span class="card-title">${e.name}</span>
+          ${e.kuerzel ? `<span style="background:rgba(16,185,129,.2);color:#10b981;border:1px solid rgba(16,185,129,.4);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;letter-spacing:.5px;white-space:nowrap">${e.kuerzel}</span>` : '<span style="background:var(--surface);color:var(--muted);border:1px dashed var(--border);border-radius:4px;padding:1px 7px;font-size:10px;white-space:nowrap" title="Kürzel fehlt — im Edit setzen">kein Kürzel</span>'}
+        </div>
         <div style="display:flex;gap:8px;align-items:center">
           <span class="badge badge-${e._paperless?.id ? 'approved' : 'pending'}">
             ${e._paperless?.id ? 'Paperless #' + e._paperless.id : 'Noch nicht in Paperless'}
@@ -1449,6 +1522,7 @@ function filterCorrespondents(q) {
   const lq = q.toLowerCase();
   renderCorrMap(_corrAllEntries.filter(e =>
     e.name.toLowerCase().includes(lq) ||
+    (e.kuerzel||'').toLowerCase().includes(lq) ||
     (e.varianten||[]).some(v => v.toLowerCase().includes(lq)) ||
     (e.match||[]).some(m => m.toLowerCase().includes(lq)) ||
     (e.typische_ordner||[]).some(o => o.toLowerCase().includes(lq)) ||
@@ -1466,6 +1540,22 @@ function toggleCorrEdit(idx, entry) {
   const typen = allKorrTypen.length ? allKorrTypen : ['Behörde','Bank','Versicherung','Arzt','Arbeitgeber','Kundenservice','Verein','Online-Shop','Händler','Handwerk','Telekommunikation','Energie','Transport','Sonstiges'];
   edit.innerHTML = `
     <div style="margin-top:12px">
+      <div class="field-group">
+        <label>Kürzel
+          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+            2–6 Zeichen, eindeutig — wird im Titel verwendet bei gleichen Dokumenttypen (z.B. UBS, ZV, BLKB)
+          </span>
+        </label>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="text" id="ce-kuerzel-${idx}"
+            value="${entry.kuerzel||''}"
+            maxlength="6"
+            style="width:100px;text-transform:uppercase;font-weight:600;font-size:13px;letter-spacing:1px"
+            oninput="this.value=this.value.toUpperCase();checkKuerzelUnique(this,${idx},'${entry.name.replace(/'/g,"\'")}')"
+            placeholder="z.B. UBS">
+          <span id="ce-kuerzel-status-${idx}" style="font-size:11px"></span>
+        </div>
+      </div>
       <div class="field-group">
         <label>Standard-Dokumenttyp</label>
         <select id="ce-typ-${idx}">
@@ -1675,12 +1765,45 @@ async function executeMergePaperless(idx, keepId) {
   }
 }
 
+async function checkKuerzelUnique(input, idx, corrName) {
+  const val = input.value.trim().toUpperCase();
+  const status = document.getElementById(`ce-kuerzel-status-${idx}`);
+  if (!status) return;
+  if (!val || val.length < 2) {
+    status.textContent = '';
+    status.dataset.conflict = 'false';
+    return;
+  }
+  try {
+    const r = await fetch(`${API_BASE}/check-kuerzel?kuerzel=${encodeURIComponent(val)}&exclude=${encodeURIComponent(corrName)}`);
+    const d = await r.json();
+    if (d.available) {
+      status.textContent = '✓ verfügbar';
+      status.style.color = 'var(--success, #10b981)';
+      status.dataset.conflict = 'false';
+    } else {
+      status.textContent = '✗ bereits vergeben';
+      status.style.color = 'var(--danger, #f87171)';
+      status.dataset.conflict = 'true';
+    }
+  } catch(e) {
+    status.textContent = '';
+    status.dataset.conflict = 'false';
+  }
+}
+
 async function saveCorrEdit(idx, nameParam) {
   flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-ord-${idx}`,
                   `ce-fixtags-${idx}`, `ce-verbdt-${idx}`, `ce-verbord-${idx}`, `ce-verbtag-${idx}`]);
   const name = nameParam || document.getElementById(`corr-edit-${idx}`)?.dataset?.name;
   const dtName = document.getElementById(`ce-typ-${idx}`)?.value || '';
+  const kuerzelVal = (document.getElementById(`ce-kuerzel-${idx}`)?.value || '').toUpperCase().trim();
+  const kuerzelStatus = document.getElementById(`ce-kuerzel-status-${idx}`);
+  if (kuerzelVal && kuerzelStatus?.dataset?.conflict === 'true') {
+    showToast('Kürzel bereits vergeben — bitte anderes wählen', 'error'); return;
+  }
   const body = {
+    kuerzel:                kuerzelVal,
     default_dokumenttyp:    dtName,
     varianten:              getTagsFromContainer(`ce-var-${idx}`),
     match:                  getTagsFromContainer(`ce-match-${idx}`),
