@@ -19,7 +19,7 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.6"  # 2.6: Regex-Assistent Prompt fix (Format-Muster statt exakt), OLLAMA_REGEX_MODEL
+__version__ = "2.7"  # 2.7: kuerzel Feld (unique), Uniqueness-Validierung in PUT+PATCH+POST + Regex-Fix v2.6
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -293,6 +293,21 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
         "matches":   all_matches,
         "varianten": all_varianten,
     }
+
+
+def _check_kuerzel_unique(kuerzel: str, exclude_name: str = "", corr_map: dict = None) -> bool:
+    """Prüft ob kuerzel über alle Korrespondenten einmalig ist.
+    exclude_name: eigenen Eintrag beim Edit ausschliessen.
+    """
+    if not kuerzel or not corr_map:
+        return True
+    k = kuerzel.strip().upper()
+    for e in corr_map.get("eintraege", []):
+        if e["name"] == exclude_name:
+            continue
+        if (e.get("kuerzel") or "").strip().upper() == k:
+            return False
+    return True
 
 
 def _validate_correspondent_entry(
@@ -1294,12 +1309,18 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     if warnings:
         log.warning("Edit '%s' — Warnings: %s", name, "; ".join(warnings))
 
+    # kuerzel Uniqueness prüfen
+    new_kuerzel = (body.get("kuerzel") or "").strip().upper()
+    if new_kuerzel and not _check_kuerzel_unique(new_kuerzel, exclude_name=name, corr_map=corr_map):
+        raise HTTPException(409, f"Kürzel '{new_kuerzel}' wird bereits von einem anderen Korrespondenten verwendet")
+
     # Nur erlaubte Felder updaten
     for field in ["varianten", "match", "default_dokumenttyp", "default_dokumenttyp_id",
                   "typische_ordner", "notiz", "extraktion_muster", "erwartungen",
-                  "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags", "beziehungen"]:
+                  "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
+                  "beziehungen", "kuerzel"]:
         if field in body:
-            entry[field] = body[field]
+            entry[field] = body[field] if field != "kuerzel" else (body[field] or "").strip().upper()
 
     # Defaults setzen falls neu
     entry.setdefault("fix_tags", [])
@@ -1307,6 +1328,7 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     entry.setdefault("verbotene_ordner", [])
     entry.setdefault("verbotene_tags", [])
     entry.setdefault("beziehungen", [])
+    entry.setdefault("kuerzel", "")
 
     # default_dokumenttyp_id synchronisieren falls nur Name geändert
     if "default_dokumenttyp" in body and "default_dokumenttyp_id" not in body:
@@ -1326,6 +1348,18 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
 
     save_corr_map(corr_map)
     return {"status": "updated", "name": name}
+
+
+@app.get("/api/check-kuerzel", response_class=JSONResponse)
+def api_check_kuerzel(kuerzel: str = "", exclude: str = ""):
+    """Prüft ob ein Kürzel bereits vergeben ist.
+    exclude: eigenen Korrespondenten-Namen ausschliessen (beim Edit).
+    """
+    if not kuerzel:
+        return {"available": True}
+    corr_map = load_corr_map()
+    is_unique = _check_kuerzel_unique(kuerzel, exclude_name=exclude, corr_map=corr_map)
+    return {"available": is_unique, "kuerzel": kuerzel.strip().upper()}
 
 
 @app.get("/api/check-variant", response_class=JSONResponse)
@@ -1849,13 +1883,20 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     if not entry:
         raise HTTPException(404, f"Korrespondent '{entry_name}' nicht gefunden")
 
+    # kuerzel Uniqueness prüfen
+    if "kuerzel" in body:
+        new_kuerzel = (body.get("kuerzel") or "").strip().upper()
+        if new_kuerzel and not _check_kuerzel_unique(new_kuerzel, exclude_name=entry["name"], corr_map=corr_map):
+            raise HTTPException(409, f"Kürzel '{new_kuerzel}' wird bereits von einem anderen Korrespondenten verwendet")
+
     allowed = [
         "varianten", "match", "default_dokumenttyp", "typische_ordner", "notiz",
-        "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags", "beziehungen",
+        "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
+        "beziehungen", "kuerzel",
     ]
     for field in allowed:
         if field in body:
-            entry[field] = body[field]
+            entry[field] = body[field] if field != "kuerzel" else (body[field] or "").strip().upper()
 
     # Defaults setzen falls neu
     entry.setdefault("fix_tags", [])
@@ -1863,6 +1904,7 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     entry.setdefault("verbotene_ordner", [])
     entry.setdefault("verbotene_tags", [])
     entry.setdefault("beziehungen", [])
+    entry.setdefault("kuerzel", "")
 
     save_corr_map(corr_map)
     return {"status": "updated", "name": entry_name}
