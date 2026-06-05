@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.7.py — Paperless-NGX Post-Consume Pipeline v12.7
+post_consume_v12.14.py — Paperless-NGX Post-Consume Pipeline v12.14
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.7"  # 12.7: Beziehungs-Tiebreaker via dokumenttyp_visuell + Synonym-Match
+POST_CONSUME_VERSION = "12.14"  # 12.14: Pipeline-Notiz in Paperless-Notizfeld (Debugging/Nachvollziehbarkeit)
 import sys
 import json
 import logging
@@ -399,8 +399,7 @@ VISION_TIMEOUT    = int(os.environ.get("VISION_TIMEOUT", "120"))
 LLM_TIMEOUT       = int(os.environ.get("LLM_TIMEOUT", "300"))
 STORAGE_MODE      = os.environ.get("PAPERLESS_STORAGE_MODE", "api").lower()
 
-SAMPLE_MAX_PER_FOLDER = int(os.environ.get("SAMPLE_MAX_PER_FOLDER", "10"))
-SAMPLES_BASE = MANIFEST_PATH.parent / "samples"
+# Samples: ausgebaut (v12.8) — kein Trainings-Loop vorhanden, Timing-Bug bei Paperless-Verschiebung
 
 MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
 MODEL_EMBED  = "bge-m3"
@@ -419,7 +418,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-log = logging.getLogger("post_consume_v12.7")
+log = logging.getLogger("post_consume_v12.14")
 
 # ─── Paperless ENV ────────────────────────────────────────────────────────────
 
@@ -476,6 +475,143 @@ def paperless_patch(document_id: int, payload: dict) -> bool:
         log.error("PATCH /api/documents/%s → %s %s", document_id, r.status_code, r.text[:300])
         return False
     return True
+
+def paperless_get_notes(document_id: int) -> list:
+    """Gibt alle Notizen eines Dokuments zurück."""
+    try:
+        r = _http.get(
+            f"{PAPERLESS_URL}/api/documents/{document_id}/notes/",
+            headers=_headers(), timeout=15,
+        )
+        if r.ok:
+            return r.json()
+    except Exception as e:
+        log.warning("GET notes/%s fehlgeschlagen: %s", document_id, e)
+    return []
+
+
+def paperless_delete_note(document_id: int, note_id: int) -> bool:
+    """Löscht eine einzelne Notiz."""
+    try:
+        r = _http.delete(
+            f"{PAPERLESS_URL}/api/documents/{document_id}/notes/{note_id}/",
+            headers=_headers(), timeout=15,
+        )
+        return r.ok
+    except Exception as e:
+        log.warning("DELETE note/%s/%s fehlgeschlagen: %s", document_id, note_id, e)
+        return False
+
+
+def paperless_post_note(document_id: int, text: str) -> bool:
+    """Erstellt eine neue Notiz."""
+    try:
+        r = _http.post(
+            f"{PAPERLESS_URL}/api/documents/{document_id}/notes/",
+            json={"note": text},
+            headers=_headers(), timeout=15,
+        )
+        if not r.ok:
+            log.warning("POST note/%s → %s %s", document_id, r.status_code, r.text[:200])
+        return r.ok
+    except Exception as e:
+        log.warning("POST note/%s fehlgeschlagen: %s", document_id, e)
+        return False
+
+
+_PIPE_NOTE_MARKER = "🤖 pipe v"  # Prefix zur Erkennung von Pipeline-Notizen
+
+
+def write_pipeline_note(
+    document_id: int,
+    decision: dict,
+    vision_meta: dict,
+    pre_decision_used: bool,
+    stufe_label: str,
+    llm_model: str,
+) -> None:
+    """Schreibt strukturierte Pipeline-Notiz ins Paperless-Notizfeld.
+
+    Ersetzt vorhandene Pipeline-Notizen (erkennbar am Marker) —
+    manuelle Notizen bleiben unangetastet.
+    """
+    import datetime
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    vision_model = os.environ.get("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")
+
+    # Vision-Felder
+    v_absender  = vision_meta.get("absender") or "—"
+    v_empfaenger= vision_meta.get("empfaenger") or "—"
+    v_datum     = vision_meta.get("datum") or "—"
+    v_betrag    = vision_meta.get("betrag") or "—"
+    v_doctyp    = vision_meta.get("dokumenttyp_visuell") or "—"
+    v_bezahlt   = vision_meta.get("bezahlt")
+    v_bezahlt_s = "ja" if v_bezahlt is True else ("nein" if v_bezahlt is False else "—")
+
+    # Entscheidungs-Felder
+    confidence  = (decision.get("confidence") or "—").strip()
+    korr        = decision.get("korrespondent") or "—"
+    ordner      = decision.get("ordner") or "—"
+    doctyp      = decision.get("dokumenttyp_semantisch") or "—"
+    begruendung = (decision.get("begruendung") or "").strip()
+    llm_str     = llm_model if llm_model and not pre_decision_used else "—"
+
+    # Beziehungsinfo falls Stufe 1
+    bez_info = ""
+    if pre_decision_used and "Beziehung" in stufe_label:
+        bez_person = decision.get("_bez_person") or ""
+        bez_ref    = decision.get("_bez_ref") or ""
+        bez_bez    = decision.get("_bez_bezeichnung") or ""
+        parts = []
+        if bez_bez:  parts.append(bez_bez)
+        if bez_person: parts.append(f"→ {bez_person}")
+        if bez_ref:  parts.append(f"| Ref: {bez_ref}")
+        if parts:
+            bez_info = f"\nBeziehung: {' '.join(parts)}"
+
+    # Review-Hinweis
+    review_hint = ""
+    if confidence in ("tief", "mittel") or decision.get("_pending_review"):
+        review_hint = f"\n⚠ Review-Queue | Confidence: {confidence}"
+
+    sep = "━" * 32
+    note_text = (
+        f"{_PIPE_NOTE_MARKER}{POST_CONSUME_VERSION} | {now}\n"
+        f"{sep}\n"
+        f"Stufe:       {stufe_label}\n"
+        f"Korrespondent: {korr}\n"
+        f"Ordner:      {ordner}\n"
+        f"Doctyp:      {doctyp} | Confidence: {confidence}\n"
+        f"{sep}\n"
+        f"Vision ({vision_model}):\n"
+        f"  Absender:  {v_absender}\n"
+        f"  Empfänger: {v_empfaenger}\n"
+        f"  Datum:     {v_datum} | Betrag: {v_betrag}\n"
+        f"  Doctyp:    {v_doctyp} | Bezahlt: {v_bezahlt_s}"
+    )
+    if bez_info:
+        note_text += bez_info
+    if begruendung and not pre_decision_used:
+        # LLM-Begründung kürzen auf max 120 Zeichen
+        bg = begruendung[:120] + ("…" if len(begruendung) > 120 else "")
+        note_text += f"\n{sep}\nLLM: {bg}"
+    if review_hint:
+        note_text += review_hint
+
+    # Vorhandene Pipeline-Notizen löschen
+    existing = paperless_get_notes(document_id)
+    for n in existing:
+        if str(n.get("note", "")).startswith(_PIPE_NOTE_MARKER):
+            paperless_delete_note(document_id, n["id"])
+            log.info("Pipeline-Notiz #%s ersetzt", n["id"])
+
+    ok = paperless_post_note(document_id, note_text)
+    if ok:
+        log.info("Pipeline-Notiz geschrieben (Stufe: %s)", stufe_label)
+    else:
+        log.warning("Pipeline-Notiz konnte nicht geschrieben werden")
+
+
 
 
 # Ollama-Session ohne Retry — LLM-Calls sind idempotent aber langsam
@@ -2081,56 +2217,6 @@ def resolve_storage_path(pfad: str) -> Optional[int]:
         return None
 
 
-def maybe_add_sample(pdf_path: str, pfad: str, confidence: str, doc_id: str):
-    """
-    Kopiert PDF als Sample wenn:
-    - confidence == "hoch"
-    - Ordner hat noch < SAMPLE_MAX_PER_FOLDER Samples
-    - Dieses Dokument ist noch nicht als Sample vorhanden
-    Erstellt Ordner automatisch.
-    """
-    if SAMPLE_MAX_PER_FOLDER <= 0:
-        return
-    if confidence.lower() != "hoch":
-        log.info("Auto-Sample übersprungen: confidence='%s' (nur 'hoch' wird gesampelt)", confidence)
-        return
-
-    # Ordnername: pfad mit / → _ und Sonderzeichen bereinigen
-    import re
-    # Ordner-Struktur beibehalten: Thomas/Auto → samples/Thomas/Auto/
-    sample_dir = SAMPLES_BASE / pfad
-    sample_dir.mkdir(parents=True, exist_ok=True)
-
-    # Anzahl bestehender Samples prüfen
-    # Idempotency: prüfen ob dieses Dokument bereits als Sample vorhanden
-    # Verhindert doppelte Samples bei re-consume / retry
-    doc_id_str = str(doc_id)
-    existing = list(sample_dir.glob("*.pdf"))
-    if any(doc_id_str in p.name for p in existing):
-        log.info("Sample für Dok #%s bereits vorhanden — übersprungen", doc_id)
-        return
-    
-    if len(existing) >= SAMPLE_MAX_PER_FOLDER:
-        log.info("Auto-Sample übersprungen: Ordner '%s' hat bereits %d/%d Samples",
-                 pfad, len(existing), SAMPLE_MAX_PER_FOLDER)
-        return
-
-    # Sample-Dateiname: doc_id + Original-Dateiname
-    import shutil
-    sample_name = f"{doc_id}_{Path(pdf_path).name}"
-    target = sample_dir / sample_name
-
-    if target.exists():
-        log.info("Auto-Sample bereits vorhanden: %s", target)
-        return
-
-    try:
-        shutil.copy2(pdf_path, target)
-        log.info("✓ Auto-Sample gespeichert: %s (%d/%d)",
-                 target, len(existing) + 1, SAMPLE_MAX_PER_FOLDER)
-    except Exception as e:
-        log.warning("Auto-Sample fehlgeschlagen: %s", e)
-
 
 def ensure_all_storage_paths(manifest: list[dict]):
     """Alle Manifest-Pfade in Paperless sicherstellen."""
@@ -2141,6 +2227,79 @@ def ensure_all_storage_paths(manifest: list[dict]):
 
 
 # ─── Hauptlogik ───────────────────────────────────────────────────────────────
+
+def _sanitize_titel(titel: str) -> str:
+    """Bereinigt den Dokumenttitel für Paperless:
+    - Spaces → Underscore
+    - Mehrfache Underscores → einfach
+    - Führende/abschliessende Underscores entfernen
+    - Unerlaubte Dateisystem-Zeichen entfernen (/ \\ : * ? " < > |)
+    - Umlaut-Umschreibung absichtlich NICHT — ä/ö/ü/ß bleiben erhalten
+    """
+    import re
+    t = titel.strip()
+    # Dateisystem-Sonderzeichen entfernen (nicht ersetzen — verfälscht den Titel)
+    t = re.sub(r'[/\\:*?"<>|]', '', t)
+    # Whitespace (Spaces, Tabs, Newlines von LLM) → Underscore
+    t = re.sub(r'\s+', '_', t)
+    # Mehrfache Underscores → einfach
+    t = re.sub(r'_+', '_', t)
+    # Führende/abschliessende Underscores
+    t = t.strip('_')
+    return t
+
+
+def _make_unique_titel(titel: str, ordner: str) -> str:
+    """Letzter Sicherheitsnetz: Laufnummer anhängen falls Titel+Ordner trotzdem noch kollidiert.
+
+    Datum und Kürzel wurden bereits in main() angehängt — dieser Check fängt nur
+    den unwahrscheinlichen Fall ab dass zwei identische Dokumente im gleichen Monat
+    vom gleichen Korrespondenten ankommen.
+    """
+    def _exists(t: str) -> bool:
+        try:
+            result = paperless_get("/documents/", params={"title__iexact": t, "page_size": 1})
+            if not result or not result.get("results"):
+                return False
+            for doc in result["results"]:
+                sp = doc.get("storage_path")
+                if sp is None:
+                    continue
+                sp_name = _storage_path_name_by_id(sp)
+                if sp_name and ordner and sp_name.lower().startswith(ordner.lower()):
+                    return True
+            return False
+        except Exception as e:
+            log.warning("Uniqueness-Check fehlgeschlagen: %s", e)
+            return False
+
+    if not _exists(titel):
+        return titel
+
+    for n in range(2, 20):
+        tn = f"{titel}_{n}"
+        if not _exists(tn):
+            log.warning("Titel-Uniqueness: Laufnummer nötig → '%s'", tn)
+            return tn
+
+    log.error("Titel-Uniqueness: konnte keinen eindeutigen Titel finden für '%s'", titel)
+    return titel
+
+
+def _storage_path_name_by_id(sp_id: int) -> str:
+    """Gibt Storage-Path-Name für eine ID zurück (gecacht)."""
+    if not hasattr(_storage_path_name_by_id, "_cache"):
+        _storage_path_name_by_id._cache = {}
+    if sp_id in _storage_path_name_by_id._cache:
+        return _storage_path_name_by_id._cache[sp_id]
+    try:
+        result = paperless_get(f"/storage_paths/{sp_id}/")
+        name = result.get("name", "")
+        _storage_path_name_by_id._cache[sp_id] = name
+        return name
+    except Exception:
+        return ""
+
 
 def main():
     log.info("=" * 70)
@@ -2259,10 +2418,7 @@ def main():
         if not _korrespondent:
             _korrespondent = vision_meta.get("absender") or _extract_absender_from_ocr(ocr_text)
 
-        _betrag = vision_meta.get("betrag")
-        _titel  = f"Servicerechnung {_korrespondent}" if _korrespondent else "Servicerechnung"
-        if _betrag and str(_betrag).lower() not in ("null", "none", ""):
-            _titel += f" ({_betrag})"
+        _titel = f"Servicerechnung {_korrespondent}" if _korrespondent else "Servicerechnung"
         # Tags aus Manifest-Eintrag holen — nicht hardcodiert
         ordner_entry = next((e for e in manifest if e.get("pfad") == ordner), {})
         manifest_tags = ordner_entry.get("erlaubte_tags", [])
@@ -2547,13 +2703,32 @@ def main():
         patch["custom_fields"] = _custom_fields
         log.info("Custom Fields: %d Felder gesetzt", len(_custom_fields))
 
-    # Titel
+    # Titel — Sanitizer + immer YYYY-MM + Kürzel anhängen
     titel = (decision.get("titel") or "").strip()
     if titel:
-        # Betrag anfügen falls vorhanden
-        betrag = vision_meta.get("betrag") or decision.get("betrag")
-        if betrag and str(betrag).lower() not in ("null", "none") and betrag not in titel:
-            titel = f"{titel} ({betrag})"
+        titel = _sanitize_titel(titel)
+        # Kürzel aus Korrespondenten-Eintrag holen
+        _kuerzel = ""
+        if _corr_entry:
+            _kuerzel = (_corr_entry.get("kuerzel") or "").strip().upper()
+        # Datum-Suffix: YYYY-MM aus validiertem Datum
+        _datum_raw = decision.get("datum") or ""
+        _datum_suffix = ""
+        if _datum_raw:
+            _parts = str(_datum_raw).split("-")
+            if len(_parts) >= 2:
+                _datum_suffix = f"{_parts[0]}-{_parts[1]}"
+            elif len(_parts) == 1 and len(_parts[0]) == 4:
+                _datum_suffix = _parts[0]
+        # Immer anhängen: _YYYY-MM und/oder _KÜRZEL (falls verfügbar)
+        if _datum_suffix and _kuerzel:
+            titel = f"{titel}_{_datum_suffix}_{_kuerzel}"
+        elif _datum_suffix:
+            titel = f"{titel}_{_datum_suffix}"
+        elif _kuerzel:
+            titel = f"{titel}_{_kuerzel}"
+        # Kollisions-Fallback: Laufnummer falls Datum+Kürzel immer noch nicht reicht
+        titel = _make_unique_titel(titel=titel, ordner=pfad)
         patch["title"] = titel[:128]
 
     # Korrespondent
@@ -2733,10 +2908,19 @@ def main():
     doc_id_padded = str(document_id).zfill(7)
     original_pdf = f"{MEDIA_ROOT}/documents/originals/{doc_id_padded}.pdf"
 
-    if Path(original_pdf).exists() and pfad:
-        maybe_add_sample(original_pdf, pfad, confidence, str(document_id))
+    # ── Stufe-Label für Notiz ─────────────────────────────────────────────────
+    _begruendung = decision.get("begruendung", "")
+    if pre_decision:
+        if "Kennzeichen" in _begruendung:
+            _stufe_label = "0 — Kennzeichen (deterministisch)"
+        elif "Beziehung" in _begruendung:
+            _stufe_label = "1 — Beziehung (deterministisch)"
+        elif "family.json" in _begruendung:
+            _stufe_label = "2b — family.json Beziehung (deterministisch)"
+        else:
+            _stufe_label = "1 — deterministisch"
     else:
-        log.info("Auto-Sample: originals/%s.pdf nicht gefunden", doc_id_padded)
+        _stufe_label = f"3 — LLM ({os.environ.get('OLLAMA_MODEL', 'llama3.3:70b')})"
 
     # ── PATCH ausführen (Paperless verschiebt Datei danach) ───────────────────
     if patch:
@@ -2747,6 +2931,19 @@ def main():
             log.error("✗ PATCH fehlgeschlagen")
     else:
         log.warning("Kein Patch-Payload")
+
+    # ── Pipeline-Notiz schreiben ─────────────────────────────────────────────
+    try:
+        write_pipeline_note(
+            document_id       = document_id,
+            decision          = decision,
+            vision_meta       = vision_meta,
+            pre_decision_used = pre_decision is not None,
+            stufe_label       = _stufe_label,
+            llm_model         = os.environ.get("OLLAMA_MODEL", "llama3.3:70b"),
+        )
+    except Exception as e:
+        log.warning("Pipeline-Notiz fehlgeschlagen (unkritisch): %s", e)
 
     elapsed = time.monotonic() - start_time
     log.info("Fertig in %.1fs | Ordner='%s'", elapsed, pfad)
