@@ -42,7 +42,12 @@ post_consume.py       — Haupt-Pipeline (läuft nach jedem erfolgreichen Scan)
   │                     umgehen LLM vollständig (~100% treffsicher)
   ├─ fix_tags         — Deterministische Tags aus 3 Ebenen zusammengeführt:
   │                     Beziehung → Korrespondent → Dokumenttyp
-  └─ Paperless API    — Setzt Korrespondent, Tags, Pfad, benutzerdefinierte Felder
+  ├─ Paperless API    — Setzt Korrespondent, Tags, Pfad, benutzerdefinierte Felder
+  └─ Pipeline-Notiz   — Strukturierte Notiz ins Paperless-Notizfeld:
+                        Routing-Stufe, Korrespondent, Ordner, Dokumenttyp,
+                        Confidence, Vision-Felder, LLM-Modell — für Debugging
+                        und Nachvollziehbarkeit. Ersetzt frühere Pipeline-Notizen;
+                        manuelle Notizen bleiben unangetastet.
   ↓
 paper.manager         — Browser-UI zum Reviewen unsicherer Dokumente,
 (Port 8100)             Korrespondenten, Dokumenttypen, Tags,
@@ -140,6 +145,8 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
 - **Familie** — Personen, Fahrzeuge, Haushaltsname (keine Hardcodierung im Code); Beziehungsübersicht über alle Korrespondenten
+- **Kürzel** — 2–6 Zeichen langes Kürzel pro Korrespondent (z. B. `UBS`, `ZV`); als Badge angezeigt, durchsuchbar, Live-Eindeutigkeitsprüfung
+- **Paperless-Link** — direkter «Paperless-NGX öffnen ↗»-Button in der Seitenleiste und auf dem Home-Tab; URL aus `PAPERLESS_URL` in `.env`
 - **Versionsanzeige** — zeigt aktive Versionen aller Komponenten in der Seitenleiste
 
 ---
