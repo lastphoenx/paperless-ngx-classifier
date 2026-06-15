@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.14.py — Paperless-NGX Post-Consume Pipeline v12.14
+post_consume_v12.15.py — Paperless-NGX Post-Consume Pipeline v12.15
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.14"  # 12.14: Pipeline-Notiz in Paperless-Notizfeld (Debugging/Nachvollziehbarkeit)
+POST_CONSUME_VERSION = "12.15"  # 12.15: Bugfix _make_unique_titel ordner=pfad → decision.get("ordner")
 import sys
 import json
 import logging
@@ -418,7 +418,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-log = logging.getLogger("post_consume_v12.14")
+log = logging.getLogger("post_consume_v12.15")
 
 # ─── Paperless ENV ────────────────────────────────────────────────────────────
 
@@ -2728,7 +2728,7 @@ def main():
         elif _kuerzel:
             titel = f"{titel}_{_kuerzel}"
         # Kollisions-Fallback: Laufnummer falls Datum+Kürzel immer noch nicht reicht
-        titel = _make_unique_titel(titel=titel, ordner=pfad)
+        titel = _make_unique_titel(titel=titel, ordner=decision.get("ordner", ""))
         patch["title"] = titel[:128]
 
     # Korrespondent

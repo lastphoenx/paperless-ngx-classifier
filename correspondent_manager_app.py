@@ -19,7 +19,7 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.7"  # 2.7: kuerzel Feld (unique), Uniqueness-Validierung in PUT+PATCH+POST + Regex-Fix v2.6
+__version__ = "2.8"  # 2.8: Proxy-Endpoints für PDF-Vorschau + Thumbnail (IP-Zugriff ohne Authentik)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -29,14 +29,14 @@ from typing import Optional
 
 import requests
 from fastapi import FastAPI, HTTPException, Request, Body
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 # ──────────────────────────────────────────────
 # Konfiguration
 # ──────────────────────────────────────────────
 PAPERLESS_API_URL   = os.environ.get("PAPERLESS_API_URL", "http://localhost:8000/api")
-PAPERLESS_API_TOKEN = os.environ.get("PAPERLESS_API_TOKEN", "")
+PAPERLESS_API_TOKEN = os.environ.get("PAPERLESS_TOKEN", "") or os.environ.get("PAPERLESS_API_TOKEN", "")
 CORRESPONDENTS_JSON = os.environ.get("CORRESPONDENTS_JSON", "data/correspondents.json")
 PENDING_JSONL       = os.environ.get("PENDING_JSONL", "data/pending_correspondents.jsonl")
 TAGS_JSON           = Path(os.environ.get("TAGS_JSON", "/opt/paperless-scripts/training/tags.json"))
@@ -98,6 +98,10 @@ async def require_paperless_session(request: Request, call_next):
     # Wer extern (Domain) zugreift, ist bereits via Authentik authentifiziert.
     paperless_internal = os.environ.get("PAPERLESS_INTERNAL_URL",
                          os.environ.get("PAPERLESS_URL", "http://localhost:8000"))
+
+    # Proxy-Endpoints: kein Auth nötig — Backend holt Daten selbst mit Token
+    if path.startswith("/api/proxy/"):
+        return await call_next(request)
 
     # API-Calls: Token oder Session prüfen
     if path.startswith("/api/"):
@@ -2167,6 +2171,62 @@ def api_korr_typen():
 
 # HTML UI wird aus separater Datei geladen
 _UI_FILE = Path(__file__).parent / "paper_manager_ui.html"
+
+
+
+@app.get("/api/proxy/document/{doc_id}/preview/")
+def proxy_document_preview(doc_id: int):
+    """Proxied PDF-Vorschau — funktioniert auch per IP ohne Authentik-Cookie."""
+    try:
+        r = requests.get(
+            f"{PAPERLESS_API_URL.rstrip('/')}/documents/{doc_id}/preview/",
+            headers=PAPERLESS_HEADERS,
+            stream=True,
+            timeout=30,
+        )
+        if r.status_code in (301, 302, 303, 307, 308):
+            raise HTTPException(401, "Paperless: Authentifizierung fehlgeschlagen (Redirect)")
+        if not r.ok:
+            raise HTTPException(r.status_code, f"Paperless: {r.text[:200]}")
+        ct = r.headers.get("content-type", "application/pdf")
+        if "text/html" in ct:
+            raise HTTPException(401, "Paperless: Login-Seite erhalten statt PDF")
+        return StreamingResponse(
+            r.iter_content(chunk_size=65536),
+            media_type=ct,
+            headers={"Content-Disposition": f"inline; filename=document_{doc_id}.pdf"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Proxy-Fehler: {e}")
+
+
+@app.get("/api/proxy/document/{doc_id}/thumb/")
+def proxy_document_thumb(doc_id: int):
+    """Proxied Thumbnail — für Vorschau-Bild im Dokument-Review."""
+    try:
+        r = requests.get(
+            f"{PAPERLESS_API_URL.rstrip('/')}/documents/{doc_id}/thumb/",
+            headers=PAPERLESS_HEADERS,
+            stream=True,
+            timeout=15,
+        )
+        if r.status_code in (301, 302, 303, 307, 308):
+            raise HTTPException(401, "Paperless: Authentifizierung fehlgeschlagen (Redirect)")
+        if not r.ok:
+            raise HTTPException(r.status_code, f"Paperless: {r.text[:200]}")
+        ct = r.headers.get("content-type", "image/webp")
+        if "text/html" in ct:
+            raise HTTPException(401, "Paperless: Login-Seite erhalten statt Bild")
+        return StreamingResponse(
+            r.iter_content(chunk_size=32768),
+            media_type=ct,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Proxy-Fehler: {e}")
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -260,7 +260,7 @@ Available at `http://SERVER_IP:8100` after installation.
 | Home | System overview, feature summary, component versions |
 | Correspondent Review | Approve / reject / merge unknown senders |
 | Correspondents | Edit known senders — match rules, fix_tags, verbotene_*, beziehungen |
-| Document Review | Thumbnail + AI fields + colour-coded confidence + LLM reasoning + correction form |
+| Document Review | Thumbnail + AI fields + colour-coded confidence + LLM reasoning + correction form (proxy preview for IP access, v2.8+) |
 | Document Types | Synonyms + exclusion keywords |
 | Tags | Exclusion keywords per tag |
 | Speicherpfade | Folder configuration |

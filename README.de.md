@@ -140,7 +140,7 @@ Kombiniert mit `verbotene_tags`, `verbotene_doctypen` und `verbotene_ordner` pro
 
 Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Korrespondenten-Review** — unbekannte Absender bestätigen, ablehnen oder zusammenführen
-- **Dokument-Review** — Dokument-Vorschaubild, KI-Felder (Titel, Korrespondent, Ordner, Typ, Datum, farbige Confidence, Review-Grund, **LLM-Begründung**), Tags als Chips, Custom Fields, Korrekturformular (Ordner, Korrespondent, Typ, Tags)
+- **Dokument-Review** — Dokument-Vorschaubild (Proxy, auch per IP), KI-Felder (Titel, Korrespondent, Ordner, Typ, Datum, farbige Confidence, Review-Grund, **LLM-Begründung**), Tags als Chips, Custom Fields, Korrekturformular (Ordner, Korrespondent, Typ, Tags)
 - **Dokumenttypen** — Synonyme und Ausschluss-Keywords verwalten
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren

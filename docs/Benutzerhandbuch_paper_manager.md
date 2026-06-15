@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 2.2 | Mai 2026**
+**Version 2.8 | Juni 2026**
 
 ---
 
@@ -19,11 +19,16 @@ Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständi
 | Via Domain (empfohlen) | https://paperless.example.com/corr-manager/ | Authentik SSO |
 | Via interne IP | http://ipadresse_paperless_server:8100 | Paperless lokaler Login |
 
+> **PDF-Vorschau per IP (ab v2.8):** Thumbnail und PDF im Dokument-Review laufen über
+> `/api/proxy/document/{id}/thumb/` bzw. `/preview/` — das Backend holt die Datei mit
+> `PAPERLESS_TOKEN` aus der Paperless-API. Ohne Proxy scheitert die Vorschau per IP oft
+> (kein Authentik-/Session-Cookie für direkte Paperless-URLs).
+
 ### Versionsanzeige
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v2.2 | be v2.2 | pipe v12.3
+UI v2.8 | be v2.8 | pipe v12.15
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart.
 
@@ -128,8 +133,9 @@ Dokumente mit einem der pending-Tags landen automatisch in der Review-Warteschla
 Das Dokument-Review-Panel besteht aus zwei Bereichen:
 
 **Links — Vorschau**
-- Thumbnail der ersten Seite direkt aus Paperless
-- Klick öffnet das Dokument in Paperless
+- Thumbnail der ersten Seite (Proxy → Paperless-API)
+- Klick öffnet das PDF in neuem Tab (Proxy → `/api/proxy/document/{id}/preview/`)
+- Funktioniert auch bei Zugriff über interne IP ohne Authentik
 
 **Rechts — KI-Erkennung**
 
