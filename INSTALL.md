@@ -368,6 +368,11 @@ location /corr-manager/ {
 
 > Ohne Authentik: paper.manager ist nur via Paperless-Session-Cookie geschützt.
 > Für produktiven Betrieb wird Authentik oder ein anderer Reverse-Proxy mit Auth empfohlen.
+>
+> **Proxy-Vorschau (v2.8):** `/api/proxy/document/{id}/preview/` und `/thumb/` sind ohne
+> Browser-Session erreichbar; das Backend authentifiziert sich mit `PAPERLESS_TOKEN`
+> (Fallback: `PAPERLESS_API_TOKEN`). Nur für die Medien-Streams — alle anderen API-Routen
+> bleiben geschützt.
 
 ---
 
@@ -402,6 +407,8 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | Custom Fields werden nicht gesetzt | CF_*_ID falsch | IDs in Paperless Admin prüfen |
 | paper.manager nicht erreichbar | Service nicht gestartet | `systemctl status correspondent-manager` |
 | 401 bei API-Calls | PAPER_MANAGER_TOKEN nicht gesetzt | .env prüfen, Service neu starten |
+| Thumbnail/PDF leer im Dokument-Review (IP-Zugriff) | Direkte Paperless-URLs ohne Session | ab v2.8: Proxy-Endpoints; `PAPERLESS_TOKEN` in `.env` und Service-Env |
+| Titel-Kollisionen / falscher Ordner im Dateinamen | Bug in `_make_unique_titel` (bis pipe 12.14) | `post_consume.py` ≥ 12.15 deployen |
 | Routing funktioniert nicht (Kennzeichen/Arbeitgeber/Bank) | family.json leer oder Beziehung fehlt | paper.manager → Familie → Fahrzeuge / Beziehungen prüfen |
 | Permissions-Fehler auf Dokumenten | Gruppen-IDs falsch | PAPERLESS_VIEW_GROUP_IDS in .env |
 | Falscher Ordner trotz korrekter Vision | Paperless Classifier noch aktiv | Schritt 7b — alle 3 Objekttypen zurücksetzen |
