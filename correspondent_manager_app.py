@@ -19,7 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.8"  # 2.8: Proxy-Endpoints für PDF-Vorschau + Thumbnail (IP-Zugriff ohne Authentik)
+__version__ = "2.9"  # 2.9: Tag-Löschen, ui_version in /api/config
+UI_VERSION = "2.19"   # Frontend paper_manager_ui.html — mit api/config synchron halten
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -424,6 +425,12 @@ def pl_patch(path: str, data: dict) -> dict:
     r = requests.patch(url, headers=PAPERLESS_HEADERS, json=data, timeout=30)
     r.raise_for_status()
     return r.json()
+
+
+def pl_delete(path: str) -> None:
+    url = f"{PAPERLESS_API_URL.rstrip('/')}/{path.lstrip('/')}"
+    r = requests.delete(url, headers=PAPERLESS_HEADERS, timeout=30)
+    r.raise_for_status()
 
 
 def resolve_group_ids(group_names: list[str]) -> list[int]:
@@ -1457,6 +1464,7 @@ def api_config():
         "paperless_url": os.environ.get("PAPERLESS_URL", "http://localhost:8000"),
         "pending_mode":  _get_pending_mode(),
         "versions": {
+            "ui":             UI_VERSION,
             "backend":        __version__,
             "post_consume":   _rv(f"{base}/post_consume.py",   "POST_CONSUME_VERSION"),
             "pre_consume_sh": _rv(f"{base}/pre_consume.sh",    "# VERSION"),
@@ -1731,6 +1739,34 @@ def api_create_tag(body: dict = Body(...)):
         return result
     except Exception as e:
         raise HTTPException(502, str(e))
+
+
+@app.delete("/api/paperless/tags/{tag_id}")
+def api_delete_tag(tag_id: int):
+    """Tag in Paperless löschen und aus tags.json entfernen."""
+    try:
+        tag = pl_get(f"/tags/{tag_id}/")
+    except Exception as e:
+        raise HTTPException(404, f"Tag nicht gefunden: {e}") from e
+
+    tag_name = tag.get("name", "")
+    if tag_name in ALL_PENDING_TAGS:
+        raise HTTPException(400, f"Pipeline-Tag «{tag_name}» kann nicht gelöscht werden")
+
+    try:
+        pl_delete(f"/tags/{tag_id}/")
+    except Exception as e:
+        raise HTTPException(502, f"Paperless DELETE fehlgeschlagen: {e}") from e
+
+    tags_data = _load_tags_json()
+    tags_list = tags_data.get("tags", [])
+    tags_data["tags"] = [
+        t for t in tags_list
+        if t.get("_paperless_id") != tag_id and t.get("name", "").lower() != tag_name.lower()
+    ]
+    _save_tags_json(tags_data)
+    log.info("Tag gelöscht: %s (ID %s)", tag_name, tag_id)
+    return {"status": "deleted", "id": tag_id, "name": tag_name}
 
 
 @app.post("/api/paperless/document_types")
