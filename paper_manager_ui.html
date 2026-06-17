@@ -135,8 +135,8 @@
   .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
   .empty .icon { font-size: 48px; margin-bottom: 12px; }
 
-  /* Tag document count */
-  .tag-count {
+  /* Document/item count badge (Tags, Dokumenttypen, Korrespondenten) */
+  .count-badge {
     display: inline-block;
     margin-left: 6px;
     padding: 1px 7px;
@@ -146,6 +146,12 @@
     background: rgba(79,156,249,.22);
     color: var(--accent);
     border: 1px solid rgba(79,156,249,.35);
+    vertical-align: middle;
+  }
+  .count-badge.zero {
+    background: rgba(100,116,139,.15);
+    color: var(--muted);
+    border-color: rgba(100,116,139,.25);
   }
 
   /* Divider */
@@ -625,7 +631,7 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.19';  // Fallback — primär aus /api/config versions.ui
+const UI_VERSION = '2.20';  // Fallback — primär aus /api/config versions.ui
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -1469,16 +1475,34 @@ async function submitReview(index, action) {
 let _corrAllEntries = [];
 
 async function loadCorrMap() {
-  const r = await fetch(`${API_BASE}/correspondents`);
-  const d = await r.json();
+  const [corrR, plR] = await Promise.all([
+    fetch(`${API_BASE}/correspondents`),
+    fetch(`${API_BASE}/paperless/correspondents`).catch(() => null),
+  ]);
+  const d = await corrR.json();
   const container = document.getElementById('corr-list');
   if (!d.eintraege?.length) {
     container.innerHTML = '<div class="empty"><div class="icon">📭</div><div>Keine Einträge</div></div>';
     return;
   }
-  allCorrEntries = d.eintraege;
-  _corrAllEntries = d.eintraege;
+  const plCounts = {};
+  if (plR?.ok) {
+    const pl = await plR.json();
+    (pl.results || []).forEach(c => { plCounts[c.id] = c.document_count ?? 0; });
+  }
+  allCorrEntries = d.eintraege.map(e => {
+    const plId = e._paperless?.id;
+    const document_count = plId != null ? (plCounts[plId] ?? 0) : null;
+    return { ...e, document_count };
+  });
+  _corrAllEntries = allCorrEntries;
   renderCorrMap(_corrAllEntries);
+}
+
+function countBadge(n) {
+  const count = n ?? 0;
+  const cls = count > 0 ? 'count-badge' : 'count-badge zero';
+  return `<span class="${cls}">${count}×</span>`;
 }
 
 function renderCorrMap(eintraege) {
@@ -1491,7 +1515,7 @@ function renderCorrMap(eintraege) {
     <div class="card" id="corr-card-${idx}">
       <div class="card-header">
         <div style="display:flex;align-items:center;gap:8px;min-width:0">
-          <span class="card-title">${e.name}</span>
+          <span class="card-title">${e.name}${e._paperless?.id != null ? countBadge(e.document_count) : ''}</span>
           ${e.kuerzel ? `<span style="background:rgba(16,185,129,.2);color:#10b981;border:1px solid rgba(16,185,129,.4);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;letter-spacing:.5px;white-space:nowrap">${e.kuerzel}</span>` : '<span style="background:var(--surface);color:var(--muted);border:1px dashed var(--border);border-radius:4px;padding:1px 7px;font-size:10px;white-space:nowrap" title="Kürzel fehlt — im Edit setzen">kein Kürzel</span>'}
         </div>
         <div style="display:flex;gap:8px;align-items:center">
@@ -2087,9 +2111,10 @@ function renderDoctypes(items) {
   container.innerHTML = items.map(t => {
     const hasSyns = t.synonyme?.length > 0;
     const hasExcl = t.ausschliessen?.length > 0;
+    const count = t.document_count ?? 0;
     return `<div class="card" style="margin-bottom:10px">
       <div class="card-header">
-        <span class="card-title">${t.name}</span>
+        <span class="card-title">${t.name}${countBadge(count)}</span>
         <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px"
           onclick="openDtEdit(${t.id})">✎ Edit</button>
       </div>
@@ -2101,7 +2126,7 @@ function renderDoctypes(items) {
         ${hasExcl
           ? `<div><span style="color:var(--muted);font-size:11px">AUSSCHLIESSEN: </span>${t.ausschliessen.map(s=>`<span class="badge" style="background:rgba(239,68,68,.12);color:#f87171;margin-right:3px;font-size:11px">✗ ${s}</span>`).join('')}</div>`
           : `<div style="color:var(--muted);font-size:11px;font-style:italic">Keine Ausschluss-Keywords</div>`}
-        <div style="margin-top:4px;font-size:11px;color:var(--muted)">Paperless-ID: ${t.id} | Dokumente: ${t.document_count ?? '?'}</div>
+        <div style="margin-top:6px;font-size:10px;color:var(--muted)">Paperless #${t.id}</div>
       </div>
       <div id="dt-edit-${t.id}" style="display:none"></div>
     </div>`;
@@ -2280,7 +2305,7 @@ function renderTags(items) {
     const count = t.document_count ?? 0;
     return `<div class="card" style="margin-bottom:8px">
       <div class="card-header">
-        <span class="card-title">${t.name}${count ? ` <span class="tag-count">${count}×</span>` : ''}</span>
+        <span class="card-title">${t.name}${countBadge(count)}</span>
         <button class="btn btn-ghost" style="padding:3px 10px;font-size:11px" onclick="openTagEdit(${t.id})">✎ Edit</button>
       </div>
       <div id="tag-view-${t.id}">
