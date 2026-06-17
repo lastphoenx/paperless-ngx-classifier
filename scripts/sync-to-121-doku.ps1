@@ -1,13 +1,24 @@
-# Sync paperless-ngx-classifier -> lokale 121-paperless Doku-Kopie (Windows).
+# Lokaler Windows-Sync zwischen zwei Git-Repos (gleicher github_code-Ordner):
 #
-# Source of truth: paperless-ngx-classifier (dieses Repo)
-# Ziel: doku/pve2/vm/121-paperless/Doku/ (private Doku, kein Git)
+#   Repo 1 (öffentlich):  paperless-ngx-classifier  ->  github.com/.../paperless-ngx-classifier
+#   Repo 2 (privat):      doku                        ->  github.com/.../doku
+#                         └── pve2/vm/121-paperless/Doku/paperless-scripts/
 #
-# Nutzung:
+# Source of truth für Code: paperless-ngx-classifier
+# Dieses Skript kopiert geänderte Dateien in das doku-Repo (121-paperless Doku-Kopie).
+# Danach im doku-Repo committen und pushen — NICHT automatisch.
+#
+# Nutzung (in PowerShell, aus paperless-ngx-classifier):
 #   .\scripts\sync-to-121-doku.ps1
 #   .\scripts\sync-to-121-doku.ps1 -WhatIf
 #
-# Überschreibt NICHT: fix_*.py, create_tags.py, paperless-backup.sh (nur auf 121)
+# Typischer Ablauf nach Code-Änderung:
+#   1. paperless-ngx-classifier: git add / commit / push
+#   2. .\scripts\sync-to-121-doku.ps1
+#   3. doku: git add pve2/vm/121-paperless/... / commit / push
+#   4. ct-121 (Server): git pull && ./scripts/deploy-to-ct121.sh
+#
+# Überschreibt NICHT: fix_*.py, create_tags.py, paperless-backup.sh (nur lokal in 121-Doku)
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -104,3 +115,14 @@ Write-Host "Doku:" -ForegroundColor Yellow
 
 Write-Host ""
 Write-Host "Fertig." -ForegroundColor Cyan
+
+$DokuRepo = Join-Path $SrcRoot "..\doku" | Resolve-Path -ErrorAction SilentlyContinue
+if ($DokuRepo) {
+    Write-Host ""
+    Write-Host "Naechster Schritt (doku-Repo, manuell):" -ForegroundColor Yellow
+    Write-Host "  cd $($DokuRepo.Path)"
+    Write-Host "  git status pve2/vm/121-paperless/"
+    Write-Host "  git add pve2/vm/121-paperless/"
+    Write-Host "  git commit -m ""sync: paperless-scripts from classifier"""
+    Write-Host "  git push"
+}
