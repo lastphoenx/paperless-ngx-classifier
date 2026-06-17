@@ -20,7 +20,7 @@ import json
 import os
 
 __version__ = "2.9"  # 2.9: Tag-Löschen, ui_version in /api/config
-UI_VERSION = "2.19"   # Frontend paper_manager_ui.html — mit api/config synchron halten
+UI_VERSION = "2.20"   # Frontend paper_manager_ui.html — mit api/config synchron halten
 import fcntl
 from contextlib import contextmanager
 import logging
