@@ -3,7 +3,6 @@
 #
 # One-time setup on ct-121:
 #   git clone git@github.com:lastphoenx/paperless-ngx-classifier.git /opt/paperless-ngx-classifier
-#   chmod +x /opt/paperless-ngx-classifier/scripts/deploy-to-ct121.sh
 #
 # Update (UI + backend only):
 #   cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
