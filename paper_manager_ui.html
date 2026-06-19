@@ -691,7 +691,7 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.21';  // Fallback — primär aus /api/config versions.ui
+const UI_VERSION = '2.22';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {

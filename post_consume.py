@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.15.py — Paperless-NGX Post-Consume Pipeline v12.15
+post_consume_v12.16.py — Paperless-NGX Post-Consume Pipeline v12.16
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.15"  # 12.15: Bugfix _make_unique_titel ordner=pfad → decision.get("ordner")
+POST_CONSUME_VERSION = "12.16"  # 12.16: CF Verarbeitung (auto STP) + Person, Doc-Review bei unbek. Korrespondent
 import sys
 import json
 import logging

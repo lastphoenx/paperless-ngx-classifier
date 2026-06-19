@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.9"  # 2.9: Tag-Löschen, ui_version in /api/config
-UI_VERSION = "2.20"   # Frontend paper_manager_ui.html — mit api/config synchron halten
+__version__ = "2.10"  # 2.10: approved-for-docs, Corr-Reject→Doc-Review, enqueue helpers
+UI_VERSION = "2.22"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging

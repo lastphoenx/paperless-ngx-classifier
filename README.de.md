@@ -135,12 +135,16 @@ Kombiniert mit `verbotene_tags`, `verbotene_doctypen` und `verbotene_ordner` pro
 | Kennzeichen | Auswahl | Vision + family.json |
 | Bezahlt am | Datum | Handschrift `bez.` |
 | Eingescannt am | Datum | Immer = heute |
+| Verarbeitung | Auswahl | `auto STP` wenn Korrespondent + DokTyp ohne menschliches Review gesetzt |
+| Person | Auswahl | `anzeigename` aus `family.json` bei klarer Beziehungs-Zuordnung (Ref-Nr/Person) |
+
+Pro Dokumenttyp kann ein **Feldprofil** festlegen, welche Custom Fields extrahiert, im Dokument-Review angezeigt und als Pflichtfeld gelten (Tab Dokumenttypen → Edit).
 
 ### paper.manager UI
 
 Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
-- **Korrespondenten-Review** — unbekannte Absender bestätigen, ablehnen oder zusammenführen
-- **Dokument-Review** — Dokument-Vorschaubild (Proxy, auch per IP), KI-Felder (Titel, Korrespondent, Ordner, Typ, Datum, farbige Confidence, Review-Grund, **LLM-Begründung**), Tags als Chips, Custom Fields, Korrekturformular (Ordner, Korrespondent, Typ, Tags)
+- **Korrespondenten-Review** — unbekannte Absender bestätigen, ablehnen oder zusammenführen; **Kürzel** bereits beim Freigeben neuer Korrespondenten; Ablehnen leitet betroffene Dokumente in die Document-Review
+- **Dokument-Review** — 30/70-Layout mit grosser Vorschau, KI-Felder, Tags als Multiselect (bei «Neu klassifizieren» werden Tags **ersetzt**, nicht gemerged), Korrespondenten-Dropdown nur freigegebene Einträge (ohne pending-NEU)
 - **Dokumenttypen** — Synonyme und Ausschluss-Keywords verwalten
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
@@ -239,9 +243,11 @@ nano /opt/paperless/.env
 | `CONFIDENCE_IGNORE_TAG_PATTERNS` | `^\d{4}$,^\d{1,2}\.\d{4}$` | Regex-Muster für Tags, die die Confidence **nicht** senken (Jahreszahlen, Monat.Jahr). Kommagetrennt. Leer = alles deaktiviert. |
 | `CF_BEZAHLT_AM_ID` | — | Paperless Custom-Field-ID für «Bezahlt am» |
 | `CF_GESCANNT_AM_ID` | — | Paperless Custom-Field-ID für «Eingescannt am» |
+| `CF_VERARBEITUNG_ID` | — | Select «Verarbeitung» — Pipeline setzt `auto STP` |
+| `CF_PERSON_ID` | — | Select «Person» — Werte = `anzeigename` aus `family.json` |
 | `OLLAMA_REGEX_MODEL` | `llama3.3:70b` | Separates Ollama-Modell für den Regex-Assistenten in paper.manager (Fallback auf `OLLAMA_MODEL`) |
 
-Alle Variablen mit Beschreibungen siehe `.env.example`.
+Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VERSIONING.md`.
 
 ---
 
@@ -257,6 +263,7 @@ Alle Variablen mit Beschreibungen siehe `.env.example`.
 | `docker-compose.yml` | Paperless-NGX Stack (Vorlage — Pfade und Passwörter anpassen) |
 | `.env.example` | Alle Konfigurationsvariablen mit Erklärungen |
 | `training/` | Beispiel-Konfigurationsdateien für Korrespondenten, Dokumenttypen, Manifest etc. |
+| `docs/VERSIONING.md` | Wann UI / BE / Pipeline-Versionen hochzählen |
 
 ---
 
