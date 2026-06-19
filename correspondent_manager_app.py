@@ -576,6 +576,28 @@ def remove_tag_from_documents(doc_ids: list[int], tag_name: str):
         log.warning("Tag-Entfernung '%s' fehlgeschlagen: %s", tag_name, e)
 
 
+def add_tag_to_documents(doc_ids: list[int], tag_name: str) -> None:
+    """Einen Tag auf Dokumenten setzen via Bulk Edit."""
+    if not doc_ids:
+        return
+    try:
+        tags_result = pl_get("/tags/", {"name__iexact": tag_name})
+        if tags_result.get("count"):
+            tag_id = tags_result["results"][0]["id"]
+        else:
+            created = pl_post("/tags/", {"name": tag_name, "color": "#f59e0b", "matching_algorithm": 1})
+            tag_id = created.get("id")
+        if not tag_id:
+            return
+        pl_post("/documents/bulk_edit/", {
+            "documents": doc_ids,
+            "method": "add_tag",
+            "parameters": {"tag": tag_id},
+        })
+    except Exception as e:
+        log.warning("Tag '%s' setzen fehlgeschlagen: %s", tag_name, e)
+
+
 def remove_all_pending_tags(doc_ids: list[int]) -> None:
     """ALLE pending-Tags entfernen beim Freigeben.
     Entfernt: pending_review, pending_qs, pending_new_correspondent
@@ -972,6 +994,99 @@ def save_document_review_queue(entries: list[dict]) -> None:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
 
+def enqueue_document_review_entry(
+    doc_id: int,
+    *,
+    pfad: str = "",
+    confidence: str = "mittel",
+    grund: list[str] | None = None,
+    title: str = "",
+    begruendung: str = "",
+) -> None:
+    """Dokument in Document-Review-Queue einreihen (Dedupe per doc_id)."""
+    grund = grund or []
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    entries = load_document_review_queue()
+    for e in entries:
+        if e.get("document_id") == doc_id and e.get("status") == "pending":
+            merged_grund = list(dict.fromkeys((e.get("grund") or []) + grund))
+            e["grund"] = merged_grund
+            e["pfad"] = pfad or e.get("pfad", "")
+            e["confidence"] = confidence or e.get("confidence", "mittel")
+            e["title"] = title or e.get("title", "")
+            e["begruendung"] = begruendung or e.get("begruendung", "")
+            e["timestamp"] = now
+            save_document_review_queue(entries)
+            log.info("Document Review Queue: ID=%s aktualisiert (Dedupe), Grund=%s", doc_id, merged_grund)
+            return
+    entries.append({
+        "document_id": doc_id,
+        "pfad": pfad,
+        "confidence": confidence,
+        "grund": grund,
+        "title": title,
+        "begruendung": begruendung,
+        "status": "pending",
+        "timestamp": now,
+    })
+    save_document_review_queue(entries)
+    log.info("Document Review Queue: ID=%s neu eingereiht, Grund=%s", doc_id, grund)
+
+
+def _escalate_corr_reject_to_doc_review(entry: dict) -> None:
+    """Korrespondenten-Review abgelehnt → Dokument in Document-Review mit pending_review."""
+    doc_ids = entry.get("source_document_ids") or []
+    if not doc_ids:
+        return
+    remove_tag_from_documents(doc_ids, PENDING_NEW_CORR_TAG)
+    add_tag_to_documents(doc_ids, PENDING_REVIEW_TAG)
+    raw_name = entry.get("llm_raw") or entry.get("vorgeschlagener_eintrag", {}).get("name", "")
+    for doc_id in doc_ids:
+        title, pfad, conf = "", "", "mittel"
+        try:
+            doc = pl_get(f"/documents/{doc_id}/")
+            title = doc.get("title") or ""
+            if doc.get("storage_path"):
+                sp = pl_get(f"/storage_paths/{doc['storage_path']}/")
+                pfad = sp.get("name", "")
+        except Exception as e:
+            log.warning("Dokument %s für Escalation nicht lesbar: %s", doc_id, e)
+        enqueue_document_review_entry(
+            doc_id,
+            pfad=pfad,
+            confidence=conf,
+            grund=["Korrespondent-Review abgelehnt", "Korrespondent offen"],
+            title=title,
+            begruendung=f"Korrespondent '{raw_name}' nicht freigegeben — bitte Korrespondent zuweisen",
+        )
+
+
+def _approved_correspondents_for_docs() -> list[dict]:
+    """Korrespondenten die im Dokument-Review zuweisbar sind: in Map + Paperless-ID, nicht pending-neu."""
+    corr_map = load_corr_map()
+    pending_new_names = set()
+    for e in load_pending():
+        if e.get("status") != "pending" or e.get("aktion") != "neu":
+            continue
+        name = (e.get("vorgeschlagener_eintrag") or {}).get("name", "").strip().lower()
+        if name:
+            pending_new_names.add(name)
+    results = []
+    for e in corr_map.get("eintraege", []):
+        pl_id = e.get("_paperless", {}).get("id")
+        if not pl_id:
+            continue
+        if e["name"].strip().lower() in pending_new_names:
+            continue
+        results.append({
+            "id": pl_id,
+            "name": e["name"],
+            "kuerzel": e.get("kuerzel", ""),
+        })
+    results.sort(key=lambda x: x["name"].lower())
+    return results
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
@@ -1265,11 +1380,12 @@ def api_review(index: int, decision: ReviewDecision, request: "Request"):
 
     try:
         if decision.action == "reject":
+            _escalate_corr_reject_to_doc_review(entry)
             entries[original_index]["status"] = "rejected"
             entries[original_index]["reviewed_by"] = decision.reviewed_by
             entries[original_index]["reviewed_at"] = now
             save_pending(entries)
-            return {"status": "rejected", "message": "Eintrag abgelehnt"}
+            return {"status": "rejected", "message": "Abgelehnt — Dokument(e) in Document-Review eingereiht"}
 
         aktion = entry.get("aktion", "neu")
         if decision.action in ("approve", "approve_neu") and aktion == "neu":
@@ -1510,6 +1626,12 @@ def api_pl_correspondents():
         return {"results": result.get("results", [])}
     except Exception as e:
         raise HTTPException(502, f"Paperless nicht erreichbar: {e}")
+
+
+@app.get("/api/correspondents/approved-for-docs", response_class=JSONResponse)
+def api_approved_correspondents_for_docs():
+    """Korrespondenten für Dokument-Review-Zuweisung (Map + Paperless-ID, nicht pending-neu)."""
+    return {"results": _approved_correspondents_for_docs()}
 
 
 @app.get("/api/document-review", response_class=JSONResponse)

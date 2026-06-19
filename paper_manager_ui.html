@@ -823,6 +823,7 @@ async function init() {
   } catch(e) { window.PAPERLESS_URL = ''; }
   await loadPending();
   await loadPlCorrespondents();
+  await loadCorrMap();
   await loadAllStoragePaths();
   await loadKorrTypen();
   await loadAllDocTypes();
@@ -1286,12 +1287,29 @@ function renderPanelErgaenzung(entry, i, docContent, docIds) {
     </div>`;
 }
 
+function buildMergeCorrOptions(entry) {
+  const mergeZiel = entry.merge_ziel_name || '';
+  const names = [];
+  const seen = new Set();
+  const add = (n) => {
+    const key = (n || '').trim();
+    if (!key || seen.has(key.toLowerCase())) return;
+    seen.add(key.toLowerCase());
+    names.push(key);
+  };
+  if (mergeZiel) add(mergeZiel);
+  for (const e of (allCorrEntries || [])) add(e.name);
+  for (const c of (plCorrespondents || [])) add(c.name);
+  if (!names.length) return '<option value="">— kein Korrespondent in Map —</option>';
+  return names.map(n =>
+    `<option value="${n.replace(/"/g, '&quot;')}" ${n === mergeZiel ? 'selected' : ''}>${n}</option>`
+  ).join('');
+}
+
 function renderPanelMerge(entry, i, docContent, docIds) {
   const e = entry.vorgeschlagener_eintrag || {};
   const match = e.match || [];
-  const optionen = plCorrespondents.map(c =>
-    `<option value="${c.name}" ${c.name===entry.merge_ziel_name?'selected':''}>${c.name}</option>`
-  ).join('');
+  const optionen = buildMergeCorrOptions(entry);
   return `
     <div class="card">
       <div class="card-header">
@@ -2048,7 +2066,11 @@ const CUSTOM_FIELD_OPTIONS = [
   {id: 8,  name: "Fällig am",        type: "date"},
   {id: 9,  name: "Status",           type: "select"},
   {id: 10, name: "Policennummer",    type: "text"},
-  {id: 11, name: "Auto-Kennzeichen", type: "text"},
+  {id: 11, name: "Auto-Kennzeichen", type: "select"},
+  {id: 12, name: "Bezahlt am",       type: "date"},
+  {id: 13, name: "Gescannt am",      type: "date"},
+  {id: 14, name: "Verarbeitung",     type: "select"},
+  {id: 15, name: "Person",           type: "select"},
 ];
 
 function renderFeldprofilEdit(feldprofil, dtId) {
@@ -2947,7 +2969,7 @@ async function loadDocReviewMeta() {
     const [sp, tg, co] = await Promise.all([
       fetch(`${API_BASE}/paperless/storage-paths`).then(r=>r.json()),
       fetch(`${API_BASE}/paperless/tags`).then(r=>r.json()),
-      fetch(`${API_BASE}/paperless/correspondents`).then(r=>r.json()),
+      fetch(`${API_BASE}/correspondents/approved-for-docs`).then(r=>r.json()),
     ]);
     allStoragePaths = sp.results || [];
     allTags = tg.results || [];
@@ -3092,7 +3114,7 @@ async function selectDocReview(i) {
     `<option value="${sp.id}" ${sp.name===entry.pfad?'selected':''}>${sp.name}</option>`).join('');
   const corrOptions = `<option value="">— kein Korrespondent —</option>` +
     allDocCorrespondents.map(c =>
-      `<option value="${c.id}" ${c.id===doc?.correspondent?'selected':''}>${c.name}</option>`).join('');
+      `<option value="${c.id}" ${c.id===doc?.correspondent?'selected':''}>${c.name}${c.kuerzel ? ' ('+c.kuerzel+')' : ''}</option>`).join('');
   const tagOptions = allTags.map(t =>
     `<option value="${t.id}" ${currentTagIds.includes(t.id)?'selected':''}>${t.name}</option>`).join('');
 
