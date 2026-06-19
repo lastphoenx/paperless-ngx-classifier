@@ -11,6 +11,12 @@
       ],
       "ausschliessen": [],
       "beschreibung": "Allgemeine Rechnung ohne spezifische Kategorie",
+      "feldprofil": {
+        "1": {"extrahieren": true, "im_formular": true, "pflicht": false},
+        "5": {"extrahieren": true, "im_formular": true, "pflicht": false},
+        "8": {"extrahieren": true, "im_formular": true, "pflicht": false},
+        "9": {"extrahieren": true, "im_formular": true, "pflicht": false}
+      },
       "_paperless_id": null
     },
     {
