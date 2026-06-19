@@ -112,6 +112,66 @@
   .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
   @media (max-width: 1100px) { .review-grid { grid-template-columns: 1fr; } }
 
+  /* Document review — breitere Detailspalte, höhere Vorschau */
+  .docreview-grid {
+    display: grid;
+    grid-template-columns: minmax(260px, 30%) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+  @media (max-width: 1100px) { .docreview-grid { grid-template-columns: 1fr; } }
+  .docreview-list-col h3 { margin-bottom: 12px; font-size: 13px; }
+  #docreview-list {
+    max-height: calc(100vh - 200px);
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  #docreview-panel { min-height: calc(100vh - 200px); }
+  .docreview-top {
+    display: grid;
+    grid-template-columns: minmax(280px, 42%) minmax(0, 1fr);
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  @media (max-width: 900px) { .docreview-top { grid-template-columns: 1fr; } }
+  .docreview-thumb {
+    background: #111;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 420px;
+    padding: 16px;
+    border-right: 1px solid var(--border);
+  }
+  @media (max-width: 900px) {
+    .docreview-thumb { border-right: none; border-bottom: 1px solid var(--border); min-height: 320px; }
+  }
+  .docreview-thumb img {
+    max-width: 100%;
+    max-height: min(520px, 55vh);
+    object-fit: contain;
+    display: block;
+  }
+  .docreview-meta { padding: 14px 16px; font-size: 12px; min-width: 0; }
+  .docreview-meta-grid {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 4px 10px;
+    margin-bottom: 12px;
+  }
+  .docreview-corrections {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  @media (max-width: 800px) { .docreview-corrections { grid-template-columns: 1fr; } }
+  .docreview-tags-full { grid-column: 1 / -1; }
+  .docreview-tags-full select#dr-tags {
+    min-height: 200px;
+    height: 200px;
+  }
+
   /* Doc preview */
   .doc-preview { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 14px; max-height: 400px; overflow-y: auto; line-height: 1.7; color: var(--muted); font-size: 12px; }
@@ -427,8 +487,8 @@
   <div id="view-docreview" style="display:none">
     <h2>Dokument-Review Queue</h2>
     <div class="stats-row" id="docreview-stats"></div>
-    <div class="review-grid">
-      <div>
+    <div class="docreview-grid">
+      <div class="docreview-list-col">
         <h3>Offene Dokumente</h3>
         <div id="docreview-list"></div>
       </div>
@@ -631,7 +691,7 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.20';  // Fallback — primär aus /api/config versions.ui
+const UI_VERSION = '2.21';  // Fallback — primär aus /api/config versions.ui
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -3053,24 +3113,23 @@ async function selectDocReview(i) {
         </a>
       </div>
 
-      <!-- Thumbnail + KI-Erkennung nebeneinander -->
-      <div style="display:flex;gap:0;border-bottom:1px solid var(--border)">
+      <!-- Thumbnail + KI-Erkennung -->
+      <div class="docreview-top">
 
         <!-- Thumbnail -->
-        <div style="flex:0 0 200px;background:#111;display:flex;align-items:center;justify-content:center;min-height:200px;border-right:1px solid var(--border)">
+        <div class="docreview-thumb">
           <a href="${previewUrl}" target="_blank" title="PDF öffnen">
             <img src="${thumbUrl}"
-              style="max-width:196px;max-height:280px;object-fit:contain;display:block"
               onerror="this.parentElement.innerHTML='<span style=color:var(--muted);font-size:11px>Keine Vorschau</span>'"
               alt="Vorschau">
           </a>
         </div>
 
         <!-- KI-Erkennung -->
-        <div style="flex:1;padding:14px 16px;font-size:12px">
+        <div class="docreview-meta">
           <div style="font-size:10px;color:var(--muted);font-weight:bold;letter-spacing:0.5px;margin-bottom:10px">KI-ERKENNUNG</div>
 
-          <div style="display:grid;grid-template-columns:100px 1fr;gap:4px 8px;margin-bottom:12px">
+          <div class="docreview-meta-grid">
             <span style="color:var(--muted)">Titel</span>
             <span style="color:var(--text);font-weight:500">${doc?.title||entry.title||'—'}</span>
 
@@ -3122,7 +3181,7 @@ async function selectDocReview(i) {
       <!-- Korrekturen -->
       <div style="padding:14px 16px">
         <div style="font-size:10px;color:var(--muted);font-weight:bold;letter-spacing:0.5px;margin-bottom:10px">KORREKTUREN (nur bei «Neu klassifizieren»)</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div class="docreview-corrections">
           <div class="field-group" style="margin:0">
             <label>Ordner</label>
             <select id="dr-sp">${spOptions}</select>
@@ -3135,9 +3194,9 @@ async function selectDocReview(i) {
             <label>Dokumenttyp</label>
             <select id="dr-dt">${dtOptions}</select>
           </div>
-          <div class="field-group" style="margin:0">
+          <div class="field-group docreview-tags-full" style="margin:0">
             <label>Tags (Mehrfachauswahl)</label>
-            <select id="dr-tags" multiple style="min-height:80px">${tagOptions}</select>
+            <select id="dr-tags" multiple>${tagOptions}</select>
             <span style="display:block;font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4">
               Auswahl <strong>ersetzt</strong> alle Tags beim Speichern.
               Strg+Klick = mehrere Tags.
