@@ -200,6 +200,7 @@ class ReviewDecision(BaseModel):
     default_dokumenttyp_id:  Optional[int]       = None   # Paperless DocumentType ID
     typische_ordner:         Optional[list[str]] = None
     notiz:                   Optional[str]       = None
+    kuerzel:                 Optional[str]       = None
     merge_ziel_name:         Optional[str]       = None
     reviewed_by:             Optional[str]       = "admin"
     extraktion_muster:       Optional[dict]      = None   # {feldname: ExtraktionsMuster}
@@ -756,9 +757,12 @@ def approve_neu(entry: dict, decision: ReviewDecision) -> str:
     notiz           = decision.notiz or entry["vorgeschlagener_eintrag"].get("notiz", "")
     extr_muster     = decision.extraktion_muster or entry["vorgeschlagener_eintrag"].get("extraktion_muster", {})
     erwartungen     = decision.erwartungen or entry["vorgeschlagener_eintrag"].get("erwartungen", {})
+    kuerzel         = (decision.kuerzel or entry["vorgeschlagener_eintrag"].get("kuerzel") or "").strip().upper()
 
     # 1. Vollständige Validation VOR Paperless-Anlage
     corr_map = load_corr_map()
+    if kuerzel and not _check_kuerzel_unique(kuerzel, exclude_name=name, corr_map=corr_map):
+        raise HTTPException(409, f"Kürzel '{kuerzel}' wird bereits von einem anderen Korrespondenten verwendet")
     errors, warnings = _validate_correspondent_entry(
         name=name,
         match_strings=match_list,
@@ -800,6 +804,7 @@ def approve_neu(entry: dict, decision: ReviewDecision) -> str:
     # 4. In correspondents.json eintragen
     new_entry = {
         "name": name,
+        "kuerzel": kuerzel,
         "varianten": varianten,
         "match": match_list,
         "matching_algorithm": "any",

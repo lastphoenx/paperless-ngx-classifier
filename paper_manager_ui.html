@@ -1044,7 +1044,7 @@ async function selectEntry(i) {
   if (entry.aktion === 'ergaenzung') wrapper.innerHTML = renderPanelErgaenzung(entry, i, docContent, docIds);
   if (entry.aktion === 'merge_into') wrapper.innerHTML = renderPanelMerge(entry, i, docContent, docIds);
 
-  // Varianten-Vorschläge aus LLM-Raw generieren
+  // Varianten-Vorschläge + Kürzel-Check
   if (entry.aktion === 'neu') {
     const raw = entry.llm_raw || '';
     const suggestions = generateVariantSuggestions(raw);
@@ -1053,6 +1053,8 @@ async function selectEntry(i) {
       sugDiv.innerHTML = '<span style="color:var(--muted);font-size:11px">Vorschläge: </span>' +
         suggestions.map(s => `<span class="badge badge-neu" style="cursor:pointer" onclick="addTagVal('${s}','tags-varianten')">${s}</span>`).join('');
     }
+    const kEl = document.getElementById('f-kuerzel');
+    if (kEl) checkKuerzelReview(kEl);
   }
 }
 
@@ -1074,6 +1076,7 @@ function renderPanelNeu(entry, i, docContent, docIds) {
   const e = entry.vorgeschlagener_eintrag || {};
   const varianten = e.varianten || [];
   const match     = e.match || [];
+  const kuerzelVorschlag = e.kuerzel || suggestKuerzel(e.name || entry.llm_raw || '');
   const korrTypen = allKorrTypen.length ? allKorrTypen : ['Behörde','Bank','Versicherung','Arzt','Arbeitgeber','Kundenservice','Verein','Online-Shop','Händler','Handwerk','Telekommunikation','Energie','Transport','Sonstiges'];
   return `
     <div class="card">
@@ -1085,7 +1088,20 @@ function renderPanelNeu(entry, i, docContent, docIds) {
       <hr class="divider">
       <div class="field-group">
         <label>Kanonischer Name *</label>
-        <input type="text" id="f-name" value="${e.name || ''}">
+        <input type="text" id="f-name" value="${e.name || ''}" oninput="onReviewNameInput()">
+      </div>
+      <div class="field-group">
+        <label>Kürzel
+          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+            2–6 Zeichen, eindeutig — wird im Dokumenttitel angehängt (z.B. UBS, UNIBAS)
+          </span>
+        </label>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input type="text" id="f-kuerzel" value="${kuerzelVorschlag}" maxlength="6"
+            style="text-transform:uppercase;max-width:120px;letter-spacing:1px;font-weight:600"
+            oninput="this.dataset.userEdited='true';checkKuerzelReview(this)">
+          <span id="f-kuerzel-status" style="font-size:11px"></span>
+        </div>
       </div>
       <div class="field-group">
         <label>Standard-Dokumenttyp
@@ -1397,6 +1413,7 @@ async function submitReview(index, action) {
   if (action !== 'reject') {
     if (entry.aktion === 'neu') {
       payload.canonical_name  = document.getElementById('f-name')?.value;
+      payload.kuerzel         = (document.getElementById('f-kuerzel')?.value || '').toUpperCase().trim();
       payload.typ             = document.getElementById('f-typ')?.value;
       payload.varianten       = getTagsFromContainer('tags-varianten');
       payload.match_strings   = getTagsFromContainer('tags-match');
@@ -1405,6 +1422,11 @@ async function submitReview(index, action) {
 
       // Validation VOR Freigeben
       if (action === 'approve') {
+        const kuerzelStatus = document.getElementById('f-kuerzel-status');
+        if (payload.kuerzel && kuerzelStatus?.dataset?.conflict === 'true') {
+          showToast('Kürzel bereits vergeben — bitte anderes wählen', 'error');
+          return;
+        }
         const vr = await fetch(`${API_BASE}/validate-correspondent`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -1820,6 +1842,68 @@ async function executeMergePaperless(idx, keepId) {
   }
 }
 
+function suggestKuerzel(name) {
+  if (!name) return '';
+  const stop = new Set(['ag','gmbh','sa','ltd','inc','co','der','die','das','und','von','the','de','ch']);
+  const cleaned = name
+    .replace(/[^\w\säöüÄÖÜàéè]/gi, ' ')
+    .replace(/\b(ag|gmbh|s\.a\.|sa|ltd|inc|co)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const words = cleaned.split(' ').filter(w => w.length > 1 && !stop.has(w.toLowerCase()));
+  if (!words.length) {
+    return name.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6);
+  }
+  if (words.length === 1) {
+    return words[0].replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6);
+  }
+  if (words.length === 2) {
+    const [a, b] = words;
+    if (a.length >= 3 && b.length >= 3) {
+      return (a.slice(0, 3) + b.slice(0, 3)).toUpperCase().slice(0, 6);
+    }
+    return (a.slice(0, 2) + b.slice(0, 2)).toUpperCase().slice(0, 6);
+  }
+  return words.map(w => w[0]).join('').toUpperCase().slice(0, 6);
+}
+
+function onReviewNameInput() {
+  const kuerzelEl = document.getElementById('f-kuerzel');
+  const nameEl = document.getElementById('f-name');
+  if (!kuerzelEl || !nameEl || kuerzelEl.dataset.userEdited === 'true') return;
+  kuerzelEl.value = suggestKuerzel(nameEl.value);
+  checkKuerzelReview(kuerzelEl);
+}
+
+async function checkKuerzelReview(input) {
+  const val = input.value.trim().toUpperCase();
+  const status = document.getElementById('f-kuerzel-status');
+  const name = document.getElementById('f-name')?.value?.trim() || '';
+  if (!status) return;
+  if (!val || val.length < 2) {
+    status.textContent = val ? 'mind. 2 Zeichen' : '';
+    status.style.color = 'var(--muted)';
+    status.dataset.conflict = 'false';
+    return;
+  }
+  try {
+    const r = await fetch(`${API_BASE}/check-kuerzel?kuerzel=${encodeURIComponent(val)}&exclude=${encodeURIComponent(name)}`);
+    const d = await r.json();
+    if (d.available) {
+      status.textContent = '✓ verfügbar';
+      status.style.color = 'var(--success, #10b981)';
+      status.dataset.conflict = 'false';
+    } else {
+      status.textContent = '✗ bereits vergeben';
+      status.style.color = 'var(--danger, #f87171)';
+      status.dataset.conflict = 'true';
+    }
+  } catch(e) {
+    status.textContent = '';
+    status.dataset.conflict = 'false';
+  }
+}
+
 async function checkKuerzelUnique(input, idx, corrName) {
   const val = input.value.trim().toUpperCase();
   const status = document.getElementById(`ce-kuerzel-status-${idx}`);
@@ -1915,19 +1999,19 @@ function renderFeldprofilEdit(feldprofil, dtId) {
     const form = !!cfg.im_formular;
     const pflicht = !!cfg.pflicht;
     return `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:12px;font-weight:500">${f.name}</div>
-          <span style="font-size:10px;color:var(--muted);background:var(--surface);padding:1px 6px;border-radius:3px">${f.type}</span>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 4.5rem 4.5rem 3.5rem;gap:4px 6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:0">
+          <span style="font-size:12px;font-weight:500">${f.name}</span>
+          <span style="font-size:9px;color:var(--muted);margin-left:6px">${f.type}</span>
         </div>
-        <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:400;color:var(--text);cursor:pointer" title="KI/OCR extrahiert dieses Feld">
-          <input type="checkbox" id="fp-ext-${dtId}-${f.id}" ${ext?'checked':''}> Extrahieren
+        <label style="display:flex;justify-content:center;margin:0;cursor:pointer" title="KI/OCR extrahiert dieses Feld">
+          <input type="checkbox" id="fp-ext-${dtId}-${f.id}" ${ext?'checked':''}>
         </label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:400;color:var(--text);cursor:pointer" title="Im Dokument-Review anzeigen">
-          <input type="checkbox" id="fp-form-${dtId}-${f.id}" ${form?'checked':''}> Im Review
+        <label style="display:flex;justify-content:center;margin:0;cursor:pointer" title="Im Dokument-Review anzeigen">
+          <input type="checkbox" id="fp-form-${dtId}-${f.id}" ${form?'checked':''}>
         </label>
-        <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:400;color:var(--warn);cursor:pointer" title="Muss gesetzt sein bevor Dokument freigegeben wird">
-          <input type="checkbox" id="fp-pflicht-${dtId}-${f.id}" ${pflicht?'checked':''}> Pflicht
+        <label style="display:flex;justify-content:center;margin:0;cursor:pointer" title="Muss gesetzt sein bevor Dokument freigegeben wird">
+          <input type="checkbox" id="fp-pflicht-${dtId}-${f.id}" ${pflicht?'checked':''}>
         </label>
       </div>`;
   }).join('');
@@ -1938,7 +2022,13 @@ function renderFeldprofilEdit(feldprofil, dtId) {
           Welche Custom Fields extrahiert und im Dokument-Review angezeigt werden
         </span>
       </label>
-      <div style="border:1px solid var(--border);border-radius:6px;padding:4px 12px;background:rgba(0,0,0,.15)">
+      <div style="border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:rgba(0,0,0,.15)">
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) 4.5rem 4.5rem 3.5rem;gap:4px 6px;align-items:end;padding-bottom:4px;margin-bottom:2px;border-bottom:1px solid var(--border)">
+          <span style="font-size:10px;color:var(--muted);font-weight:bold">FELD</span>
+          <span style="font-size:9px;color:var(--muted);text-align:center;line-height:1.2" title="KI/OCR extrahiert">Extrahieren</span>
+          <span style="font-size:9px;color:var(--muted);text-align:center;line-height:1.2" title="Im Dokument-Review">Review</span>
+          <span style="font-size:9px;color:var(--warn);text-align:center;line-height:1.2" title="Pflichtfeld">Pflicht</span>
+        </div>
         ${rows}
       </div>
     </div>`;
