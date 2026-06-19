@@ -296,10 +296,11 @@ def _match_beziehung(absender: str) -> dict | None:
 
 # ── Tag-Ausschluss-Cache ──────────────────────────────────────────────────────
 _DT_FIX_TAGS_MAP:    dict[str, list[str]] = {}
+_DT_FELDPROFIL_MAP:  dict[str, dict] = {}
 _DT_FIX_TAGS_LOADED: bool = False
 
 def _load_dt_fix_tags_map() -> None:
-    """Dokumenttyp → fix_tags Map aus document_types.json.
+    """Dokumenttyp → fix_tags + feldprofil aus document_types.json.
     In-Process-Singleton — konsistent mit Korrespondenten-Cache und Tag-Ausschluss-Cache.
     post_consume.py wird pro Scan neu gestartet → kein manueller Reload nötig.
     Änderungen in document_types.json wirken beim nächsten Scan automatisch.
@@ -311,19 +312,30 @@ def _load_dt_fix_tags_map() -> None:
         if DOCUMENT_TYPES_JSON.exists():
             data = json.loads(DOCUMENT_TYPES_JSON.read_text(encoding="utf-8"))
             for t in data.get("typen", []):
+                key = t["name"].lower()
                 tags = t.get("fix_tags", [])
                 if tags:
-                    _DT_FIX_TAGS_MAP[t["name"].lower()] = tags
+                    _DT_FIX_TAGS_MAP[key] = tags
+                profil = t.get("feldprofil", {})
+                if profil:
+                    _DT_FELDPROFIL_MAP[key] = profil
         _DT_FIX_TAGS_LOADED = True
         if _DT_FIX_TAGS_MAP:
             log.info("DocType fix_tags Map: %d Typen geladen", len(_DT_FIX_TAGS_MAP))
+        if _DT_FELDPROFIL_MAP:
+            log.info("DocType feldprofil Map: %d Typen geladen", len(_DT_FELDPROFIL_MAP))
     except Exception as e:
-        log.warning("DocType fix_tags Map laden fehlgeschlagen: %s", e)
+        log.warning("DocType fix_tags/feldprofil Map laden fehlgeschlagen: %s", e)
 
 def _get_doctype_fix_tags(doctyp_name: str) -> list[str]:
     """fix_tags für einen Dokumenttyp zurückgeben."""
     _load_dt_fix_tags_map()
     return _DT_FIX_TAGS_MAP.get((doctyp_name or "").lower(), [])
+
+def _get_feldprofil_for_doctype(doctyp_name: str) -> dict:
+    """feldprofil für einen Dokumenttyp zurückgeben (leer = alle Felder erlaubt)."""
+    _load_dt_fix_tags_map()
+    return _DT_FELDPROFIL_MAP.get((doctyp_name or "").lower(), {})
 _TAG_AUSSCHLUSS_MAP:    dict[str, list[str]] = {}
 _TAG_AUSSCHLUSS_LOADED: bool = False
 
@@ -3041,8 +3053,15 @@ def build_custom_fields(
     Returns: Liste von {"field": ID, "value": Wert}
     """
     fields = []
+    doctyp_name = (decision.get("dokumenttyp_semantisch") or "").strip()
+    feldprofil = _get_feldprofil_for_doctype(doctyp_name)
+    profil_active = bool(feldprofil)
 
     def _add(field_id: int, value, label: str):
+        if profil_active:
+            cfg = feldprofil.get(str(field_id)) or feldprofil.get(field_id) or {}
+            if not cfg.get("extrahieren"):
+                return
         if value is not None and str(value).strip() not in ("", "null", "None"):
             fields.append({"field": field_id, "value": value})
             log.info("Custom Field %s (%d) = %s", label, field_id, value)

@@ -1617,17 +1617,12 @@ def api_document_review_action(index: int, body: dict = Body(...)):
             patch.update(_default_permissions())
 
             if action == "reclassify":
-                # Manuelle Neuklassifizierung: ordner und/oder tags aus Body
+                # Manuelle Neuklassifizierung: Korrekturfelder aus Body
                 if body.get("storage_path_id"):
                     patch["storage_path"] = body["storage_path_id"]
-                if body.get("tag_ids"):
-                    # Bestehende Tags lesen + mergen
-                    try:
-                        doc = pl_get(f"/documents/{doc_id}/")
-                        existing = doc.get("tags", [])
-                        patch["tags"] = list(dict.fromkeys(existing + body["tag_ids"]))
-                    except Exception:
-                        patch["tags"] = body["tag_ids"]
+                # tag_ids immer ersetzen (nicht mergen) — auch [] = alle Tags entfernen
+                if "tag_ids" in body:
+                    patch["tags"] = list(dict.fromkeys(body["tag_ids"]))
                 if body.get("correspondent_id"):
                     patch["correspondent"] = body["correspondent_id"]
                 if body.get("document_type_id"):
@@ -1832,9 +1827,11 @@ def api_doctypes():
             dt_data = json.loads(dt_json_path.read_text(encoding="utf-8"))
             for t in dt_data.get("typen", []):
                 synonym_map[t["name"].lower()] = {
-                    "synonyme":     t.get("synonyme", []),
-                    "beschreibung": t.get("beschreibung", ""),
+                    "synonyme":      t.get("synonyme", []),
+                    "beschreibung":  t.get("beschreibung", ""),
                     "ausschliessen": t.get("ausschliessen", []),
+                    "fix_tags":      t.get("fix_tags", []),
+                    "feldprofil":    t.get("feldprofil", {}),
                 }
 
         enriched = []
@@ -1844,6 +1841,8 @@ def api_doctypes():
             entry["synonyme"]      = sm.get("synonyme", [])
             entry["beschreibung"]  = sm.get("beschreibung", "")
             entry["ausschliessen"] = sm.get("ausschliessen", [])
+            entry["fix_tags"]      = sm.get("fix_tags", [])
+            entry["feldprofil"]    = sm.get("feldprofil", {})
             enriched.append(entry)
 
         return {"results": enriched}
@@ -1873,6 +1872,7 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
     new_beschreibung  = body.get("beschreibung", "")
     new_ausschliessen = body.get("ausschliessen", [])
     new_fix_tags      = body.get("fix_tags", [])
+    new_feldprofil    = body.get("feldprofil", {})
 
     # Unique-Check: neue Synonyme dürfen nicht bei anderen Typen vorkommen
     all_strings = set()
@@ -1893,6 +1893,7 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
             t["beschreibung"]  = new_beschreibung
             t["ausschliessen"] = new_ausschliessen
             t["fix_tags"]      = new_fix_tags
+            t["feldprofil"]    = new_feldprofil
             t["_paperless_id"] = dt_id
             found = True
             break
@@ -1903,11 +1904,18 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
             "beschreibung":  new_beschreibung,
             "ausschliessen": new_ausschliessen,
             "fix_tags":      new_fix_tags,
+            "feldprofil":    new_feldprofil,
             "_paperless_id": dt_id,
         })
 
     dt_json_path.write_text(json.dumps(dt_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"status": "updated", "name": dt_name, "synonyme": new_synonyme, "fix_tags": new_fix_tags}
+    return {
+        "status": "updated",
+        "name": dt_name,
+        "synonyme": new_synonyme,
+        "fix_tags": new_fix_tags,
+        "feldprofil": new_feldprofil,
+    }
 
 
 @app.patch("/api/correspondents/{entry_name:path}")

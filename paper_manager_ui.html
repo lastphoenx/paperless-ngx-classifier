@@ -1655,9 +1655,12 @@ function toggleCorrEdit(idx, entry) {
           </select>
         </div>
       </div>
-      <div class="field-group">
-        <label>Verbotene Dokumenttypen
-          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+      <div class="field-group" style="margin-top:4px;padding-top:12px;border-top:1px dashed rgba(239,68,68,.35)">
+        <div style="font-size:10px;color:#f87171;font-weight:bold;letter-spacing:0.5px;margin-bottom:10px">
+          VERBOTENES — Ausschlüsse für die KI
+        </div>
+        <label style="color:#f87171">Verbotene Dokumenttypen
+          <span style="color:rgba(248,113,113,.75);font-size:10px;font-weight:400;margin-left:6px">
             LLM darf diese Dokumenttypen für diesen Korrespondenten NIE wählen
           </span>
         </label>
@@ -1669,9 +1672,9 @@ function toggleCorrEdit(idx, entry) {
           </select>
         </div>
       </div>
-      <div class="field-group">
-        <label>Verbotene Ordner
-          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+      <div class="field-group" style="margin:0;padding-bottom:12px;border-bottom:1px dashed rgba(239,68,68,.35)">
+        <label style="color:#f87171">Verbotene Ordner
+          <span style="color:rgba(248,113,113,.75);font-size:10px;font-weight:400;margin-left:6px">
             LLM darf diese Ordner für diesen Korrespondenten NIE wählen
           </span>
         </label>
@@ -1683,9 +1686,9 @@ function toggleCorrEdit(idx, entry) {
           </select>
         </div>
       </div>
-      <div class="field-group">
-        <label>Verbotene Tags
-          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+      <div class="field-group" style="margin-top:0;padding-bottom:4px">
+        <label style="color:#f87171">Verbotene Tags
+          <span style="color:rgba(248,113,113,.75);font-size:10px;font-weight:400;margin-left:6px">
             LLM darf diese Tags für diesen Korrespondenten NIE setzen
           </span>
         </label>
@@ -1894,15 +1897,70 @@ async function saveCorrEdit(idx, nameParam) {
 // EXTRAKTIONS-MUSTER EDITOR
 // ──────────────────────────────────────────────
 const CUSTOM_FIELD_OPTIONS = [
-  {id: 1,  name: "Betrag"},
-  {id: 5,  name: "Rechnungsnummer"},
-  {id: 6,  name: "Kundennummer"},
-  {id: 7,  name: "QR-Referenz"},
-  {id: 8,  name: "Fällig am"},
-  {id: 9,  name: "Status"},
-  {id: 10, name: "Policennummer"},
-  {id: 11, name: "Auto-Kennzeichen"},
+  {id: 1,  name: "Betrag",           type: "money_chf"},
+  {id: 5,  name: "Rechnungsnummer",  type: "text"},
+  {id: 6,  name: "Kundennummer",     type: "text"},
+  {id: 7,  name: "QR-Referenz",      type: "text"},
+  {id: 8,  name: "Fällig am",        type: "date"},
+  {id: 9,  name: "Status",           type: "select"},
+  {id: 10, name: "Policennummer",    type: "text"},
+  {id: 11, name: "Auto-Kennzeichen", type: "text"},
 ];
+
+function renderFeldprofilEdit(feldprofil, dtId) {
+  const fp = feldprofil || {};
+  const rows = CUSTOM_FIELD_OPTIONS.map(f => {
+    const cfg = fp[String(f.id)] || fp[f.id] || {};
+    const ext = !!cfg.extrahieren;
+    const form = !!cfg.im_formular;
+    const pflicht = !!cfg.pflicht;
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:500">${f.name}</div>
+          <span style="font-size:10px;color:var(--muted);background:var(--surface);padding:1px 6px;border-radius:3px">${f.type}</span>
+        </div>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:400;color:var(--text);cursor:pointer" title="KI/OCR extrahiert dieses Feld">
+          <input type="checkbox" id="fp-ext-${dtId}-${f.id}" ${ext?'checked':''}> Extrahieren
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:400;color:var(--text);cursor:pointer" title="Im Dokument-Review anzeigen">
+          <input type="checkbox" id="fp-form-${dtId}-${f.id}" ${form?'checked':''}> Im Review
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;font-weight:400;color:var(--warn);cursor:pointer" title="Muss gesetzt sein bevor Dokument freigegeben wird">
+          <input type="checkbox" id="fp-pflicht-${dtId}-${f.id}" ${pflicht?'checked':''}> Pflicht
+        </label>
+      </div>`;
+  }).join('');
+  return `
+    <div class="field-group">
+      <label>Feldprofil
+        <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+          Welche Custom Fields extrahiert und im Dokument-Review angezeigt werden
+        </span>
+      </label>
+      <div style="border:1px solid var(--border);border-radius:6px;padding:4px 12px;background:rgba(0,0,0,.15)">
+        ${rows}
+      </div>
+    </div>`;
+}
+
+function collectFeldprofil(dtId) {
+  const profil = {};
+  for (const f of CUSTOM_FIELD_OPTIONS) {
+    const ext = document.getElementById(`fp-ext-${dtId}-${f.id}`)?.checked;
+    const form = document.getElementById(`fp-form-${dtId}-${f.id}`)?.checked;
+    const pflicht = document.getElementById(`fp-pflicht-${dtId}-${f.id}`)?.checked;
+    if (ext || form || pflicht) {
+      profil[String(f.id)] = {extrahieren: !!ext, im_formular: !!form, pflicht: !!pflicht};
+    }
+  }
+  return profil;
+}
+
+function countFeldprofilFields(feldprofil) {
+  if (!feldprofil) return 0;
+  return Object.values(feldprofil).filter(c => c && (c.extrahieren || c.im_formular || c.pflicht)).length;
+}
 
 function renderExtraktionsMusterEdit(muster, idx) {
   if (!muster || !Object.keys(muster).length) return '';
@@ -2126,6 +2184,8 @@ function renderDoctypes(items) {
         ${hasExcl
           ? `<div><span style="color:var(--muted);font-size:11px">AUSSCHLIESSEN: </span>${t.ausschliessen.map(s=>`<span class="badge" style="background:rgba(239,68,68,.12);color:#f87171;margin-right:3px;font-size:11px">✗ ${s}</span>`).join('')}</div>`
           : `<div style="color:var(--muted);font-size:11px;font-style:italic">Keine Ausschluss-Keywords</div>`}
+        ${(t.fix_tags||[]).length ? `<div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">FIX-TAGS: </span>${t.fix_tags.map(s=>`<span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent);margin-right:3px;font-size:11px">${s}</span>`).join('')}</div>` : ''}
+        ${countFeldprofilFields(t.feldprofil) ? `<div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">FELDPROFIL: </span><span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa;font-size:11px">${countFeldprofilFields(t.feldprofil)} Felder konfiguriert</span></div>` : ''}
         <div style="margin-top:6px;font-size:10px;color:var(--muted)">Paperless #${t.id}</div>
       </div>
       <div id="dt-edit-${t.id}" style="display:none"></div>
@@ -2194,6 +2254,7 @@ async function openDtEdit(dtId) {
           </select>
         </div>
       </div>
+      ${renderFeldprofilEdit(t.feldprofil, dtId)}
       <div class="btn-row">
         <button class="btn btn-success" onclick="saveDtEdit(${dtId})">✓ Speichern</button>
         <button class="btn btn-ghost" onclick="closeDtEdit(${dtId})">Abbrechen</button>
@@ -2226,11 +2287,12 @@ async function saveDtEdit(dtId) {
   const synonyme      = getTagsFromContainer(`dt-syns-${dtId}`);
   const ausschliessen = getTagsFromContainer(`dt-excl-${dtId}`);
   const fix_tags      = getTagsFromContainer(`dt-fixtags-${dtId}`);
+  const feldprofil    = collectFeldprofil(dtId);
   const beschreibung  = document.getElementById(`dt-desc-${dtId}`)?.value.trim() || '';
   const r = await fetch(`${API_BASE}/paperless/document_types/${dtId}`, {
     method: 'PATCH',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({synonyme, ausschliessen, beschreibung, fix_tags})
+    body: JSON.stringify({synonyme, ausschliessen, beschreibung, fix_tags, feldprofil})
   });
   if (r.ok) {
     showToast('Dokumenttyp gespeichert', 'success');
@@ -2831,16 +2893,35 @@ async function selectDocReview(i) {
   // Confidence Farbe
   const confColor = {'hoch':'var(--success)','mittel':'var(--warn)','tief':'#f87171'}[entry.confidence] || 'var(--muted)';
 
-  // Custom Fields anzeigen (nur gesetzte)
+  // Custom Fields anzeigen — nach Feldprofil des Dokumenttyps filtern (falls konfiguriert)
   const cfLabels = {1:'CHF',5:'Rechnungs-Nr.',6:'Kunden-Nr.',7:'QR-Referenz',
                     8:'Fällig am',9:'Status',10:'Policen-Nr.',11:'Kennzeichen',
                     12:'Bezahlt am',13:'Gescannt am'};
+  const dtEntry = doc?.document_type
+    ? (window._allDocTypes||[]).find(dt => dt.id === doc.document_type)
+    : null;
+  const feldprofil = dtEntry?.feldprofil || {};
+  const profilActive = Object.keys(feldprofil).length > 0;
   const cfRows = Object.entries(cfMap)
-    .filter(([k,v]) => v !== null && v !== '' && v !== undefined)
-    .map(([k,v]) => `<div style="display:flex;gap:8px;font-size:11px;margin-bottom:2px">
-      <span style="color:var(--muted);min-width:90px">${cfLabels[k]||'CF'+k}</span>
+    .filter(([k,v]) => {
+      if (v === null || v === '' || v === undefined) return false;
+      if (!profilActive) return true;
+      const cfg = feldprofil[k] || feldprofil[String(k)] || {};
+      return cfg.im_formular;
+    })
+    .map(([k,v]) => {
+      const cfg = feldprofil[k] || feldprofil[String(k)] || {};
+      const pflichtMark = cfg.pflicht ? ' <span style="color:var(--warn);font-size:9px">PFLICHT</span>' : '';
+      return `<div style="display:flex;gap:8px;font-size:11px;margin-bottom:2px">
+      <span style="color:var(--muted);min-width:90px">${cfLabels[k]||'CF'+k}${pflichtMark}</span>
       <span style="color:var(--text)">${v}</span>
-    </div>`).join('');
+    </div>`;
+    }).join('');
+  const missingPflicht = profilActive
+    ? Object.entries(feldprofil)
+        .filter(([k,c]) => c.pflicht && (cfMap[k] === undefined || cfMap[k] === null || cfMap[k] === ''))
+        .map(([k]) => cfLabels[k] || ('CF'+k))
+    : [];
 
   // Thumbnail via paper.manager Proxy (funktioniert auch per IP ohne Authentik)
   const thumbUrl = `${API_BASE}/proxy/document/${entry.document_id}/thumb/`;
@@ -2937,9 +3018,14 @@ async function selectDocReview(i) {
 
           ${cfRows ? `
           <div>
-            <div style="font-size:10px;color:var(--muted);margin-bottom:4px">CUSTOM FIELDS</div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px">CUSTOM FIELDS${profilActive ? ' (Feldprofil)' : ''}</div>
             ${cfRows}
-          </div>` : ''}
+            ${missingPflicht.length ? `<div style="font-size:10px;color:var(--warn);margin-top:4px">⚠ Pflichtfelder fehlen: ${missingPflicht.join(', ')}</div>` : ''}
+          </div>` : (missingPflicht.length ? `
+          <div>
+            <div style="font-size:10px;color:var(--warn);margin-bottom:4px">CUSTOM FIELDS — Pflichtfelder fehlen</div>
+            <div style="font-size:10px;color:var(--warn)">${missingPflicht.join(', ')}</div>
+          </div>` : '')}
         </div>
       </div>
 
@@ -2962,6 +3048,11 @@ async function selectDocReview(i) {
           <div class="field-group" style="margin:0">
             <label>Tags (Mehrfachauswahl)</label>
             <select id="dr-tags" multiple style="min-height:80px">${tagOptions}</select>
+            <span style="display:block;font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4">
+              Auswahl <strong>ersetzt</strong> alle Tags beim Speichern.
+              Strg+Klick = mehrere Tags.
+              Keine Auswahl = Dokument ohne Tags.
+            </span>
           </div>
         </div>
         <div class="btn-row" style="margin-top:8px">
