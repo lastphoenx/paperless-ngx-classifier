@@ -100,6 +100,21 @@ def _build_beziehungen_map() -> list[dict]:
     return _load_family().get("beziehungen", [])
 
 
+def _resolve_person_anzeigename(person_ref: str) -> str:
+    """family.json person_id oder Anzeigename → Anzeigename für Select-CF «Person»."""
+    if not person_ref or not str(person_ref).strip():
+        return ""
+    ref = str(person_ref).strip().lower()
+    for p in _load_family().get("personen", []):
+        pid = (p.get("id") or "").lower()
+        name = (p.get("anzeigename") or "").strip()
+        if pid and pid == ref:
+            return name or p.get("id", "")
+        if name and name.lower() == ref:
+            return name
+    return ""
+
+
 def _get_haushalt_personen_namen() -> list[str]:
     """Alle Personennamen im Haushalt — für Vision-Prompt (sind NIE Absender)."""
     namen = []
@@ -392,6 +407,8 @@ CF_POLICENNUMMER   = int(os.environ.get("CF_POLICENNUMMER_ID",   "10"))
 CF_KENNZEICHEN     = int(os.environ.get("CF_KENNZEICHEN_ID",     "11"))
 CF_BEZAHLT_AM      = int(os.environ.get("CF_BEZAHLT_AM_ID",      "12"))
 CF_GESCANNT_AM     = int(os.environ.get("CF_GESCANNT_AM_ID",     "13"))
+CF_VERARBEITUNG    = int(os.environ.get("CF_VERARBEITUNG_ID",    "0"))  # 0 = deaktiviert
+CF_PERSON          = int(os.environ.get("CF_PERSON_ID",          "0"))  # 0 = deaktiviert
 
 # Tags die diesen Regex-Mustern entsprechen lösen KEINEN Confidence-Downgrade aus
 # wenn sie verworfen werden (z.B. Jahreszahlen, Monat.Jahr).
@@ -2464,6 +2481,9 @@ def main():
             source = "vision_meta" if kz_in_vision else "OCR-Text"
             log.info("Pre-Routing: Kennzeichen %s (%s) → %s (kein LLM)", kz_display, source, ordner)
             pre_decision = _pre_route(ordner, kz_display, source)
+            _kz_person = _resolve_person_anzeigename(fz.get("person_id", ""))
+            if _kz_person:
+                pre_decision["_bez_person"] = _kz_person
             break  # erstes Match gewinnt
 
     # ── Stufe 1: Beziehungs-Routing aus correspondents.json ──────────────────
@@ -2513,6 +2533,7 @@ def main():
                     "confidence":            "hoch",
                     "begruendung":           f"Stufe 1: Beziehung '{bez_bez}' (person={bez_person}) → {bez_ordner}",
                     "_bez_doctypen_offen":   bez_doctypen if not bez_doctyp else [],
+                    "_bez_person":           _resolve_person_anzeigename(bez_person),
                 }
             else:
                 _stufe1_grund = (
@@ -2705,16 +2726,6 @@ def main():
     except Exception:
         pass
 
-    _custom_fields = build_custom_fields(
-        decision=decision,
-        vision_meta=vision_meta,
-        qr_meta=qr_meta,
-        corr_entry=_corr_entry,
-    )
-    if _custom_fields:
-        patch["custom_fields"] = _custom_fields
-        log.info("Custom Fields: %d Felder gesetzt", len(_custom_fields))
-
     # Titel — Sanitizer + immer YYYY-MM + Kürzel anhängen
     titel = (decision.get("titel") or "").strip()
     if titel:
@@ -2860,6 +2871,15 @@ def main():
     # 1. Unbekannter Korrespondent → immer pending_new_correspondent
     if pending_review_needed:
         _add_pending_tag(PENDING_NEW_CORR_TAG, "Korrespondent unbekannt")
+        # Auch in Document-Review-Queue — Dok bleibt sichtbar (QS + Korrespondent offen)
+        enqueue_document_review(
+            document_id=DOCUMENT_ID,
+            pfad=decision.get("ordner", ""),
+            confidence=decision.get("confidence", "mittel"),
+            grund=["Korrespondent offen"],
+            title=decision.get("titel", ""),
+            begruendung=decision.get("begruendung", ""),
+        )
 
     # 2. LLM unsicher → pending_review
     _llm_unsicher = (
@@ -2903,6 +2923,41 @@ def main():
     dt_id = resolve_document_type(dt_name, ocr_text=ocr_text, vision_meta=vision_meta)
     if dt_id:
         patch["document_type"] = dt_id
+
+    # Person + Verarbeitung (Pipeline-CFs, unabhängig vom Feldprofil)
+    person_name = (decision.get("_bez_person") or "").strip()
+    if not person_name and _corr_entry:
+        _bez_match = _match_beziehung_v2(
+            _corr_entry, vision_empfaenger, ocr_text,
+            dokumenttyp_visuell=vision_meta.get("dokumenttyp_visuell", ""),
+        )
+        if _bez_match:
+            person_name = _resolve_person_anzeigename(_bez_match.get("person", ""))
+    _will_pending_review = PENDING_MODE in ("always", "uncertain") and _llm_unsicher
+    _will_pending_qs = PENDING_MODE == "always" and not _llm_unsicher and not pending_review_needed
+    auto_stp = bool(
+        korr_id
+        and patch.get("document_type")
+        and not pending_review_needed
+        and not _will_pending_review
+        and not _will_pending_qs
+    )
+    if auto_stp:
+        log.info("Verarbeitung: auto STP (Korrespondent + DokTyp ohne Review)")
+    if person_name:
+        log.info("Person-CF: %s", person_name)
+
+    _custom_fields = build_custom_fields(
+        decision=decision,
+        vision_meta=vision_meta,
+        qr_meta=qr_meta,
+        corr_entry=_corr_entry,
+        person_name=person_name,
+        auto_stp=auto_stp,
+    )
+    if _custom_fields:
+        patch["custom_fields"] = _custom_fields
+        log.info("Custom Fields: %d Felder gesetzt", len(_custom_fields))
 
     # Storage Path
     pfad = (decision.get("ordner") or "").strip()
@@ -3039,6 +3094,9 @@ def build_custom_fields(
     vision_meta: dict,
     qr_meta: dict,
     corr_entry: dict | None,
+    *,
+    person_name: str = "",
+    auto_stp: bool = False,
 ) -> list[dict]:
     """
     Custom Fields für Paperless PATCH zusammenstellen.
@@ -3057,14 +3115,23 @@ def build_custom_fields(
     feldprofil = _get_feldprofil_for_doctype(doctyp_name)
     profil_active = bool(feldprofil)
 
-    def _add(field_id: int, value, label: str):
-        if profil_active:
+    def _add(field_id: int, value, label: str, *, pipeline: bool = False):
+        if not pipeline and profil_active:
             cfg = feldprofil.get(str(field_id)) or feldprofil.get(field_id) or {}
             if not cfg.get("extrahieren"):
                 return
         if value is not None and str(value).strip() not in ("", "null", "None"):
             fields.append({"field": field_id, "value": value})
             log.info("Custom Field %s (%d) = %s", label, field_id, value)
+
+    def _add_select(field_id: int, option_label: str, label: str, *, pipeline: bool = False):
+        if not field_id:
+            return
+        opt_id = _get_select_option_id(field_id, option_label)
+        if opt_id:
+            _add(field_id, opt_id, f"{label}={option_label}", pipeline=pipeline)
+        else:
+            log.warning("Custom Field %s: Option '%s' nicht gefunden", label, option_label)
 
     # ── Betrag ────────────────────────────────────────────────────────────────
     # QR hat den zuverlässigsten Betrag (strukturiert)
@@ -3152,6 +3219,12 @@ def build_custom_fields(
     # Physisches Scan-Datum — unabhängig vom Dokumentinhalt
     import datetime as _dt2
     _add(CF_GESCANNT_AM, _dt2.date.today().isoformat(), "Gescannt am")
+
+    # ── Pipeline-CFs (immer, unabhängig vom Feldprofil) ───────────────────────
+    if person_name:
+        _add_select(CF_PERSON, person_name, "Person", pipeline=True)
+    if auto_stp:
+        _add_select(CF_VERARBEITUNG, "auto STP", "Verarbeitung", pipeline=True)
 
     return fields
 
