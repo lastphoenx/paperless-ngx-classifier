@@ -133,11 +133,15 @@ Combined with `verbotene_tags`, `verbotene_doctypen`, and `verbotene_ordner` per
 | Licence plate | Select | Vision + family.json |
 | Paid on | Date | Handwriting `bez.` |
 | Scanned on | Date | Always = today |
+| Processing | Select | `auto STP` when correspondent + doc type set without human review |
+| Person | Select | `anzeigename` from `family.json` when relationship match is clear (ref no./person) |
+
+Per document type, a **field profile** (`feldprofil`) controls which custom fields are extracted, shown in document review, and required (Document Types tab → Edit).
 
 ### paper.manager UI
 A single-page browser UI (no framework, no build step) for:
-- **Correspondent review** — approve, reject, or merge unknown senders
-- **Document review** — document thumbnail, AI fields (title, correspondent, folder, type, date, colour-coded confidence, review reason, **LLM reasoning**), set tags as chips, custom fields, correction form (folder, correspondent, type, tags)
+- **Correspondent review** — approve, reject, or merge unknown senders; **Kürzel** when approving new correspondents; reject escalates affected documents to document review
+- **Document review** — 30/70 layout with large preview, AI fields, tag multiselect (reclassify **replaces** tags, does not merge), correspondent dropdown lists only approved entries (excludes pending-NEW)
 - **Document types** — manage synonyms and exclusion keywords
 - **Tags** — manage exclusion keywords per tag
 - **Storage paths** — configure folders with allowed tags and document types
@@ -236,9 +240,11 @@ nano /opt/paperless/.env
 | `CONFIDENCE_IGNORE_TAG_PATTERNS` | `^\d{4}$,^\d{1,2}\.\d{4}$` | Regex patterns for tags that do **not** lower confidence (year numbers, month.year). Comma-separated. Set empty to disable. |
 | `CF_BEZAHLT_AM_ID` | — | Paperless custom field ID for "paid on" date |
 | `CF_GESCANNT_AM_ID` | — | Paperless custom field ID for "scanned on" date |
+| `CF_VERARBEITUNG_ID` | — | Select "Processing" — pipeline sets `auto STP` |
+| `CF_PERSON_ID` | — | Select "Person" — values = `anzeigename` from `family.json` |
 | `OLLAMA_REGEX_MODEL` | `llama3.3:70b` | Separate Ollama model for the Regex-Assistent in paper.manager (falls back to `OLLAMA_MODEL`) |
 
-See `.env.example` for all variables with descriptions.
+See `.env.example` for all variables with descriptions. Versioning rules: `docs/VERSIONING.md`.
 
 ---
 

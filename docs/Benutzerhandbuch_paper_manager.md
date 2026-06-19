@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 2.8 | Juni 2026**
+**Version 2.22 | Juni 2026** (Pipeline `12.16`)
 
 ---
 
@@ -28,9 +28,9 @@ Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständi
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v2.8 | be v2.8 | pipe v12.15
+UI v2.22 | be v2.10 | pipe v12.16
 ```
-Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart.
+Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
 ### Navigation
 
@@ -93,6 +93,7 @@ Unbekannte Absender → Warteschlange (roter Badge).
 | Feld | Bedeutung |
 |---|---|
 | Kanonischer Name | Offizieller Absender-Name |
+| **Kürzel** | 2–6 Zeichen, eindeutig (z. B. `UBS`) — erscheint im Titel-Suffix und als Badge |
 | Standard-Dokumenttyp | Typischer Dokumenttyp dieses Absenders |
 | Varianten | Alternative Schreibweisen (Enter / × ) |
 | Match-Strings | Suchbegriffe für Paperless-Matching |
@@ -101,8 +102,8 @@ Unbekannte Absender → Warteschlange (roter Badge).
 
 ### Aktionen
 - **Freigeben** → Korrespondent in Paperless + correspondents.json, neue Ordner als PENDING im Manifest
-- **Ablehnen** → Eintrag verworfen
-- **⇔ Merge** → Duplikate zusammenführen vor Freigabe
+- **Ablehnen** → Eintrag verworfen; betroffene Dokumente erhalten `pending_review` und erscheinen im **Dokument-Review**
+- **⇔ Merge** → nur bei Fuzzy-Match (ähnlicher Name bereits in Map); Duplikate zusammenführen vor Freigabe
 
 > ⚠️ Tags werden nicht auf Korrespondenten-Ebene gepflegt.
 
@@ -126,23 +127,21 @@ Dokumente mit einem der pending-Tags landen automatisch in der Review-Warteschla
 |---|---|---|
 | `pending_review` | gelb | KI unsicher, Datum verdächtig, Fallback-Ordner |
 | `pending_qs` | grün | QS-Modus — alle Dokumente prüfen |
-| `pending_new_correspondent` | rot | Unbekannter Absender |
+| `pending_new_correspondent` | rot | Unbekannter Absender — erscheint auch in Dokument-Review (Grund: «Korrespondent offen») |
 
-### Panel-Aufbau
+### Panel-Aufbau (30/70)
 
-Das Dokument-Review-Panel besteht aus zwei Bereichen:
-
-**Links — Vorschau**
-- Thumbnail der ersten Seite (Proxy → Paperless-API)
+**Links (ca. 30 %) — Vorschau**
+- Grosses Thumbnail der ersten Seite (Proxy → Paperless-API)
 - Klick öffnet das PDF in neuem Tab (Proxy → `/api/proxy/document/{id}/preview/`)
 - Funktioniert auch bei Zugriff über interne IP ohne Authentik
 
-**Rechts — KI-Erkennung**
+**Rechts (ca. 70 %) — KI-Erkennung + Korrektur**
 
 | Feld | Beschreibung |
 |---|---|
 | Titel | Vom LLM generierter Vorschlag |
-| Korrespondent | Erkannter Absender |
+| Korrespondent | Erkannter Absender — Dropdown nur **freigegebene** Korrespondenten (Map + Paperless-ID, ohne pending-NEU) |
 | Ordner | Zugewiesener Speicherpfad |
 | Dokumenttyp | Erkannter Dokumenttyp |
 | Datum | Erkanntes Belegdatum |
@@ -161,7 +160,7 @@ Unter den KI-Feldern:
 | Ordner | Anderen Speicherpfad wählen |
 | Korrespondent | Anderen Absender wählen |
 | Dokumenttyp | Anderen Typ wählen (NEU) |
-| Tags | Tags hinzufügen / entfernen |
+| Tags | Tags wählen — bei **Neu klassifizieren** werden bestehende Tags **ersetzt** (nicht angehängt) |
 
 ### Aktionen
 
@@ -172,6 +171,15 @@ Unter den KI-Feldern:
 ---
 
 ## 7. Dokumenttypen
+
+### Feldprofil (Custom Fields pro Typ)
+
+Im Edit-Dialog jedes Dokumenttyps: Tabelle **Extrahieren / Im Review / Pflicht** pro Custom Field.
+- **Extrahieren** — Pipeline/OCR befüllt dieses Feld nur wenn angehakt
+- **Im Review** — Feld im Dokument-Review-Formular sichtbar
+- **Pflicht** — muss gesetzt sein vor Freigabe (Review-Hinweis)
+
+Pipeline-Felder **Verarbeitung** und **Person** werden unabhängig vom Feldprofil gesetzt (siehe Abschnitt 12).
 
 ### Synonyme
 Global einmalig (Unique-Constraint). Enter zum Hinzufügen, × oder Backspace zum Entfernen.
@@ -257,6 +265,8 @@ Schneller und zuverlässiger als LLM-Klassifizierung.
 | Bezahlte Rechnungen | Custom Field `Status` = `Bezahlt` |
 | Zahllauf vom 06.02.2026 | Custom Field `Bezahlt am` = `2026-02-06` |
 | Heute gescannt | Custom Field `Gescannt am` = heute |
+| Vollautomatisch verarbeitet | Custom Field `Verarbeitung` = `auto STP` |
+| Dokumente für Monika | Custom Field `Person` = `Monika` |
 | Steuerbelege 2025 | Tag = `Steuerrelevant` + Datum 2025 |
 | Absender X | Korrespondent = «X» |
 
@@ -299,3 +309,5 @@ EZ 26.3.26      → nicht erkannt (Einzahlung)  ✗
 | 11 | Auto-Kennzeichen | Auswahl | Vision + family.json |
 | 12 | Bezahlt am | Datum | Handschrift bez. |
 | 13 | Gescannt am | Datum | Immer = heute |
+| 14 | Verarbeitung | Auswahl | `auto STP` wenn ohne Review fertig |
+| 15 | Person | Auswahl | `family.json` Anzeigename bei klarer Zuordnung |
