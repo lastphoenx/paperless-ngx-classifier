@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.24.py — Paperless-NGX Post-Consume Pipeline v12.24
+post_consume_v12.25.py — Paperless-NGX Post-Consume Pipeline v12.25
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.24"  # 12.24: Korrespondent-Match STVA/Steueramt — Substring zuerst, generische Tokens
+POST_CONSUME_VERSION = "12.25"  # 12.25: _resolve_corr_entry vereinheitlicht; nicht_verwechseln_mit
 import sys
 import json
 import logging
@@ -146,10 +146,10 @@ def _corr_kandidaten_strings(entry: dict) -> list[str]:
     )
 
 
-def _match_korrespondent_eintrag(corr_map: dict, absender: str) -> dict | None:
-    """Findet Korrespondenten-Eintrag auf Absender (Vision/OCR).
+def _resolve_corr_entry(corr_map: dict, absender: str) -> dict | None:
+    """Korrespondent zu Absender/LLM-Name (Stufe 1 + resolve_correspondent).
 
-    Reihenfolge (verhindert Steueramt↔Strassenverkehrsamt-Fehltreffer):
+    Reihenfolge:
       1. Exakter Match auf match[] (normalisiert)
       2. Substring über alle Einträge — längster Treffer gewinnt
       3. Token-Overlap ≥2 nur mit mindestens einem Wort ≥4 Zeichen
@@ -185,6 +185,11 @@ def _match_korrespondent_eintrag(corr_map: dict, absender: str) -> dict | None:
             if len(overlap) >= 2 and any(len(w) >= 4 for w in overlap):
                 return entry
     return None
+
+
+def _match_korrespondent_eintrag(corr_map: dict, absender: str) -> dict | None:
+    """Alias — identisch mit _resolve_corr_entry."""
+    return _resolve_corr_entry(corr_map, absender)
 
 
 def _doctyp_matches_visuell(visuell: str, erlaubte_doctypen: list[str]) -> bool:
@@ -1929,17 +1934,8 @@ def _save_corr_ids_only(corr_map: dict) -> None:
 
 
 def _find_exact_match(corr_map: dict, raw_name: str) -> Optional[dict]:
-    """Exact Match auf normalisierte match-Strings aller Einträge.
-    NUR echter Gleichheits-Match — kein Substring.
-    Substring-Matching wurde entfernt: "Zurich" würde sonst
-    "Zürich Lebensversicherung" und "Zürich Versicherung" gleich matchen.
-    """
-    norm = _normalize_corr(raw_name)
-    for entry in corr_map.get("eintraege", []):
-        for m in entry.get("match", []):
-            if _normalize_corr(m) == norm:
-                return entry
-    return None
+    """Korrespondent via _resolve_corr_entry (exakt → Substring → Overlap)."""
+    return _resolve_corr_entry(corr_map, raw_name)
 
 
 # Firmennamen-Suffixe die beim Fuzzy-Match normalisiert werden sollen
@@ -1952,13 +1948,12 @@ _FIRMA_SUFFIXE = [
 ]
 # Kritische Namen die NICHT automatisch gemergt werden dürfen
 # (zu ähnliche Namen aber verschiedene Entitäten)
+# Fallback-Paare wenn nicht_verwechseln_mit in correspondents.json nicht gepflegt ist
 _FUZZY_BLACKLIST_PAIRS = [
     ("zurich versicherung", "zurich lebensversicherung"),
     ("css versicherung", "css krankenversicherung"),
     ("helvetia versicherung", "helvetia leben"),
     ("axa versicherung", "axa leben"),
-    ("steueramt", "strassenverkehrsamt"),
-    ("strassenverkehrsamt", "steueramt"),
 ]
 
 
@@ -2028,6 +2023,43 @@ def _distinctive_token_shared(a: str, b: str, min_len: int = 6) -> bool:
     return bool(words_a & words_b)
 
 
+def _name_hits(a: str, b: str) -> bool:
+    """True wenn a und b gleich/normalisiert gleich oder einer im anderen enthalten ist."""
+    if not a or not b:
+        return False
+    a_l, b_l = a.lower().strip(), b.lower().strip()
+    if _normalize_corr(a) == _normalize_corr(b):
+        return True
+    return b_l in a_l or a_l in b_l
+
+
+def _is_merge_forbidden(corr_map: dict, raw_name: str, target_entry: dict) -> bool:
+    """Fuzzy-Merge raw_name → target_entry verboten (nicht_verwechseln_mit + Fallback-Blacklist)."""
+    target_name = target_entry.get("name", "")
+    if not target_name:
+        return False
+    if _is_blacklisted_pair(raw_name, target_name):
+        return True
+    for nv in target_entry.get("nicht_verwechseln_mit", []):
+        if _name_hits(raw_name, nv):
+            return True
+    source_entry = _resolve_corr_entry(corr_map, raw_name)
+    if source_entry:
+        for nv in source_entry.get("nicht_verwechseln_mit", []):
+            if _name_hits(target_name, nv):
+                return True
+    for entry in corr_map.get("eintraege", []):
+        for nv in entry.get("nicht_verwechseln_mit", []):
+            if not _name_hits(target_name, nv):
+                continue
+            if source_entry and source_entry.get("name") == entry.get("name"):
+                return True
+            for k in _corr_kandidaten_strings(entry):
+                if k and _name_hits(raw_name, k):
+                    return True
+    return False
+
+
 def _find_fuzzy_match(corr_map: dict, raw_name: str) -> tuple[Optional[dict], int]:
     """
     Fuzzy-Match via rapidfuzz gegen alle name + varianten.
@@ -2035,7 +2067,8 @@ def _find_fuzzy_match(corr_map: dict, raw_name: str) -> tuple[Optional[dict], in
       - Firmen-Suffix-Normalisierung (AG/GmbH/Versicherung etc.)
       - Umlaut-Angleichung (Zurich/Zürich)
       - Token-Overlap als Zusatzscore (verhindert falsche Merges bei kurzen Matches)
-      - Blacklist für bekannte kritische Namenspaare
+      - nicht_verwechseln_mit aus correspondents.json (paper.manager)
+      - Fallback-Blacklist für bekannte Versicherungs-Paare
     Gibt (bester_Eintrag, Score) zurück. Score 0-100.
     """
     try:
@@ -2050,15 +2083,14 @@ def _find_fuzzy_match(corr_map: dict, raw_name: str) -> tuple[Optional[dict], in
     best_score = 0
 
     for entry in corr_map.get("eintraege", []):
+        if _is_merge_forbidden(corr_map, raw_name, entry):
+            log.info("Fuzzy: Merge verboten: '%s' ↛ '%s'",
+                     raw_name, entry.get("name", "?"))
+            continue
         candidates = [entry["name"]] + entry.get("varianten", [])
         for candidate in candidates:
             cand_norm  = _normalize_corr(candidate)
             cand_firm  = _normalize_firma(candidate)
-
-            # Blacklist-Check: bekannte kritische Paare nicht mergen
-            if _is_blacklisted_pair(raw_name, candidate):
-                log.info("Fuzzy: Blacklist-Paar übersprungen: '%s' ↔ '%s'", raw_name, candidate)
-                continue
 
             # Score 1: WRatio auf normalisierten Namen
             score_wratio = fuzz.WRatio(cand_norm, norm)
@@ -2177,8 +2209,8 @@ def resolve_correspondent_canonical(
     Hauptfunktion: Kanonisierung + Paperless-Zuordnung.
 
     Ablauf:
-      1. Exact Match auf correspondents.json → direkt ID + default_dokumenttyp zurück
-      2. Kein Exact Match → Fuzzy-Match (3 Stufen)
+      1. Match via _resolve_corr_entry (exakt → Substring → Overlap) → Paperless-ID
+      2. Kein Match → Fuzzy nur für Pending-Vorschlag (ergaenzung / merge_into / neu)
          ≥ 90% → "ergaenzung" in pending
          ≥ 70% → "merge_into" in pending
          <  70% → "neu" in pending
@@ -2192,14 +2224,14 @@ def resolve_correspondent_canonical(
 
     corr_map = _load_corr_map()
 
-    # ── Schritt 1: Exact Match ────────────────────────────────────────────────
-    matched = _find_exact_match(corr_map, raw_name)
+    # ── Schritt 1: Deterministischer Match (match[] / varianten / Substring) ───
+    matched = _resolve_corr_entry(corr_map, raw_name)
     if matched:
         paperless_id = matched.get("_paperless", {}).get("id")
         default_dt = matched.get("default_dokumenttyp") or matched.get("typ") or None
         if paperless_id:
-            log.info("Korrespondent Exact Match: '%s' → ID %s (default_dt=%s)",
-                     matched["name"], paperless_id, default_dt)
+            log.info("Korrespondent Match: '%s' → '%s' (ID %s, default_dt=%s)",
+                     raw_name, matched["name"], paperless_id, default_dt)
             return paperless_id, False, default_dt
         # In correspondents.json vorhanden aber noch nicht in Paperless angelegt
         log.info("Korrespondent in Map, noch keine Paperless-ID → anlegen: '%s'", matched["name"])

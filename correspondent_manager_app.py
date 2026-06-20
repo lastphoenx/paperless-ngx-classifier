@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.13"  # 2.13: family.json fahrzeug_kategorien pflegbar
-UI_VERSION = "2.25"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.14"  # 2.14: Korrespondent nicht_verwechseln_mit[]
+UI_VERSION = "2.26"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -383,6 +383,20 @@ def load_corr_map() -> dict:
         return {"version": "1.0", "eintraege": []}
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _normalize_string_list(raw) -> list[str]:
+    """String-Liste trimmen, deduplizieren (Reihenfolge beibehalten)."""
+    if not raw or not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        s = str(item).strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
 
 def _normalize_beziehung_fields(bez: dict) -> None:
@@ -1468,9 +1482,14 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     for field in ["varianten", "match", "default_dokumenttyp", "default_dokumenttyp_id",
                   "typische_ordner", "notiz", "extraktion_muster", "erwartungen",
                   "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
-                  "beziehungen", "kuerzel"]:
+                  "nicht_verwechseln_mit", "beziehungen", "kuerzel"]:
         if field in body:
-            entry[field] = body[field] if field != "kuerzel" else (body[field] or "").strip().upper()
+            val = body[field]
+            if field == "kuerzel":
+                val = (body[field] or "").strip().upper()
+            elif field == "nicht_verwechseln_mit":
+                val = _normalize_string_list(body[field])
+            entry[field] = val
 
     for bez in entry.get("beziehungen", []):
         _normalize_beziehung_fields(bez)
@@ -1480,6 +1499,7 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     entry.setdefault("verbotene_doctypen", [])
     entry.setdefault("verbotene_ordner", [])
     entry.setdefault("verbotene_tags", [])
+    entry.setdefault("nicht_verwechseln_mit", [])
     entry.setdefault("beziehungen", [])
     entry.setdefault("kuerzel", "")
 
@@ -2088,11 +2108,16 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     allowed = [
         "varianten", "match", "default_dokumenttyp", "typische_ordner", "notiz",
         "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
-        "beziehungen", "kuerzel",
+        "nicht_verwechseln_mit", "beziehungen", "kuerzel",
     ]
     for field in allowed:
         if field in body:
-            entry[field] = body[field] if field != "kuerzel" else (body[field] or "").strip().upper()
+            val = body[field]
+            if field == "kuerzel":
+                val = (body[field] or "").strip().upper()
+            elif field == "nicht_verwechseln_mit":
+                val = _normalize_string_list(body[field])
+            entry[field] = val
 
     for bez in entry.get("beziehungen", []):
         _normalize_beziehung_fields(bez)
@@ -2102,6 +2127,7 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     entry.setdefault("verbotene_doctypen", [])
     entry.setdefault("verbotene_ordner", [])
     entry.setdefault("verbotene_tags", [])
+    entry.setdefault("nicht_verwechseln_mit", [])
     entry.setdefault("beziehungen", [])
     entry.setdefault("kuerzel", "")
 
