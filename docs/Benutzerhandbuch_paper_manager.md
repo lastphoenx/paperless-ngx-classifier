@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 2.23 | Juni 2026** (Pipeline `12.20`, Backend `2.11`)
+**Version 2.23 | Juni 2026** (Pipeline `12.22`, Backend `2.11`)
 
 ---
 
@@ -28,7 +28,7 @@ Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständi
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v2.23 | be v2.11 | pipe v12.20
+UI v2.23 | be v2.11 | pipe v12.22
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
@@ -250,6 +250,30 @@ Jedes Kennzeichen in `family.json` steuert **immer** das Custom Field «Auto-Ken
 - **Ziel-Ordner** — nur bei aktivem «Ordner auto», Format `Person/Kategorie` (z. B. `Monika/Auto`)
 
 > Mofas mit gemeinsamem Schild: ein Eintrag, Person setzen, **Ordner auto aus** — Versicherungsdokumente sollen nicht in `Person/Auto` landen.
+
+### Bereich 3: Beziehungen (Stufe 1)
+
+Pro Korrespondent in **Familie → Beziehungen** (gespeichert in `correspondents.json`):
+
+| Feld | Bedeutung |
+|---|---|
+| **Ref-Nr** | Kunden-/Police-/Vertragsnummer — **muss im Dokument vorkommen** (OCR, Regex-Extraktion oder Vision-Feld Police/Kunde/Rechnung) |
+| **Person** | Ordner-Namensraum + CF «Person» bei Match |
+| **Dokumenttypen** | Bei genau einem Typ → deterministisch; sonst LLM wählt aus der Liste |
+| **Ordner** | Ziel-Speicherpfad bei Ref-Match |
+
+**Wichtig (ab pipe 12.21):**
+
+- Hat eine Beziehung eine **Ref-Nr**, matcht Stufe 1 **nur**, wenn diese Nummer im Dokument steht — **nicht** allein weil es die einzige Beziehung ist oder der Empfänger passt.
+- Mehrere Beziehungen pro Korrespondent sind normal (z. B. Thomas mit Kunden-Nr., Monika mit Police-Nr. bei derselben Versicherung).
+
+**Person-CF — Priorität (ab pipe 12.22):**
+
+1. **Kennzeichen** aus `family.json` (Fahrzeugbezug schlägt Empfänger auf der Police)
+2. **Beziehung** per Ref-Match
+3. Korrespondent / LLM
+
+`Standard-Dokumenttyp` und `Typischer Ordner` am Korrespondenten sind **Fallbacks** für LLM — sie überschreiben keine Beziehung und kein Kennzeichen.
 
 ---
 

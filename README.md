@@ -101,10 +101,12 @@ Two sources bypass the LLM entirely:
 |---|---|---|
 | Licence plate (CF only) | Plate matched, `routing_ordner: false` | CF + Person; folder via correspondent/LLM |
 | Licence plate (pre-route) | Plate matched, `routing_ordner: true` | Folder from `family.json` deterministically |
-| Ref. number | OCR/Vision text matches `extraktion_muster` regex | Fixed folder + doc type from relationship |
-| Ref. number + tiebreaker | Multiple ref-matches: `dokumenttyp_visuell` from Vision resolved via synonym map against `erlaubte_doctypen` | Deterministic, no LLM |
-| Single relationship | Correspondent has exactly 1 configured relationship | Folder deterministic; doc type if uniquely defined |
-| Vision recipient | Vision identifies recipient = known person in relationship | Fixed folder; doc type if uniquely defined |
+| Ref. number | Ref in OCR, `extraktion_muster`, or Vision (policy/customer/invoice no.) | Folder + person + doc type from relationship |
+| Ref. number + tiebreaker | Multiple ref-matches: `dokumenttyp_visuell` via synonym map | Deterministic, no LLM |
+| Single relationship | Exactly 1 relationship **without** ref number | Folder deterministic |
+| Vision recipient | Recipient = person, only for relationships **without** ref number | Folder if unique |
+
+**Person CF:** Licence plate from `family.json` overrides relationship/recipient (e.g. insurance policy addressed to spouse, car registered to other person).
 
 Household member names are injected into every Vision prompt so the model knows these are never the document sender.
 

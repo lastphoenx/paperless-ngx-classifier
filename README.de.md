@@ -103,10 +103,12 @@ Zwei Quellen umgehen das LLM vollständig:
 |---|---|---|
 | Kennzeichen (nur CF) | Kennzeichen erkannt, `routing_ordner: false` | CF + Person; Ordner über Korrespondent/LLM |
 | Kennzeichen (Pre-Route) | Kennzeichen erkannt, `routing_ordner: true` | Ordner deterministisch aus `family.json` |
-| Referenznummer | OCR/Vision-Text matched `extraktion_muster`-Regex | Fester Ordner + Dokumenttyp aus Beziehung |
-| Ref-Nr + Tiebreaker | Mehrere Ref-Matches: `dokumenttyp_visuell` von Vision über Synonym-Map gegen `erlaubte_doctypen` aufgelöst | Deterministisch, kein LLM |
-| Einzel-Beziehung | Korrespondent hat genau 1 konfigurierte Beziehung | Ordner deterministisch; Typ wenn eindeutig |
-| Vision-Empfänger | Vision identifiziert Empfänger = bekannte Person in Beziehung | Fester Ordner; Typ wenn eindeutig |
+| Referenznummer | Ref-Nr in OCR, `extraktion_muster` oder Vision (Police/Kunde/Rechnung) | Ordner + Person + Dokumenttyp aus Beziehung |
+| Ref-Nr + Tiebreaker | Mehrere Ref-Matches: `dokumenttyp_visuell` über Synonym-Map | Deterministisch, kein LLM |
+| Einzel-Beziehung | Genau 1 Beziehung **ohne** Ref-Nr | Ordner deterministisch |
+| Vision-Empfänger | Empfänger = Person, nur bei Beziehungen **ohne** Ref-Nr | Ordner wenn eindeutig |
+
+**Person-CF:** Kennzeichen (`family.json`) schlägt Beziehung/Empfänger — relevant bei Versicherungen auf fremdes Auto (Empfänger ≠ Fahrzeughalter).
 
 Haushaltsmitglieder werden in jeden Vision-Prompt injiziert, damit das Modell weiss, dass diese nie der Absender sind.
 
