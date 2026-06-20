@@ -46,6 +46,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 2.25 | Familie: Referenzen (Kennzeichen), pflegbare Kategorien |
-| BE | 2.13 | `fahrzeug_kategorien` in family.json |
-| Pipe | 12.24 | Korrespondent-Match: STVA vor Steueramt, Fuzzy-Blacklist |
+| UI | 2.26 | Korrespondent: nicht_verwechseln_mit |
+| BE | 2.14 | nicht_verwechseln_mit in correspondents.json |
+| Pipe | 12.25 | _resolve_corr_entry vereinheitlicht; Fuzzy nutzt nicht_verwechseln_mit |

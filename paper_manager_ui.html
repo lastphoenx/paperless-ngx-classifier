@@ -704,7 +704,7 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.25';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.26';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -1660,6 +1660,10 @@ function renderCorrMap(eintraege) {
           <span style="color:var(--muted);font-size:11px">VERBOTEN TAG: </span>
           ${(e.verbotene_tags).map(t=>`<span class="badge" style="background:rgba(239,68,68,.12);color:#f87171">${t}</span>`).join('')}
         </div>` : ''}
+        ${(e.nicht_verwechseln_mit||[]).length ? `<div style="margin-bottom:6px">
+          <span style="color:var(--muted);font-size:11px">NICHT VERWECHSELN: </span>
+          ${(e.nicht_verwechseln_mit).map(t=>`<span class="badge" style="background:rgba(245,158,11,.12);color:#fbbf24">${t}</span>`).join('')}
+        </div>` : ''}
         <div style="margin-bottom:8px">
           <span style="color:var(--muted);font-size:11px">VARIANTEN: </span>
           ${(e.varianten||[]).map(v=>`<span class="badge badge-neu" style="margin-right:4px">${v}</span>`).join('')}
@@ -1742,6 +1746,23 @@ function toggleCorrEdit(idx, entry) {
         <div class="tags-input" id="ce-match-${idx}" data-tags='${JSON.stringify(entry.match||[])}'>
           ${(entry.match||[]).map(v => tagChip(v, `ce-match-${idx}`)).join('')}
           <input type="text" placeholder="match string..." onkeydown="addTag(event,'ce-match-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Nicht verwechseln mit
+          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+            kein Fuzzy-Merge-Vorschlag in diese Korrespondenten (z.&nbsp;B. Steueramt ↔ Strassenverkehrsamt)
+          </span>
+        </label>
+        <div class="tags-input" id="ce-nvm-${idx}" data-tags='${JSON.stringify(entry.nicht_verwechseln_mit||[])}'>
+          ${(entry.nicht_verwechseln_mit||[]).map(v => tagChip(v, `ce-nvm-${idx}`, '#fbbf24', 'rgba(245,158,11,.12)')).join('')}
+          <select onchange="addTagDirect('ce-nvm-${idx}',this.value);this.value=''">
+            <option value="">— Korrespondent wählen —</option>
+            ${(_corrAllEntries||[]).filter(c => c.name !== entry.name).map(c =>
+              `<option value="${c.name}">${c.name}</option>`
+            ).join('')}
+          </select>
+          <input type="text" placeholder="oder Name eingeben…" onkeydown="addTag(event,'ce-nvm-${idx}')">
         </div>
       </div>
       <div class="field-group">
@@ -2023,7 +2044,7 @@ async function checkKuerzelUnique(input, idx, corrName) {
 }
 
 async function saveCorrEdit(idx, nameParam) {
-  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-ord-${idx}`,
+  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-nvm-${idx}`, `ce-ord-${idx}`,
                   `ce-fixtags-${idx}`, `ce-verbdt-${idx}`, `ce-verbord-${idx}`, `ce-verbtag-${idx}`]);
   const name = nameParam || document.getElementById(`corr-edit-${idx}`)?.dataset?.name;
   const dtName = document.getElementById(`ce-typ-${idx}`)?.value || '';
@@ -2037,6 +2058,7 @@ async function saveCorrEdit(idx, nameParam) {
     default_dokumenttyp:    dtName,
     varianten:              getTagsFromContainer(`ce-var-${idx}`),
     match:                  getTagsFromContainer(`ce-match-${idx}`),
+    nicht_verwechseln_mit:  getTagsFromContainer(`ce-nvm-${idx}`),
     typische_ordner:        getTagsFromContainer(`ce-ord-${idx}`),
     fix_tags:               getTagsFromContainer(`ce-fixtags-${idx}`),
     verbotene_doctypen:     getTagsFromContainer(`ce-verbdt-${idx}`),
