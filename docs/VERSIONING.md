@@ -46,6 +46,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 2.24 | Beziehungen: Stichworte-Spalte (Tiebreaker) |
-| BE | 2.12 | `stichworte[]` in Beziehungen normalisieren |
+| UI | 2.25 | Familie: Referenzen (Kennzeichen), pflegbare Kategorien |
+| BE | 2.13 | `fahrzeug_kategorien` in family.json |
 | Pipe | 12.23 | Stichwort-Tiebreaker bei mehreren Ref-Matches |

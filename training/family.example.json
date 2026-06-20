@@ -1,11 +1,16 @@
 {
   "version": "1.0",
-  "beschreibung": "Haushaltskonfiguration — Personen und Fahrzeuge. Wird von post_consume.py und paper.manager gelesen. Pflegbar via paper.manager → Familie-Tab.",
+  "beschreibung": "Haushaltskonfiguration — Personen und Referenzen (Kennzeichen). Wird von post_consume.py und paper.manager gelesen. Pflegbar via paper.manager → Familie-Tab.",
   "haushalt": {
     "name": "Muster",
     "land": "CH",
     "sprache": "de"
   },
+  "fahrzeug_kategorien": [
+    "auto",
+    "mofa",
+    "moped"
+  ],
   "personen": [
     {
       "id": "person1",
