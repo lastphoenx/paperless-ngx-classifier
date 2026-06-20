@@ -7,8 +7,7 @@
 # Update (UI + backend + post_consume — Standard):
 #   cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
 #
-# Zusätzlich pre_consume (selten):
-#   ./scripts/deploy-to-ct121.sh --with-pre-consume
+# pre_consume.sh + pre_consume_qr.py werden mitdeployt (Consume-Pipeline).
 #
 # Ohne Paperless-Container-Neustart (nur Scripts + correspondent-manager):
 #   ./scripts/deploy-to-ct121.sh --no-docker
@@ -18,13 +17,11 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${PAPERLESS_SCRIPTS_DIR:-/opt/paperless-scripts}"
 PAPERLESS_COMPOSE_DIR="${PAPERLESS_COMPOSE_DIR:-/opt/paperless}"
-WITH_PRE_CONSUME=0
 RESTART=1
 RECREATE_DOCKER=1
 
 for arg in "$@"; do
   case "$arg" in
-    --with-pre-consume|--with-pipeline) WITH_PRE_CONSUME=1 ;;
     --no-restart)    RESTART=0 ;;
     --no-docker)     RECREATE_DOCKER=0 ;;
   esac
@@ -34,14 +31,9 @@ FILES=(
   correspondent_manager_app.py
   paper_manager_ui.html
   post_consume.py
+  pre_consume.sh
+  pre_consume_qr.py
 )
-
-if [[ "$WITH_PRE_CONSUME" -eq 1 ]]; then
-  FILES+=(
-    pre_consume.sh
-    pre_consume_qr.py
-  )
-fi
 
 echo "==> Repo:   $REPO_DIR"
 echo "==> Target: $TARGET"
