@@ -48,4 +48,4 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 |---|---|---|
 | UI | 2.25 | Familie: Referenzen (Kennzeichen), pflegbare Kategorien |
 | BE | 2.13 | `fahrzeug_kategorien` in family.json |
-| Pipe | 12.23 | Stichwort-Tiebreaker bei mehreren Ref-Matches |
+| Pipe | 12.24 | Korrespondent-Match: STVA vor Steueramt, Fuzzy-Blacklist |

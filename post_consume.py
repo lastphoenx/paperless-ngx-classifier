@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.23.py — Paperless-NGX Post-Consume Pipeline v12.23
+post_consume_v12.24.py — Paperless-NGX Post-Consume Pipeline v12.24
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.23"  # 12.23: Beziehung stichworte[] als Tiebreaker bei mehreren Ref-Matches
+POST_CONSUME_VERSION = "12.24"  # 12.24: Korrespondent-Match STVA/Steueramt — Substring zuerst, generische Tokens
 import sys
 import json
 import logging
@@ -137,27 +137,52 @@ def _get_haushalt_personen_namen() -> list[str]:
     return namen
 
 
+def _corr_kandidaten_strings(entry: dict) -> list[str]:
+    """Alle Suchstrings eines Korrespondenten (Name, Varianten, Match)."""
+    return (
+        [entry.get("name", "").lower()] +
+        [v.lower() for v in entry.get("varianten", [])] +
+        [m.lower() for m in entry.get("match", [])]
+    )
+
+
 def _match_korrespondent_eintrag(corr_map: dict, absender: str) -> dict | None:
-    """Findet Korrespondenten-Eintrag via Fuzzy-Match auf Absender.
-    Gibt vollständigen Eintrag zurück oder None.
+    """Findet Korrespondenten-Eintrag auf Absender (Vision/OCR).
+
+    Reihenfolge (verhindert Steueramt↔Strassenverkehrsamt-Fehltreffer):
+      1. Exakter Match auf match[] (normalisiert)
+      2. Substring über alle Einträge — längster Treffer gewinnt
+      3. Token-Overlap ≥2 nur mit mindestens einem Wort ≥4 Zeichen
     """
     if not absender or not corr_map:
         return None
     absender_lower = absender.lower().strip()
+    abs_norm = _normalize_corr(absender)
+
     for entry in corr_map.get("eintraege", []):
-        kandidaten = (
-            [entry["name"].lower()] +
-            [v.lower() for v in entry.get("varianten", [])] +
-            [m.lower() for m in entry.get("match", [])]
-        )
-        for k in kandidaten:
+        for m in entry.get("match", []):
+            if _normalize_corr(m) == abs_norm:
+                return entry
+
+    best_entry, best_len = None, 0
+    for entry in corr_map.get("eintraege", []):
+        for k in _corr_kandidaten_strings(entry):
             if not k or len(k) < 3:
                 continue
             if k in absender_lower or absender_lower in k:
-                return entry
+                if len(k) > best_len:
+                    best_len, best_entry = len(k), entry
+    if best_entry:
+        return best_entry
+
+    for entry in corr_map.get("eintraege", []):
+        for k in _corr_kandidaten_strings(entry):
+            if not k or len(k) < 3:
+                continue
             k_words   = {w for w in k.split() if w not in _TOKEN_OVERLAP_STOPWORDS}
             abs_words = {w for w in absender_lower.split() if w not in _TOKEN_OVERLAP_STOPWORDS}
-            if k_words and abs_words and len(k_words & abs_words) >= 2:
+            overlap = k_words & abs_words
+            if len(overlap) >= 2 and any(len(w) >= 4 for w in overlap):
                 return entry
     return None
 
@@ -1932,6 +1957,8 @@ _FUZZY_BLACKLIST_PAIRS = [
     ("css versicherung", "css krankenversicherung"),
     ("helvetia versicherung", "helvetia leben"),
     ("axa versicherung", "axa leben"),
+    ("steueramt", "strassenverkehrsamt"),
+    ("strassenverkehrsamt", "steueramt"),
 ]
 
 
@@ -1965,6 +1992,9 @@ _TOKEN_OVERLAP_STOPWORDS = {
     "ag", "gmbh", "sa", "sarl", "ltd",
     "nord", "sud", "ost", "west", "zentral", "mittel",
     "region", "regional",
+    # Behörden-Boilerplate (sonst Steueramt ↔ Strassenverkehrsamt via «des Kantons»)
+    "des", "der", "die", "das", "dem", "den", "vom", "von", "bei", "mit", "und",
+    "kantons", "kanton", "departement", "volkswirtschaft", "inneres",
 }
 
 
@@ -1989,6 +2019,13 @@ def _is_blacklisted_pair(a: str, b: str) -> bool:
         if (p1 in nb and p2 in na) or (p2 in nb and p1 in na):
             return True
     return False
+
+
+def _distinctive_token_shared(a: str, b: str, min_len: int = 6) -> bool:
+    """Gemeinsames Wort ≥ min_len — z. B. «strassenverkehrsamt» in Vision + langem Behördennamen."""
+    words_a = {w for w in _normalize_firma(a).split() if len(w) >= min_len}
+    words_b = {w for w in _normalize_firma(b).split() if len(w) >= min_len}
+    return bool(words_a & words_b)
 
 
 def _find_fuzzy_match(corr_map: dict, raw_name: str) -> tuple[Optional[dict], int]:
@@ -2035,7 +2072,8 @@ def _find_fuzzy_match(corr_map: dict, raw_name: str) -> tuple[Optional[dict], in
             combined = max(score_wratio, score_firma) * 0.8 + score_token * 0.2
 
             # Sicherheitsschwelle: Token-Overlap < 0.3 bei Score ≥ 70 → verdächtig
-            if combined >= 70 and score_token < 30:
+            # Ausnahme: gemeinsames Unterscheidungswort (z. B. strassenverkehrsamt)
+            if combined >= 70 and score_token < 30 and not _distinctive_token_shared(raw_name, candidate):
                 log.info(
                     "Fuzzy: Score %d aber Token-Overlap nur %d%% für '%s' ↔ '%s' — reduziert",
                     combined, score_token, raw_name, candidate
