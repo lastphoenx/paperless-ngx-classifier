@@ -23,6 +23,13 @@ if [ ! -f "$file" ]; then
 fi
 echo "[pre_consume] Verarbeite: $file"
 
+# Waisen aus früheren Läufen (post_consume hat Sidecar nicht gelöscht / PDF weg)
+qr_meta="${file%.pdf}_qr_meta.json"
+if [ -f "$qr_meta" ]; then
+    rm -f "$qr_meta"
+    echo "[pre_consume] Altes qr_meta-Sidecar entfernt ($qr_meta)"
+fi
+
 # ── Schritt 1: OCR-Optimierung via ocrmypdf ───────────────────────────────────
 tmp_file="${file%.pdf}_ocr_tmp.pdf"
 cleanup() {

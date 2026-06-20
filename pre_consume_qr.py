@@ -276,9 +276,10 @@ def main():
         log.info("QR-Meta gespeichert: %s", sidecar_path)
     else:
         log.info("Kein Swiss QR Bill gefunden — kein Sidecar")
-        # Leere Datei schreiben damit post_consume weiss dass gesucht wurde
-        with open(sidecar_path, "w", encoding="utf-8") as f:
-            json.dump({"source": "no_qr_found"}, f)
+        # Altes Sidecar entfernen (Waise aus früheren Läufen / no_qr_found)
+        if sidecar_path.exists():
+            sidecar_path.unlink()
+            log.info("Altes qr_meta-Sidecar entfernt: %s", sidecar_path)
 
     sys.exit(0)
 
