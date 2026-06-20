@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 2.22 | Juni 2026** (Pipeline `12.16`)
+**Version 2.23 | Juni 2026** (Pipeline `12.20`, Backend `2.11`)
 
 ---
 
@@ -28,7 +28,7 @@ Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständi
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v2.22 | be v2.10 | pipe v12.16
+UI v2.23 | be v2.11 | pipe v12.20
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
@@ -235,13 +235,21 @@ Zentrale Haushaltskonfiguration — wird von der Pipeline dynamisch geladen.
 
 ### Bereich 2: Fahrzeuge
 
-Kennzeichen ermöglichen **deterministisches Routing** ohne LLM-Aufruf:
-Vision erkennt Kennzeichen → Dokument direkt in konfigurierten Ziel-Ordner.
-Schneller und zuverlässiger als LLM-Klassifizierung.
+Jedes Kennzeichen in `family.json` steuert **immer** das Custom Field «Auto-Kennzeichen» und die **Person** (Vision oder OCR).
 
-- Kennzeichen muss eindeutig sein
-- Person muss aus gespeicherten Personen gewählt werden
-- Ziel-Ordner im Format `Person/Kategorie`
+**Ordner-Routing ist optional** («Ordner auto» / `routing_ordner`):
+
+| Einstellung | Verhalten |
+|---|---|
+| Ordner auto **aus** | CF + Person gesetzt; Ordner/Dokumenttyp über Korrespondent, Beziehungen oder LLM (z. B. Versicherungspolice) |
+| Ordner auto **an** | Zusätzlich deterministisches Pre-Routing in den Ziel-Ordner (Garage, MFK, Werkstatt) — kein LLM |
+
+- **Kennzeichen** — Pflicht, eindeutig; muss als Option im Paperless-Select «Auto-Kennzeichen» existieren
+- **Typ** — Auto / Mofa / Moped (nur Anzeige/Hilfe in der UI)
+- **Person** — Pflicht, aus gespeicherten Personen
+- **Ziel-Ordner** — nur bei aktivem «Ordner auto», Format `Person/Kategorie` (z. B. `Monika/Auto`)
+
+> Mofas mit gemeinsamem Schild: ein Eintrag, Person setzen, **Ordner auto aus** — Versicherungsdokumente sollen nicht in `Person/Auto` landen.
 
 ---
 
@@ -306,8 +314,8 @@ EZ 26.3.26      → nicht erkannt (Einzahlung)  ✗
 | 8 | Fällig am | Datum | QR-Bill |
 | 9 | Status | Auswahl | Automatisch |
 | 10 | Policennummer | Text | Vision |
-| 11 | Auto-Kennzeichen | Auswahl | Vision + family.json |
+| 11 | Auto-Kennzeichen | Auswahl | Vision/OCR + family.json |
+| 15 | Person | Auswahl | family.json bei Kennzeichen-Match oder Beziehung |
 | 12 | Bezahlt am | Datum | Handschrift bez. |
 | 13 | Gescannt am | Datum | Immer = heute |
 | 14 | Verarbeitung | Auswahl | `auto STP` wenn ohne Review fertig |
-| 15 | Person | Auswahl | `family.json` Anzeigename bei klarer Zuordnung |

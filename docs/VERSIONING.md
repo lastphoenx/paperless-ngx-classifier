@@ -14,9 +14,9 @@ Drei unabhängige Versionsnummern — in der Sidebar und auf dem Home-Tab sichtb
 
 | Komponente | Hochzählen bei | Beispiel |
 |---|---|---|
-| UI | Layout, Formulare, Tabs, clientseitige Logik, neue Felder in der Review-UI | `2.21` → `2.22` |
-| BE | API-Endpunkte, Review-Aktionen, Queues, serverseitige Fixes in `correspondent_manager_app.py` | `2.9` → `2.10` |
-| Pipe | Klassifizierung, Custom Fields, Routing, Tags, Pending-Logik in `post_consume.py` / `pre_consume*` | `12.15` → `12.16` |
+| UI | Layout, Formulare, Tabs, clientseitige Logik, neue Felder in der Review-UI | `2.22` → `2.23` |
+| BE | API-Endpunkte, Review-Aktionen, Queues, serverseitige Fixes in `correspondent_manager_app.py` | `2.10` → `2.11` |
+| Pipe | Klassifizierung, Custom Fields, Routing, Tags, Pending-Logik in `post_consume.py` / `pre_consume*` | `12.19` → `12.20` |
 
 - **Nur Bugfix** in einer Komponente → nur diese Komponente +1 (Patch-Stelle).
 - **Feature über mehrere Schichten** → jede betroffene Komponente +1.
@@ -41,3 +41,11 @@ grep -m1 POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
 `deploy-to-ct121.sh` kopiert **immer** `post_consume.py` (nicht nur UI/BE). Ohne das läuft auf dem Server weiter die alte Pipeline. Anschliessend wird `docker compose up -d --force-recreate webserver` ausgeführt (lädt `/opt/paperless/.env` neu — `restart` reicht nicht für neue `CF_*_ID`). Mit `--no-docker` überspringen.
 
 Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Refresh (`Ctrl+Shift+R`).
+
+## Aktuell (Stand Juni 2026)
+
+| Komponente | Version | Kurz |
+|---|---|---|
+| UI | 2.23 | Familie → Fahrzeuge: `routing_ordner`, Typ Auto/Mofa/Moped |
+| BE | 2.11 | `family.json`-Validierung für `routing_ordner` / `typ` |
+| Pipe | 12.20 | Kennzeichen → CF/Person immer; Pre-Route nur bei `routing_ordner` |

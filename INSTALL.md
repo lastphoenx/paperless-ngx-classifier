@@ -189,7 +189,15 @@ nano /opt/paperless-scripts/training/family.json
       "ordner_prefix": "Person1"
     }
   ],
-  "fahrzeuge": [],
+  "fahrzeuge": [
+    {
+      "kennzeichen": "AG 123456",
+      "person_id": "person1",
+      "typ": "auto",
+      "ordner": "Person1/Auto",
+      "routing_ordner": true
+    }
+  ],
   "beziehungen": [
     {"typ": "arbeitgeber", "korrespondent": "Firma AG",     "person": "person1", "ordner": "Person1/Arbeit"},
     {"typ": "bank",        "korrespondent": "Musterbank",   "person": "person1", "ordner": "Person1/Finanzen"},
@@ -414,6 +422,8 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | Thumbnail/PDF leer im Dokument-Review (IP-Zugriff) | Direkte Paperless-URLs ohne Session | ab v2.8: Proxy-Endpoints; `PAPERLESS_TOKEN` in `.env` und Service-Env |
 | Titel-Kollisionen / falscher Ordner im Dateinamen | Bug in `_make_unique_titel` (bis pipe 12.14) | `post_consume.py` ≥ 12.15 deployen |
 | Routing funktioniert nicht (Kennzeichen/Arbeitgeber/Bank) | family.json leer oder Beziehung fehlt | paper.manager → Familie → Fahrzeuge / Beziehungen prüfen |
+| Kennzeichen erkannt, aber falsches Versicherungs-Routing in `Person/Auto` | `routing_ordner: true` auf Versicherungs-Kennzeichen | Familie → Fahrzeuge: «Ordner auto» deaktivieren (`routing_ordner: false`) |
+| Deploy zeigt alte Pipeline-Version (z. B. 12.19 statt 12.20) | `git pull` ohne neuen Commit auf `main` | Lokal committen/pushen, dann erneut `git pull && ./scripts/deploy-to-ct121.sh` |
 | Permissions-Fehler auf Dokumenten | Gruppen-IDs falsch | PAPERLESS_VIEW_GROUP_IDS in .env |
 | Falscher Ordner trotz korrekter Vision | Paperless Classifier noch aktiv | Schritt 7b — alle 3 Objekttypen zurücksetzen |
 | Erster Scan mit unerwartetem Typ, danach korrekt | Typ neu für diesen Ordner → Manifest automatisch ergänzt (Self-healing) | Erwartet — kein Handlungsbedarf |

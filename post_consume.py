@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.19.py — Paperless-NGX Post-Consume Pipeline v12.19
+post_consume_v12.20.py — Paperless-NGX Post-Consume Pipeline v12.20
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.19"  # 12.19: Pre-Route ignoriert unbekannte Manifest-Doktypen; Log-Version fix
+POST_CONSUME_VERSION = "12.20"  # 12.20: Kennzeichen CF/Person vs. optionales routing_ordner (family.json)
 import sys
 import json
 import logging
@@ -81,16 +81,29 @@ def _get_haushalt_name() -> str:
     return _load_family().get("haushalt", {}).get("name", "Haushalt")
 
 
+def _fz_routing_ordner(fz: dict) -> bool:
+    """Ob Kennzeichen-Match den Ziel-Ordner setzen soll (family.json).
+
+    Explizit routing_ordner=false → nur CF/Person.
+    Legacy: routing_ordner fehlt + ordner gesetzt → Routing an (Abwärtskompatibilität).
+    """
+    if "routing_ordner" in fz:
+        return bool(fz.get("routing_ordner"))
+    return bool((fz.get("ordner") or "").strip())
+
+
 def _build_kennzeichen_map() -> dict[str, dict]:
-    """Kennzeichen → {ordner, person_id} Map aus family.json."""
+    """Kennzeichen → Fahrzeug-Eintrag aus family.json (CF, Person, optionales Ordner-Routing)."""
     result = {}
     for fz in _load_family().get("fahrzeuge", []):
         kz = fz.get("kennzeichen", "").replace(" ", "").upper()
         if kz:
             result[kz] = {
-                "ordner":    fz.get("ordner", ""),
-                "person_id": fz.get("person_id", ""),
+                "ordner":              fz.get("ordner", ""),
+                "person_id":           fz.get("person_id", ""),
                 "kennzeichen_display": fz.get("kennzeichen", kz),
+                "typ":                 (fz.get("typ") or "auto").lower(),
+                "routing_ordner":      _fz_routing_ordner(fz),
             }
     return result
 
@@ -1232,7 +1245,15 @@ def build_llm_prompt(
         nkz = str(kennzeichen).upper().replace(" ", "")
         kz_map = _build_kennzeichen_map()
         if nkz in kz_map:
-            kennzeichen_hinweis = f"\n>>> KENNZEICHEN {kennzeichen} = ZWINGEND {kz_map[nkz]['ordner']} <<<"
+            fz = kz_map[nkz]
+            if fz.get("routing_ordner") and fz.get("ordner"):
+                kennzeichen_hinweis = (
+                    f"\n>>> KENNZEICHEN {kennzeichen} = ZWINGEND {fz['ordner']} <<<"
+                )
+            else:
+                kennzeichen_hinweis = (
+                    f"\n>>> KENNZEICHEN {kennzeichen} bekannt (CF/Person) — kein Ordner-Routing <<<"
+                )
 
     # RAG-Kandidaten (kompakt)
     similar_text = ""
@@ -1312,11 +1333,16 @@ def build_llm_prompt(
         if verbotene_tags_prompt:
             stufe1_block += f"VERBOTENE TAGS (KORRESPONDENT): {', '.join(verbotene_tags_prompt)}\n"
 
-    # Kennzeichen-Hinweise für Prompt dynamisch aus family.json
+    # Kennzeichen-Hinweise für Prompt dynamisch aus family.json (nur Routing-Einträge)
     kz_map = _build_kennzeichen_map()
     kz_prioritaeten = ""
-    for i, (kz_norm, fz) in enumerate(kz_map.items(), 1):
+    i = 0
+    for kz_norm, fz in kz_map.items():
+        if not fz.get("routing_ordner") or not fz.get("ordner"):
+            continue
+        i += 1
         kz_prioritaeten += f"{i}. Kennzeichen {fz['kennzeichen_display']} → {fz['ordner']}\n"
+    _prio_base = i + 1
 
     # Beziehungsvorschlag-Aufforderung (nur wenn kein Stufe-1-Match + Korrespondent bekannt)
     beziehung_vorschlag_block = ""
@@ -1371,11 +1397,11 @@ def build_llm_prompt(
         f"MAX TAGS: {max_tags}\n\n"
         f"PRIORITÄTEN:\n"
         + kz_prioritaeten +
-        f"{len(kz_map)+1}. Versicherungspolice → Familie/Versicherung/Policen\n"
-        f"{len(kz_map)+2}. Lebensversicherung/Säule3/PK → Familie/Finanzen\n"
-        f"{len(kz_map)+3}. Reparatur/Service Gerät/Haus → Familie/Haus-Garten\n"
-        f"{len(kz_map)+4}. SVA/AHV/Gemeinde → Familie/Behörde\n"
-        f"{len(kz_map)+5}. Steueramt → Person/Steuern\n"
+        f"{_prio_base}. Versicherungspolice → Familie/Versicherung/Policen\n"
+        f"{_prio_base + 1}. Lebensversicherung/Säule3/PK → Familie/Finanzen\n"
+        f"{_prio_base + 2}. Reparatur/Service Gerät/Haus → Familie/Haus-Garten\n"
+        f"{_prio_base + 3}. SVA/AHV/Gemeinde → Familie/Behörde\n"
+        f"{_prio_base + 4}. Steueramt → Person/Steuern\n"
         + (f"\nKORREKTUREN:\n{recent_corrections}" if recent_corrections else "") +
         f"{beziehung_vorschlag_block}"
         '\n{"ordner":"...","tags":[...],"korrespondent":"...","titel":"...","datum":"YYYY-MM-DD",'
@@ -2516,22 +2542,30 @@ def main():
             "begruendung": f"Deterministisch: Kennzeichen {kz_tag} ({source}) → {ordner}"
         }
 
-    # Kennzeichen-Routing dynamisch aus family.json
+    # Kennzeichen: CF/Person immer bei Match; Ordner-Routing nur wenn routing_ordner
+    _family_kz_match = None
     kz_map = _build_kennzeichen_map()
     for kz_norm, fz in kz_map.items():
         kz_display = fz["kennzeichen_display"]
         ordner     = fz["ordner"]
-        # Kennzeichen normalisiert (ohne Leerzeichen) in Vision + OCR suchen
         kz_in_vision = kz_norm in kz_vision
         kz_in_ocr    = kz_norm in kz_ocr
-        if kz_in_vision or kz_in_ocr:
-            source = "vision_meta" if kz_in_vision else "OCR-Text"
+        if not (kz_in_vision or kz_in_ocr):
+            continue
+        source = "vision_meta" if kz_in_vision else "OCR-Text"
+        _family_kz_match = (fz, source)
+        if fz.get("routing_ordner") and ordner:
             log.info("Pre-Routing: Kennzeichen %s (%s) → %s (kein LLM)", kz_display, source, ordner)
             pre_decision = _pre_route(ordner, kz_display, source)
             _kz_person = _resolve_person_anzeigename(fz.get("person_id", ""))
             if _kz_person:
                 pre_decision["_bez_person"] = _kz_person
-            break  # erstes Match gewinnt
+        else:
+            log.info(
+                "Kennzeichen %s (%s) erkannt — CF/Person only (routing_ordner aus)",
+                kz_display, source,
+            )
+        break  # erstes Match gewinnt
 
     # ── Stufe 1: Beziehungs-Routing aus correspondents.json ──────────────────
     corr_map       = _load_corr_map()
@@ -2973,6 +3007,12 @@ def main():
 
     # Person + Verarbeitung (Pipeline-CFs, unabhängig vom Feldprofil)
     person_name = (decision.get("_bez_person") or "").strip()
+    if not person_name and _family_kz_match:
+        person_name = _resolve_person_anzeigename(_family_kz_match[0].get("person_id", ""))
+        if person_name:
+            decision["_bez_person"] = person_name
+            log.info("Person aus family.json (Kennzeichen %s): %s",
+                     _family_kz_match[0].get("kennzeichen_display"), person_name)
     if not person_name and _corr_entry:
         _bez_match = _match_beziehung_v2(
             _corr_entry, vision_empfaenger, ocr_text,
@@ -3001,6 +3041,9 @@ def main():
         corr_entry=_corr_entry,
         person_name=person_name,
         auto_stp=auto_stp,
+        family_kennzeichen=(
+            _family_kz_match[0].get("kennzeichen_display", "") if _family_kz_match else ""
+        ),
     )
     if _custom_fields:
         patch["custom_fields"] = _custom_fields
@@ -3144,6 +3187,7 @@ def build_custom_fields(
     *,
     person_name: str = "",
     auto_stp: bool = False,
+    family_kennzeichen: str = "",
 ) -> list[dict]:
     """
     Custom Fields für Paperless PATCH zusammenstellen.
@@ -3228,7 +3272,7 @@ def build_custom_fields(
     _add(CF_POLICENNUMMER, vision_meta.get("policennummer"), "Policennummer")
 
     # ── Auto-Kennzeichen ──────────────────────────────────────────────────────
-    kennzeichen = vision_meta.get("kennzeichen")
+    kennzeichen = vision_meta.get("kennzeichen") or family_kenzeichen
     if kennzeichen:
         kz_norm_check = kennzeichen.replace(" ", "").upper()
         kz_map_cf = _build_kennzeichen_map()
