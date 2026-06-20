@@ -46,6 +46,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 2.23 | Familie → Fahrzeuge: `routing_ordner`, Typ Auto/Mofa/Moped |
-| BE | 2.11 | `family.json`-Validierung für `routing_ordner` / `typ` |
-| Pipe | 12.22 | Person: Kennzeichen vor Beziehung; Ref-Match inkl. Vision Police/Kunde |
+| UI | 2.24 | Beziehungen: Stichworte-Spalte (Tiebreaker) |
+| BE | 2.12 | `stichworte[]` in Beziehungen normalisieren |
+| Pipe | 12.23 | Stichwort-Tiebreaker bei mehreren Ref-Matches |

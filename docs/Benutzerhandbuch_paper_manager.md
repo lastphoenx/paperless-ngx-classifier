@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 2.23 | Juni 2026** (Pipeline `12.22`, Backend `2.11`)
+**Version 2.24 | Juni 2026** (Pipeline `12.23`, Backend `2.12`)
 
 ---
 
@@ -28,7 +28,7 @@ Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständi
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v2.23 | be v2.11 | pipe v12.22
+UI v2.24 | be v2.12 | pipe v12.23
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
@@ -261,8 +261,9 @@ Pro Korrespondent in **Familie → Beziehungen** (gespeichert in `correspondents
 | **Person** | Ordner-Namensraum + CF «Person» bei Match |
 | **Dokumenttypen** | Bei genau einem Typ → deterministisch; sonst LLM wählt aus der Liste |
 | **Ordner** | Ziel-Speicherpfad bei Ref-Match |
+| **Stichworte** | Optional — Tiebreaker wenn **mehrere** Beziehungen dieselbe Ref-Nr. haben (Substring in OCR/Vision, z. B. `prämienrechnung` vs. `versicherungsschein`) |
 
-**Wichtig (ab pipe 12.21):**
+**Tiebreaker-Reihenfolge** bei gleicher Ref-Nr.: Stichworte → `dokumenttyp_visuell`/Synonyme → LLM.
 
 - Hat eine Beziehung eine **Ref-Nr**, matcht Stufe 1 **nur**, wenn diese Nummer im Dokument steht — **nicht** allein weil es die einzige Beziehung ist oder der Empfänger passt.
 - Mehrere Beziehungen pro Korrespondent sind normal (z. B. Thomas mit Kunden-Nr., Monika mit Police-Nr. bei derselben Versicherung).

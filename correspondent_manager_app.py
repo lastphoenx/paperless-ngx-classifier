@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.11"  # 2.11: family.json routing_ordner + Fahrzeugtyp-Validierung
-UI_VERSION = "2.23"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.12"  # 2.12: Beziehung stichworte[] validieren
+UI_VERSION = "2.24"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -383,6 +383,24 @@ def load_corr_map() -> dict:
         return {"version": "1.0", "eintraege": []}
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _normalize_beziehung_fields(bez: dict) -> None:
+    """stichworte[] normalisieren (klein, getrimmt, dedupliziert)."""
+    if "stichworte" not in bez:
+        return
+    raw = bez.get("stichworte") or []
+    if not isinstance(raw, list):
+        bez["stichworte"] = []
+        return
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        s = str(item).strip().lower()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    bez["stichworte"] = out
 
 
 def save_corr_map(data: dict):
@@ -1454,6 +1472,9 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
         if field in body:
             entry[field] = body[field] if field != "kuerzel" else (body[field] or "").strip().upper()
 
+    for bez in entry.get("beziehungen", []):
+        _normalize_beziehung_fields(bez)
+
     # Defaults setzen falls neu
     entry.setdefault("fix_tags", [])
     entry.setdefault("verbotene_doctypen", [])
@@ -2072,6 +2093,9 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     for field in allowed:
         if field in body:
             entry[field] = body[field] if field != "kuerzel" else (body[field] or "").strip().upper()
+
+    for bez in entry.get("beziehungen", []):
+        _normalize_beziehung_fields(bez)
 
     # Defaults setzen falls neu
     entry.setdefault("fix_tags", [])
