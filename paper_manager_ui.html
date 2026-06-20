@@ -653,6 +653,7 @@
         <strong>deterministisches Routing</strong> ohne LLM.<br>
         Werden in <strong>correspondents.json → beziehungen[]</strong> gespeichert.
         Referenznummer (Police, Patientennr., etc.) erhöht Treffsicherheit.
+        Bei <strong>gleicher Ref-Nr.</strong> mehrerer Beziehungen: <strong>Stichworte</strong> im OCR/Vision-Text als Tiebreaker (z.&nbsp;B. «prämienrechnung» vs. «versicherungsschein»).
       </p>
       <!-- Filter-Leiste -->
       <div id="bez-filter-bar" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
@@ -692,7 +693,7 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.23';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.24';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -3619,6 +3620,22 @@ function _bezRemoveTag(i, tag) {
   _renderBezFromData();
 }
 
+function _bezAddStichwort(i, value) {
+  const s = (value || '').trim().toLowerCase();
+  if (!s || !_bezData[i]) return;
+  const list = _bezData[i].stichworte || [];
+  if (!list.includes(s)) {
+    _bezData[i].stichworte = [...list, s];
+    _renderBezFromData();
+  }
+}
+
+function _bezRemoveStichwort(i, sw) {
+  if (!_bezData[i]) return;
+  _bezData[i].stichworte = (_bezData[i].stichworte||[]).filter(x => x !== sw);
+  _renderBezFromData();
+}
+
 async function _bezRemove(i) {
   if (!_bezData[i]) return;
   const { _korrespondent, _idx } = _bezData[i];
@@ -3644,7 +3661,7 @@ async function addFamilyBeziehung() {
     _korrespondent: korrName,
     _idx: (_bezKorrMap[korrName]?.beziehungen || []).length,
     person: '', bezeichnung: '', referenznummer: '',
-    erlaubte_doctypen: [], ordner: ''
+    erlaubte_doctypen: [], ordner: '', stichworte: []
   });
   // Direkt rendern ohne neu laden (lokaler State)
   _renderBezFromData();
@@ -3735,6 +3752,10 @@ function _renderBezFromData() {
       `<span style="display:inline-flex;align-items:center;gap:3px;background:rgba(79,156,249,.15);border:1px solid rgba(79,156,249,.3);border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;white-space:nowrap"
         onclick="_bezRemoveTag(${i},'${t}')" title="Entfernen">${t} <span style="opacity:.6">✕</span></span>`
     ).join('');
+    const swChips = (bez.stichworte||[]).map(sw =>
+      `<span style="display:inline-flex;align-items:center;gap:3px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;white-space:nowrap"
+        onclick="_bezRemoveStichwort(${i},'${sw.replace(/'/g,"\\'")}')" title="Entfernen">${sw} <span style="opacity:.6">✕</span></span>`
+    ).join('');
     return `
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:8px;overflow:hidden">
       <!-- Kopfzeile -->
@@ -3796,6 +3817,16 @@ function _renderBezFromData() {
           </select>
         </div>
 
+      </div>
+      <div style="padding:6px 12px 10px;border-top:1px dashed var(--border)">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px">
+          Stichworte <span style="font-weight:normal;text-transform:none">(Tiebreaker bei gleicher Ref-Nr.)</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+          ${swChips || '<span style="font-size:10px;color:var(--muted);font-style:italic">keine</span>'}
+          <input type="text" placeholder="+ Stichwort, Enter" style="font-size:10px;width:140px;padding:3px 6px"
+            onkeydown="if(event.key==='Enter'){_bezAddStichwort(${i},this.value);this.value='';event.preventDefault()}">
+        </div>
       </div>
     </div>`;
   }).join('');

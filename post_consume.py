@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.22.py — Paperless-NGX Post-Consume Pipeline v12.22
+post_consume_v12.23.py — Paperless-NGX Post-Consume Pipeline v12.23
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.22"  # 12.22: Person Kennzeichen > Beziehung; Ref-Match auch Vision Police/Kunde
+POST_CONSUME_VERSION = "12.23"  # 12.23: Beziehung stichworte[] als Tiebreaker bei mehreren Ref-Matches
 import sys
 import json
 import logging
@@ -226,6 +226,79 @@ def _referenznummer_im_dokument(
     return False
 
 
+def _beziehung_match_korpus(ocr_lower: str, vision_meta: dict | None) -> str:
+    """Suchtext für Stichwort-Tiebreaker: OCR + ausgewählte Vision-Felder."""
+    parts = [ocr_lower]
+    if vision_meta:
+        for key in ("dokumenttyp_visuell", "besonderheiten", "layout"):
+            v = str(vision_meta.get(key) or "").strip().lower()
+            if v and v not in ("null", "none", ""):
+                parts.append(v)
+    return " ".join(parts)
+
+
+def _beziehung_stichwort_treffer(bez: dict, korpus: str) -> bool:
+    """True wenn mindestens ein Stichwort der Beziehung im Korpus vorkommt."""
+    for sw in bez.get("stichworte") or []:
+        s = str(sw).strip().lower()
+        if s and s in korpus:
+            return True
+    return False
+
+
+def _tiebreak_ref_matches(
+    ref_matches: list[dict],
+    dokumenttyp_visuell: str,
+    ocr_lower: str,
+    vision_meta: dict | None,
+) -> dict | None:
+    """Ein eindeutiger Treffer bei mehreren Ref-Matches, sonst None."""
+    n = len(ref_matches)
+
+    # 1. Stichworte (nur Beziehungen mit gepflegten Stichworten)
+    korpus = _beziehung_match_korpus(ocr_lower, vision_meta)
+    sw_matches = [bez for bez in ref_matches if _beziehung_stichwort_treffer(bez, korpus)]
+    if len(sw_matches) == 1:
+        b = sw_matches[0]
+        log.info(
+            "Beziehungs-Match: %d Ref-Matches → Tiebreaker Stichworte → person=%s ordner=%s",
+            n, b.get("person"), b.get("ordner"),
+        )
+        return b
+    if len(sw_matches) > 1:
+        log.warning(
+            "Beziehungs-Match: Stichwort-Tiebreaker uneindeutig (%d Treffer) → dokumenttyp_visuell",
+            len(sw_matches),
+        )
+
+    # 2. dokumenttyp_visuell gegen erlaubte_doctypen (Synonym-aware)
+    if dokumenttyp_visuell:
+        dt_matches = [
+            bez for bez in ref_matches
+            if bez.get("erlaubte_doctypen")
+            and _doctyp_matches_visuell(dokumenttyp_visuell, bez["erlaubte_doctypen"])
+        ]
+        if len(dt_matches) == 1:
+            log.info(
+                "Beziehungs-Match: %d Ref-Matches → Tiebreaker via dokumenttyp_visuell='%s' → person=%s",
+                n, dokumenttyp_visuell, dt_matches[0].get("person"),
+            )
+            return dt_matches[0]
+        if len(dt_matches) > 1:
+            log.warning(
+                "Beziehungs-Match: Tiebreaker uneindeutig (%d Matches für '%s') → LLM",
+                len(dt_matches), dokumenttyp_visuell,
+            )
+        else:
+            log.warning(
+                "Beziehungs-Match: Tiebreaker kein Treffer für '%s' (erlaubte_doctypen/Synonym) → LLM",
+                dokumenttyp_visuell,
+            )
+    else:
+        log.warning("Beziehungs-Match: %d Referenznummer-Matches — nicht eindeutig → LLM", n)
+    return None
+
+
 def _match_beziehung_v2(
     corr_entry: dict,
     vision_empfaenger: str,
@@ -237,6 +310,7 @@ def _match_beziehung_v2(
 
     Match-Reihenfolge (stärkster zuerst):
       1. referenznummer in OCR, extraktion_muster oder Vision (Police/Kunde/Rechnung)
+         1a. Mehrere Ref-Treffer: Stichworte (OCR/Vision) → dokumenttyp_visuell
          1b. Tiebreaker: dokumenttyp_visuell gegen erlaubte_doctypen (Synonym-aware)
       2. nur eine Beziehung **ohne** referenznummer → deterministisch
       3. empfaenger (Vision) stimmt mit person überein — nur Beziehungen ohne referenznummer
@@ -283,31 +357,11 @@ def _match_beziehung_v2(
         log.info("Beziehungs-Match via Referenznummer → person=%s", ref_matches[0].get("person"))
         return ref_matches[0]
     elif len(ref_matches) > 1:
-        # Tiebreaker: dokumenttyp_visuell gegen erlaubte_doctypen (Synonym-aware)
-        if dokumenttyp_visuell:
-            dt_matches = [
-                bez for bez in ref_matches
-                if bez.get("erlaubte_doctypen")
-                and _doctyp_matches_visuell(dokumenttyp_visuell, bez["erlaubte_doctypen"])
-            ]
-            if len(dt_matches) == 1:
-                log.info(
-                    "Beziehungs-Match: %d Ref-Matches → Tiebreaker via dokumenttyp_visuell='%s' → person=%s",
-                    len(ref_matches), dokumenttyp_visuell, dt_matches[0].get("person")
-                )
-                return dt_matches[0]
-            elif len(dt_matches) > 1:
-                log.warning(
-                    "Beziehungs-Match: Tiebreaker uneindeutig (%d Matches für '%s') → LLM",
-                    len(dt_matches), dokumenttyp_visuell
-                )
-            else:
-                log.warning(
-                    "Beziehungs-Match: Tiebreaker kein Treffer für '%s' (erlaubte_doctypen fehlen oder kein Synonym) → LLM",
-                    dokumenttyp_visuell
-                )
-        else:
-            log.warning("Beziehungs-Match: %d Referenznummer-Matches — nicht eindeutig → LLM", len(ref_matches))
+        picked = _tiebreak_ref_matches(
+            ref_matches, dokumenttyp_visuell, ocr_lower, vision_meta,
+        )
+        if picked:
+            return picked
         return None
 
     # Match 2: Einzige Beziehung ohne Referenznummer → deterministisch
