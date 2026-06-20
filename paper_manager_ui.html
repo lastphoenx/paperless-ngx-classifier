@@ -722,7 +722,7 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.27';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.28';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -2206,6 +2206,24 @@ function _escAttr(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
+function _buildDocReviewEditProfil(feldprofil, cfMapRaw) {
+  const fp = feldprofil || {};
+  const fromProfil = Object.entries(fp).filter(([, cfg]) => cfg && cfg.im_formular);
+  if (fromProfil.length) {
+    const out = {};
+    for (const [k, cfg] of fromProfil) out[k] = cfg;
+    return out;
+  }
+  // Ohne Feldprofil: gesetzte CFs trotzdem bearbeitbar (Fallback)
+  const out = {};
+  for (const [k, v] of Object.entries(cfMapRaw || {})) {
+    if (v !== null && v !== '' && v !== undefined) {
+      out[k] = { im_formular: true, pflicht: false };
+    }
+  }
+  return out;
+}
+
 function renderDocReviewCfInputs(feldprofil, cfMapRaw) {
   const fp = feldprofil || {};
   const fieldIds = Object.entries(fp)
@@ -3214,19 +3232,20 @@ async function selectDocReview(i) {
     ? (window._allDocTypes||[]).find(dt => dt.id === doc.document_type)
     : null;
   const feldprofil = dtEntry?.feldprofil || {};
-  const profilActive = Object.keys(feldprofil).length > 0;
-  const cfFormHtml = profilActive ? renderDocReviewCfInputs(feldprofil, cfMapRaw) : '';
-  const missingPflicht = profilActive
+  const editProfil = _buildDocReviewEditProfil(feldprofil, cfMapRaw);
+  const profilConfigured = Object.keys(feldprofil).length > 0;
+  const cfFormHtml = renderDocReviewCfInputs(editProfil, cfMapRaw);
+  const missingPflicht = profilConfigured
     ? Object.entries(feldprofil)
         .filter(([k,c]) => c.im_formular && c.pflicht && (cfMapRaw[k] === undefined || cfMapRaw[k] === null || cfMapRaw[k] === ''))
         .map(([k]) => (_cfDefById(parseInt(k,10))?.name) || ('CF'+k))
     : [];
 
-  // Read-only Anzeige nur wenn kein Feldprofil konfiguriert
+  // Read-only nur wenn weder Feldprofil noch bearbeitbare Felder
   const cfLabels = {1:'CHF',5:'Rechnungs-Nr.',6:'Kunden-Nr.',7:'QR-Referenz',
                     8:'Fällig am',9:'Status',10:'Policen-Nr.',11:'Kennzeichen',
                     12:'Bezahlt am',13:'Gescannt am',14:'Verarbeitung',15:'Person'};
-  const cfRows = !profilActive
+  const cfRows = (!cfFormHtml && !profilConfigured)
     ? Object.entries(cfMapDisplay)
         .filter(([,v]) => v !== null && v !== '' && v !== undefined)
         .map(([k,v]) => `<div style="display:flex;gap:8px;font-size:11px;margin-bottom:2px">
