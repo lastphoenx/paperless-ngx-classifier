@@ -48,4 +48,4 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 |---|---|---|
 | UI | 2.26 | Korrespondent: nicht_verwechseln_mit |
 | BE | 2.14 | nicht_verwechseln_mit in correspondents.json |
-| Pipe | 12.25 | _resolve_corr_entry vereinheitlicht; Fuzzy nutzt nicht_verwechseln_mit |
+| Pipe | 12.26 | Kennzeichen-CF: normalisierter Match (Leerzeichen egal) |

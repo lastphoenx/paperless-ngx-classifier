@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.25.py — Paperless-NGX Post-Consume Pipeline v12.25
+post_consume_v12.26.py — Paperless-NGX Post-Consume Pipeline v12.26
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.25"  # 12.25: _resolve_corr_entry vereinheitlicht; nicht_verwechseln_mit
+POST_CONSUME_VERSION = "12.26"  # 12.26: Kennzeichen-CF Match normalisiert (Leerzeichen egal)
 import sys
 import json
 import logging
@@ -92,11 +92,17 @@ def _fz_routing_ordner(fz: dict) -> bool:
     return bool((fz.get("ordner") or "").strip())
 
 
+def _norm_kz_key(s: str) -> str:
+    """Kennzeichen-Vergleichsschlüssel — nur A-Z/0-9, Gross (AG178626 = AG 178 626)."""
+    import re as _re
+    return _re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+
 def _build_kennzeichen_map() -> dict[str, dict]:
     """Kennzeichen → Fahrzeug-Eintrag aus family.json (CF, Person, optionales Ordner-Routing)."""
     result = {}
     for fz in _load_family().get("fahrzeuge", []):
-        kz = fz.get("kennzeichen", "").replace(" ", "").upper()
+        kz = _norm_kz_key(fz.get("kennzeichen", ""))
         if kz:
             result[kz] = {
                 "ordner":              fz.get("ordner", ""),
@@ -2643,7 +2649,7 @@ def main():
 
     # ── Schritt 3.5: Deterministisches Pre-Routing ───────────────────────────
     # Reihenfolge: 1) Kennzeichen, 2) Beziehungen (Arbeitgeber, Bank, etc.)
-    kz_vision = str(vision_meta.get("kennzeichen") or "").upper().replace(" ", "")
+    kz_vision = _norm_kz_key(str(vision_meta.get("kennzeichen") or ""))
     kz_ocr    = ocr_text.upper().replace(" ", "")
     pre_decision = None
 
@@ -3323,6 +3329,50 @@ def read_qr_meta(document_source_path: str) -> dict:
 
 
 _SELECT_OPTION_CACHE: dict = {}
+_KENNZEICHEN_OPTIONS_NORM: dict[str, tuple[str, str]] | None = None  # norm → (id, label)
+
+
+def _kennzeichen_options_by_norm() -> dict[str, tuple[str, str]]:
+    """Paperless Select-Optionen für Kennzeichen, indexiert ohne Leerzeichen/Sonderzeichen."""
+    global _KENNZEICHEN_OPTIONS_NORM
+    if _KENNZEICHEN_OPTIONS_NORM is not None:
+        return _KENNZEICHEN_OPTIONS_NORM
+    out: dict[str, tuple[str, str]] = {}
+    try:
+        result = _http.get(
+            f"{PAPERLESS_URL}/api/custom_fields/{CF_KENNZEICHEN}/",
+            headers=_headers(), timeout=15,
+        ).json()
+        for opt in result.get("extra_data", {}).get("select_options", []):
+            label = (opt.get("label") or "").strip()
+            opt_id = opt.get("id")
+            if not label or not opt_id:
+                continue
+            norm = _norm_kz_key(label)
+            if norm:
+                out[norm] = (opt_id, label)
+            _SELECT_OPTION_CACHE[f"{CF_KENNZEICHEN}:{label}"] = opt_id
+    except Exception as e:
+        log.warning("Kennzeichen-Optionen laden fehlgeschlagen: %s", e)
+    _KENNZEICHEN_OPTIONS_NORM = out
+    return out
+
+
+def _resolve_kennzeichen_option(kennzeichen_raw: str) -> tuple[Optional[str], Optional[str]]:
+    """Findet Paperless-Option per Kennzeichen — Schreibweise egal (AG178626 = AG 178 626)."""
+    kz_norm = _norm_kz_key(kennzeichen_raw)
+    if not kz_norm:
+        return None, None
+    hit = _kennzeichen_options_by_norm().get(kz_norm)
+    if hit:
+        return hit[0], hit[1]
+    log.info(
+        "Custom Field Kennzeichen: keine Option für '%s' (norm=%s) — bekannt: %s",
+        kennzeichen_raw, kz_norm,
+        [lbl for _, lbl in _kennzeichen_options_by_norm().values()],
+    )
+    return None, None
+
 
 def _get_select_option_id(field_id: int, label: str) -> Optional[str]:
     """Paperless Select-Option ID für ein Label laden (gecacht).
@@ -3446,17 +3496,15 @@ def build_custom_fields(
     # ── Auto-Kennzeichen ──────────────────────────────────────────────────────
     kennzeichen = vision_meta.get("kennzeichen") or family_kenzeichen
     if kennzeichen:
-        kz_norm_check = kennzeichen.replace(" ", "").upper()
+        kz_norm_check = _norm_kz_key(kennzeichen)
         kz_map_cf = _build_kennzeichen_map()
         if kz_norm_check in kz_map_cf:
-            # Normalisiertes Format: "XX 000000" → "XX" + " " + Rest
-            kz_fmt = kz_norm_check[:2] + " " + kz_norm_check[2:]
-            # Kennzeichen ist Select-Feld → braucht interne Option-ID
-            kz_id = _get_select_option_id(CF_KENNZEICHEN, kz_fmt)
+            display = kz_map_cf[kz_norm_check].get("kennzeichen_display") or kennzeichen
+            kz_id, kz_label = _resolve_kennzeichen_option(display)
+            if not kz_id:
+                kz_id, kz_label = _resolve_kennzeichen_option(kennzeichen)
             if kz_id:
-                _add(CF_KENNZEICHEN, kz_id, f"Kennzeichen={kz_fmt}")
-            else:
-                log.info("Custom Field Kennzeichen: Option-ID für '%s' nicht gefunden", kz_fmt)
+                _add(CF_KENNZEICHEN, kz_id, f"Kennzeichen={kz_label}")
         else:
             log.debug("Kennzeichen '%s' nicht in family.json — kein CF gesetzt", kennzeichen)
 
