@@ -159,6 +159,24 @@
     gap: 4px 10px;
     margin-bottom: 12px;
   }
+  .docreview-cf-section {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .docreview-cf-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+  }
+  @media (max-width: 700px) { .docreview-cf-grid { grid-template-columns: 1fr; } }
+  .docreview-cf-grid .field-group { margin: 0; }
+  .docreview-cf-grid .field-group label { font-size: 10px; }
+  .docreview-cf-grid input,
+  .docreview-cf-grid select {
+    font-size: 12px;
+    padding: 5px 8px;
+  }
   .docreview-corrections {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -704,7 +722,7 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.26';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.27';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -2169,6 +2187,94 @@ function countFeldprofilFields(feldprofil) {
   return Object.values(feldprofil).filter(c => c && (c.extrahieren || c.im_formular || c.pflicht)).length;
 }
 
+function _cfDefById(fieldId) {
+  return (window._cfDefs || []).find(c => c.id === fieldId)
+    || CUSTOM_FIELD_OPTIONS.find(c => c.id === fieldId);
+}
+
+function _cfFieldType(fieldId) {
+  const def = _cfDefById(fieldId);
+  if (!def) return 'text';
+  const dt = def.data_type || def.type || 'text';
+  if (dt === 'monetary' || dt === 'money_chf') return 'money';
+  if (dt === 'date') return 'date';
+  if (dt === 'select') return 'select';
+  return 'text';
+}
+
+function _escAttr(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function renderDocReviewCfInputs(feldprofil, cfMapRaw) {
+  const fp = feldprofil || {};
+  const fieldIds = Object.entries(fp)
+    .filter(([, cfg]) => cfg && cfg.im_formular)
+    .map(([k]) => parseInt(k, 10))
+    .filter(id => !Number.isNaN(id))
+    .sort((a, b) => a - b);
+  if (!fieldIds.length) return '';
+
+  const inputs = fieldIds.map(id => {
+    const cfg = fp[String(id)] || fp[id] || {};
+    const meta = _cfDefById(id);
+    const label = meta?.name || ('CF' + id);
+    const pflicht = cfg.pflicht ? ' <span style="color:var(--warn)">*</span>' : '';
+    const rawVal = cfMapRaw[id] ?? '';
+    const ftype = _cfFieldType(id);
+
+    if (ftype === 'select') {
+      const opts = meta?.extra_data?.select_options || [];
+      const optHtml = `<option value="">—</option>` + opts.map(o =>
+        `<option value="${o.id}" ${String(rawVal) === String(o.id) ? 'selected' : ''}>${o.label}</option>`
+      ).join('');
+      return `<div class="field-group">
+        <label>${label}${pflicht}</label>
+        <select id="dr-cf-${id}" data-pflicht="${cfg.pflicht ? '1' : '0'}">${optHtml}</select>
+      </div>`;
+    }
+    if (ftype === 'date') {
+      return `<div class="field-group">
+        <label>${label}${pflicht}</label>
+        <input type="date" id="dr-cf-${id}" data-pflicht="${cfg.pflicht ? '1' : '0'}" value="${_escAttr(rawVal)}">
+      </div>`;
+    }
+    const inputType = ftype === 'money' ? 'text' : 'text';
+    return `<div class="field-group">
+      <label>${label}${pflicht}</label>
+      <input type="${inputType}" id="dr-cf-${id}" data-pflicht="${cfg.pflicht ? '1' : '0'}" value="${_escAttr(rawVal)}" placeholder="${_escAttr(label)}">
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="docreview-cf-section">
+      <div style="font-size:10px;color:var(--muted);font-weight:bold;letter-spacing:0.5px;margin-bottom:8px">KUNDENFELDER</div>
+      <div class="docreview-cf-grid">${inputs}</div>
+    </div>`;
+}
+
+function collectDocReviewCustomFields() {
+  const out = [];
+  document.querySelectorAll('[id^="dr-cf-"]').forEach(el => {
+    const id = parseInt(el.id.replace('dr-cf-', ''), 10);
+    if (Number.isNaN(id)) return;
+    const val = (el.value || '').trim();
+    if (val) out.push({ field: id, value: val });
+  });
+  return out;
+}
+
+function validateDocReviewPflicht() {
+  const missing = [];
+  document.querySelectorAll('[id^="dr-cf-"][data-pflicht="1"]').forEach(el => {
+    if (!(el.value || '').trim()) {
+      const label = el.closest('.field-group')?.querySelector('label')?.textContent?.replace('*', '').trim();
+      missing.push(label || el.id);
+    }
+  });
+  return missing;
+}
+
 function renderExtraktionsMusterEdit(muster, idx) {
   if (!muster || !Object.keys(muster).length) return '';
   return Object.entries(muster).map(([key, m]) => `
@@ -3001,14 +3107,18 @@ async function loadDocReview() {
 
 async function loadDocReviewMeta() {
   try {
-    const [sp, tg, co] = await Promise.all([
+    const [sp, tg, co, dt, cf] = await Promise.all([
       fetch(`${API_BASE}/paperless/storage-paths`).then(r=>r.json()),
       fetch(`${API_BASE}/paperless/tags`).then(r=>r.json()),
       fetch(`${API_BASE}/correspondents/approved-for-docs`).then(r=>r.json()),
+      fetch(`${API_BASE}/paperless/document_types`).then(r=>r.json()),
+      fetch(`${API_BASE}/paperless/custom-fields`).then(r=>r.json()),
     ]);
     allStoragePaths = sp.results || [];
     allTags = tg.results || [];
     allDocCorrespondents = co.results || [];
+    window._allDocTypes = dt.results || [];
+    window._cfDefs = cf.results || [];
   } catch(e) { console.warn('Meta laden fehlgeschlagen', e); }
 }
 
@@ -3063,21 +3173,20 @@ async function selectDocReview(i) {
     doc = await r.json();
   } catch(e) {}
 
-  // Custom Fields aus doc extrahieren + lesbar machen
-  const cfMap = {};
-  if (doc?.custom_fields) {
-    for (const cf of doc.custom_fields) {
-      cfMap[cf.field] = cf.value;
-    }
+  // Meta nachladen falls View direkt geöffnet wurde
+  if (!window._allDocTypes?.length || !window._cfDefs?.length) {
+    await loadDocReviewMeta();
   }
 
-  // Status-Feld (CF9): interne Select-ID → lesbarer Wert via Paperless API
-  // Paperless liefert für Select-Felder eine interne UUID/ID, nicht den Anzeigenamen
-  // Wir lösen das auf indem wir den Wert direkt aus dem custom_field_value lesen
-  // (Paperless ≥2.x liefert value als String bei Select-Feldern)
-  // Falls es eine interne ID ist, zeigen wir sie als-is — besser als nichts
-
-  // Aktuell gesetzte Tags (Namen)
+  // Custom Fields: raw (PATCH) + display (Lesen)
+  const cfMapRaw = {};
+  const cfMapDisplay = {};
+  if (doc?.custom_fields) {
+    for (const cf of doc.custom_fields) {
+      cfMapRaw[cf.field] = cf.value;
+      cfMapDisplay[cf.field] = cf.display ?? cf.value;
+    }
+  }
   const currentTagIds  = doc?.tags || [];
   const currentTagNames = currentTagIds
     .map(id => (allTags.find(t => t.id === id)||{}).name)
@@ -3100,49 +3209,36 @@ async function selectDocReview(i) {
   // Confidence Farbe
   const confColor = {'hoch':'var(--success)','mittel':'var(--warn)','tief':'#f87171'}[entry.confidence] || 'var(--muted)';
 
-  // Custom Fields anzeigen — nach Feldprofil des Dokumenttyps filtern (falls konfiguriert)
-  const cfLabels = {1:'CHF',5:'Rechnungs-Nr.',6:'Kunden-Nr.',7:'QR-Referenz',
-                    8:'Fällig am',9:'Status',10:'Policen-Nr.',11:'Kennzeichen',
-                    12:'Bezahlt am',13:'Gescannt am'};
+  // Feldprofil des Dokumenttyps (Review-Felder)
   const dtEntry = doc?.document_type
     ? (window._allDocTypes||[]).find(dt => dt.id === doc.document_type)
     : null;
   const feldprofil = dtEntry?.feldprofil || {};
   const profilActive = Object.keys(feldprofil).length > 0;
-  const cfRows = Object.entries(cfMap)
-    .filter(([k,v]) => {
-      if (v === null || v === '' || v === undefined) return false;
-      if (!profilActive) return true;
-      const cfg = feldprofil[k] || feldprofil[String(k)] || {};
-      return cfg.im_formular;
-    })
-    .map(([k,v]) => {
-      const cfg = feldprofil[k] || feldprofil[String(k)] || {};
-      const pflichtMark = cfg.pflicht ? ' <span style="color:var(--warn);font-size:9px">PFLICHT</span>' : '';
-      return `<div style="display:flex;gap:8px;font-size:11px;margin-bottom:2px">
-      <span style="color:var(--muted);min-width:90px">${cfLabels[k]||'CF'+k}${pflichtMark}</span>
-      <span style="color:var(--text)">${v}</span>
-    </div>`;
-    }).join('');
+  const cfFormHtml = profilActive ? renderDocReviewCfInputs(feldprofil, cfMapRaw) : '';
   const missingPflicht = profilActive
     ? Object.entries(feldprofil)
-        .filter(([k,c]) => c.pflicht && (cfMap[k] === undefined || cfMap[k] === null || cfMap[k] === ''))
-        .map(([k]) => cfLabels[k] || ('CF'+k))
+        .filter(([k,c]) => c.im_formular && c.pflicht && (cfMapRaw[k] === undefined || cfMapRaw[k] === null || cfMapRaw[k] === ''))
+        .map(([k]) => (_cfDefById(parseInt(k,10))?.name) || ('CF'+k))
     : [];
+
+  // Read-only Anzeige nur wenn kein Feldprofil konfiguriert
+  const cfLabels = {1:'CHF',5:'Rechnungs-Nr.',6:'Kunden-Nr.',7:'QR-Referenz',
+                    8:'Fällig am',9:'Status',10:'Policen-Nr.',11:'Kennzeichen',
+                    12:'Bezahlt am',13:'Gescannt am',14:'Verarbeitung',15:'Person'};
+  const cfRows = !profilActive
+    ? Object.entries(cfMapDisplay)
+        .filter(([,v]) => v !== null && v !== '' && v !== undefined)
+        .map(([k,v]) => `<div style="display:flex;gap:8px;font-size:11px;margin-bottom:2px">
+            <span style="color:var(--muted);min-width:90px">${cfLabels[k]||'CF'+k}</span>
+            <span style="color:var(--text)">${v}</span>
+          </div>`).join('')
+    : '';
 
   // Thumbnail via paper.manager Proxy (funktioniert auch per IP ohne Authentik)
   const thumbUrl = `${API_BASE}/proxy/document/${entry.document_id}/thumb/`;
   const previewUrl = `${API_BASE}/proxy/document/${entry.document_id}/preview/`;
   const paperlessUrl = `${window.PAPERLESS_URL||''}/documents/${entry.document_id}`;
-
-  // Dokumenttypen laden falls noch nicht vorhanden — VOR dem Rendern
-  if (!window._allDocTypes) {
-    try {
-      const r = await fetch(`${API_BASE}/paperless/document_types`);
-      const d = await r.json();
-      window._allDocTypes = d.results || [];
-    } catch(e) {}
-  }
 
   // Select Options — Vorauswahl basierend auf aktuellem Dokument-Zustand
   const spOptions = allStoragePaths.map(sp =>
@@ -3224,14 +3320,14 @@ async function selectDocReview(i) {
 
           ${cfRows ? `
           <div>
-            <div style="font-size:10px;color:var(--muted);margin-bottom:4px">CUSTOM FIELDS${profilActive ? ' (Feldprofil)' : ''}</div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px">CUSTOM FIELDS</div>
             ${cfRows}
-            ${missingPflicht.length ? `<div style="font-size:10px;color:var(--warn);margin-top:4px">⚠ Pflichtfelder fehlen: ${missingPflicht.join(', ')}</div>` : ''}
-          </div>` : (missingPflicht.length ? `
-          <div>
-            <div style="font-size:10px;color:var(--warn);margin-bottom:4px">CUSTOM FIELDS — Pflichtfelder fehlen</div>
-            <div style="font-size:10px;color:var(--warn)">${missingPflicht.join(', ')}</div>
-          </div>` : '')}
+          </div>` : ''}
+
+          ${cfFormHtml}
+
+          ${missingPflicht.length && !cfFormHtml ? `
+          <div style="font-size:10px;color:var(--warn);margin-top:6px">⚠ Pflichtfelder fehlen: ${missingPflicht.join(', ')}</div>` : ''}
         </div>
       </div>
 
@@ -3282,6 +3378,17 @@ async function selectDocReview(i) {
 async function submitDocReview(index, action) {
   const entry = docReviewEntries[index];
   const body = { action };
+
+  if (document.querySelector('[id^="dr-cf-"]')) {
+    body.custom_fields = collectDocReviewCustomFields();
+    if (action === 'approve') {
+      const missing = validateDocReviewPflicht();
+      if (missing.length) {
+        showToast('Pflichtfelder fehlen: ' + missing.join(', '), 'error');
+        return;
+      }
+    }
+  }
 
   if (action === 'reclassify') {
     const spEl   = document.getElementById('dr-sp');
