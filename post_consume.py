@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.16.py — Paperless-NGX Post-Consume Pipeline v12.16
+post_consume_v12.17.py — Paperless-NGX Post-Consume Pipeline v12.17
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.16"  # 12.16: CF Verarbeitung (auto STP) + Person, Doc-Review bei unbek. Korrespondent
+POST_CONSUME_VERSION = "12.17"  # 12.17: Bugfix _pre_route NameError _betrag bei Kennzeichen-Routing
 import sys
 import json
 import logging
@@ -2463,7 +2463,7 @@ def main():
             "korrespondent": _korrespondent,
             "titel": _titel,
             "datum": vision_meta.get("datum"),
-            "betrag": _betrag,
+            "betrag": vision_meta.get("betrag"),
             "dokumenttyp_semantisch": doctyp,
             "confidence": "hoch",
             "begruendung": f"Deterministisch: Kennzeichen {kz_tag} ({source}) → {ordner}"
