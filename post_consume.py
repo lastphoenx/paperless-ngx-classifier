@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.20.py — Paperless-NGX Post-Consume Pipeline v12.20
+post_consume_v12.21.py — Paperless-NGX Post-Consume Pipeline v12.21
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.20"  # 12.20: Kennzeichen CF/Person vs. optionales routing_ordner (family.json)
+POST_CONSUME_VERSION = "12.21"  # 12.21: Stufe-1 Beziehung mit Ref-Nr nur bei Ref-Match (kein Einzel-Fallback)
 import sys
 import json
 import logging
@@ -198,10 +198,10 @@ def _match_beziehung_v2(
     Match-Reihenfolge (stärkster zuerst):
       1. referenznummer in OCR (direkt ODER via extraktion_muster Regex)
          1b. Tiebreaker: dokumenttyp_visuell gegen erlaubte_doctypen (Synonym-aware)
-      2. nur eine Beziehung → deterministisch
-      3. empfaenger (Vision) stimmt mit person überein
+      2. nur eine Beziehung **ohne** referenznummer → deterministisch
+      3. empfaenger (Vision) stimmt mit person überein — nur Beziehungen ohne referenznummer
 
-    EINDEUTIGKEIT: Jede Stufe gibt nur zurück wenn genau 1 Match — sonst None → LLM.
+    Hat eine Beziehung eine referenznummer, gilt sie nur bei Ref-Match (kein Einzel-/Empfänger-Fallback).
     """
     import re as _re
     beziehungen = corr_entry.get("beziehungen", [])
@@ -279,16 +279,20 @@ def _match_beziehung_v2(
             log.warning("Beziehungs-Match: %d Referenznummer-Matches — nicht eindeutig → LLM", len(ref_matches))
         return None
 
-    # Match 2: Einzige Beziehung → deterministisch
+    # Match 2: Einzige Beziehung ohne Referenznummer → deterministisch
     if len(beziehungen) == 1:
-        log.info("Beziehungs-Match: einzige Beziehung → person=%s", beziehungen[0].get("person"))
-        return beziehungen[0]
+        sole = beziehungen[0]
+        if not (sole.get("referenznummer") or "").strip():
+            log.info("Beziehungs-Match: einzige Beziehung (ohne Ref-Nr) → person=%s", sole.get("person"))
+            return sole
 
-    # Match 3: Empfänger aus Vision — nur wenn genau 1 Match
+    # Match 3: Empfänger aus Vision — nur Beziehungen ohne referenznummer, genau 1 Match
     if vision_empfaenger:
         empf_lower = vision_empfaenger.lower().strip()
         empf_matches = []
         for bez in beziehungen:
+            if (bez.get("referenznummer") or "").strip():
+                continue
             person_id   = bez.get("person", "").lower()
             anzeigename = personen_map.get(person_id, person_id).lower()
             if person_id in empf_lower or anzeigename in empf_lower:
