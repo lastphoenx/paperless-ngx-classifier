@@ -48,4 +48,4 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 |---|---|---|
 | UI | 2.23 | Familie → Fahrzeuge: `routing_ordner`, Typ Auto/Mofa/Moped |
 | BE | 2.11 | `family.json`-Validierung für `routing_ordner` / `typ` |
-| Pipe | 12.21 | Stufe-1: Beziehung mit Ref-Nr nur bei Ref-Match im OCR |
+| Pipe | 12.22 | Person: Kennzeichen vor Beziehung; Ref-Match inkl. Vision Police/Kunde |

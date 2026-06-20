@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.21.py — Paperless-NGX Post-Consume Pipeline v12.21
+post_consume_v12.22.py — Paperless-NGX Post-Consume Pipeline v12.22
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.21"  # 12.21: Stufe-1 Beziehung mit Ref-Nr nur bei Ref-Match (kein Einzel-Fallback)
+POST_CONSUME_VERSION = "12.22"  # 12.22: Person Kennzeichen > Beziehung; Ref-Match auch Vision Police/Kunde
 import sys
 import json
 import logging
@@ -187,16 +187,56 @@ def _doctyp_matches_visuell(visuell: str, erlaubte_doctypen: list[str]) -> bool:
     return False
 
 
+def _norm_ref(s: str) -> str:
+    import re as _re
+    return _re.sub(r"[\s_\-\.]", "", (s or "").lower())
+
+
+def _vision_ref_values(vision_meta: dict | None) -> list[str]:
+    """Referenz-Kandidaten aus Vision (Policen-/Kunden-/Rechnungsnummer)."""
+    if not vision_meta:
+        return []
+    out: list[str] = []
+    for key in ("policennummer", "kundennummer", "rechnungsnummer"):
+        v = str(vision_meta.get(key) or "").strip()
+        if v and v.lower() not in ("null", "none", ""):
+            out.append(v.lower())
+    return out
+
+
+def _referenznummer_im_dokument(
+    ref: str,
+    ocr_lower: str,
+    extrahierte_werte: set[str],
+    vision_refs: list[str],
+) -> bool:
+    """Prüft ob referenznummer im OCR, per Regex oder in Vision-Feldern vorkommt."""
+    ref_lower = ref.strip().lower()
+    if not ref_lower:
+        return False
+    if ref_lower in ocr_lower:
+        return True
+    ref_norm = _norm_ref(ref_lower)
+    for val in extrahierte_werte:
+        if _norm_ref(val) == ref_norm:
+            return True
+    for v in vision_refs:
+        if _norm_ref(v) == ref_norm:
+            return True
+    return False
+
+
 def _match_beziehung_v2(
     corr_entry: dict,
     vision_empfaenger: str,
     ocr_text: str,
     dokumenttyp_visuell: str = "",
+    vision_meta: dict | None = None,
 ) -> dict | None:
     """Stufe 1: Beziehungs-Match auf Korrespondenten-Eintrag.
 
     Match-Reihenfolge (stärkster zuerst):
-      1. referenznummer in OCR (direkt ODER via extraktion_muster Regex)
+      1. referenznummer in OCR, extraktion_muster oder Vision (Police/Kunde/Rechnung)
          1b. Tiebreaker: dokumenttyp_visuell gegen erlaubte_doctypen (Synonym-aware)
       2. nur eine Beziehung **ohne** referenznummer → deterministisch
       3. empfaenger (Vision) stimmt mit person überein — nur Beziehungen ohne referenznummer
@@ -213,6 +253,7 @@ def _match_beziehung_v2(
         for p in _load_family().get("personen", [])
     }
     ocr_lower = ocr_text.lower()
+    vision_refs = _vision_ref_values(vision_meta)
 
     # Extraktions-Muster des Korrespondenten vorab auswerten → extrahierte Werte
     extrahierte_werte: set[str] = set()
@@ -229,24 +270,14 @@ def _match_beziehung_v2(
         except Exception:
             pass
 
-    # Match 1: Referenznummer in OCR — direkt oder via extraktion_muster
+    # Match 1: Referenznummer — OCR, Regex-Extraktion oder Vision-Felder
     ref_matches = []
     for bez in beziehungen:
         ref = (bez.get("referenznummer") or "").strip()
         if not ref:
             continue
-        ref_lower = ref.lower()
-        # Direkt im OCR
-        if ref_lower in ocr_lower:
+        if _referenznummer_im_dokument(ref, ocr_lower, extrahierte_werte, vision_refs):
             ref_matches.append(bez)
-            continue
-        # Via Regex-Extraktion: normalisiert vergleichen
-        ref_norm = _re.sub(r'[\s_\-\.]', '', ref_lower)
-        for val in extrahierte_werte:
-            val_norm = _re.sub(r'[\s_\-\.]', '', val)
-            if ref_norm == val_norm:
-                ref_matches.append(bez)
-                break
 
     if len(ref_matches) == 1:
         log.info("Beziehungs-Match via Referenznummer → person=%s", ref_matches[0].get("person"))
@@ -2584,7 +2615,8 @@ def main():
         if _corr_entry:
             log.info("Stufe 1: Korrespondent '%s' gefunden", _corr_entry["name"])
             _beziehung = _match_beziehung_v2(_corr_entry, vision_empfaenger, ocr_text,
-                                                      dokumenttyp_visuell=vision_meta.get("dokumenttyp_visuell", ""))
+                                                      dokumenttyp_visuell=vision_meta.get("dokumenttyp_visuell", ""),
+                                                      vision_meta=vision_meta)
             if _beziehung:
                 bez_ordner   = _beziehung.get("ordner", "")
                 bez_doctypen = _beziehung.get("erlaubte_doctypen", [])
@@ -3009,18 +3041,30 @@ def main():
     if dt_id:
         patch["document_type"] = dt_id
 
-    # Person + Verarbeitung (Pipeline-CFs, unabhängig vom Feldprofil)
-    person_name = (decision.get("_bez_person") or "").strip()
-    if not person_name and _family_kz_match:
-        person_name = _resolve_person_anzeigename(_family_kz_match[0].get("person_id", ""))
+    # Person: Kennzeichen (family.json) schlägt Beziehung/LLM — Fahrzeugbezug vor Empfänger
+    person_name = ""
+    if _family_kz_match:
+        person_name = _resolve_person_anzeigename(_family_kz_match[0].get("person_id", "")) or ""
         if person_name:
+            _prev = (decision.get("_bez_person") or "").strip()
+            if _prev and _prev != person_name:
+                log.info(
+                    "Person: Kennzeichen %s → %s (überschreibt %s)",
+                    _family_kz_match[0].get("kennzeichen_display"), person_name, _prev,
+                )
+            else:
+                log.info("Person aus family.json (Kennzeichen %s): %s",
+                         _family_kz_match[0].get("kennzeichen_display"), person_name)
             decision["_bez_person"] = person_name
-            log.info("Person aus family.json (Kennzeichen %s): %s",
-                     _family_kz_match[0].get("kennzeichen_display"), person_name)
+
+    if not person_name:
+        person_name = (decision.get("_bez_person") or "").strip()
+
     if not person_name and _corr_entry:
         _bez_match = _match_beziehung_v2(
             _corr_entry, vision_empfaenger, ocr_text,
             dokumenttyp_visuell=vision_meta.get("dokumenttyp_visuell", ""),
+            vision_meta=vision_meta,
         )
         if _bez_match:
             person_name = _resolve_person_anzeigename(_bez_match.get("person", ""))
