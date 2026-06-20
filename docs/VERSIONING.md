@@ -46,6 +46,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 2.26 | Korrespondent: nicht_verwechseln_mit |
-| BE | 2.14 | nicht_verwechseln_mit in correspondents.json |
-| Pipe | 12.26 | Kennzeichen-CF: normalisierter Match (Leerzeichen egal) |
+| UI | 2.27 | Doc Review: Kundenfelder editierbar (Feldprofil) |
+| BE | 2.15 | Doc Review: Custom Fields PATCH + Pflichtfeld-Check |
+| Pipe | 12.27 | family_kennzeichen NameError behoben |

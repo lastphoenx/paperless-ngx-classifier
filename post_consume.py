@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.26.py — Paperless-NGX Post-Consume Pipeline v12.26
+post_consume_v12.27.py — Paperless-NGX Post-Consume Pipeline v12.27
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.26"  # 12.26: Kennzeichen-CF Match normalisiert (Leerzeichen egal)
+POST_CONSUME_VERSION = "12.27"  # 12.27: family_kennzeichen NameError in build_custom_fields
 import sys
 import json
 import logging
@@ -633,7 +633,13 @@ def paperless_get(endpoint: str, params: dict | None = None) -> dict:
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()
+    if not r.text or not r.text.strip():
+        return {}
+    try:
+        return r.json()
+    except ValueError:
+        log.warning("paperless_get %s: keine JSON-Antwort (%s)", endpoint, r.text[:120])
+        return {}
 
 
 def paperless_patch(document_id: int, payload: dict) -> bool:
@@ -2517,10 +2523,12 @@ def _make_unique_titel(titel: str, ordner: str) -> str:
     """
     def _exists(t: str) -> bool:
         try:
-            result = paperless_get("/documents/", params={"title__iexact": t, "page_size": 1})
-            if not result or not result.get("results"):
+            result = paperless_get("/documents/", params={"title__icontains": t, "page_size": 25})
+            if not isinstance(result, dict) or not result.get("results"):
                 return False
             for doc in result["results"]:
+                if (doc.get("title") or "").lower() != t.lower():
+                    continue
                 sp = doc.get("storage_path")
                 if sp is None:
                     continue
@@ -3494,7 +3502,7 @@ def build_custom_fields(
     _add(CF_POLICENNUMMER, vision_meta.get("policennummer"), "Policennummer")
 
     # ── Auto-Kennzeichen ──────────────────────────────────────────────────────
-    kennzeichen = vision_meta.get("kennzeichen") or family_kenzeichen
+    kennzeichen = vision_meta.get("kennzeichen") or family_kennzeichen
     if kennzeichen:
         kz_norm_check = _norm_kz_key(kennzeichen)
         kz_map_cf = _build_kennzeichen_map()

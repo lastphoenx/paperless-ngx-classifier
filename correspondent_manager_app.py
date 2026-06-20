@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.14"  # 2.14: Korrespondent nicht_verwechseln_mit[]
-UI_VERSION = "2.26"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.15"  # 2.15: Doc Review — Custom Fields speichern + Pflichtfeld-Check
+UI_VERSION = "2.27"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -1258,10 +1258,11 @@ def api_document(doc_id: int):
             resolved = []
             for cf in doc.get("custom_fields", []):
                 field_id = cf.get("field")
-                value    = cf.get("value")
-                if field_id in cf_options and value:
-                    value = cf_options[field_id].get(value, value)
-                resolved.append({"field": field_id, "value": value})
+                raw_value = cf.get("value")
+                display = raw_value
+                if field_id in cf_options and raw_value:
+                    display = cf_options[field_id].get(raw_value, raw_value)
+                resolved.append({"field": field_id, "value": raw_value, "display": display})
             doc["custom_fields"] = resolved
         except Exception:
             pass  # Fallback: originale Werte behalten
@@ -1755,6 +1756,62 @@ def _learn_from_reclassification(
         log.warning("_learn_from_reclassification fehlgeschlagen: %s", e)
 
 
+def _feldprofil_for_document_type_id(document_type_id: int | None) -> dict:
+    """feldprofil aus document_types.json für einen Paperless-Dokumenttyp."""
+    if not document_type_id:
+        return {}
+    try:
+        pl_dt = pl_get(f"/document_types/{document_type_id}/")
+        dt_name = (pl_dt.get("name") or "").lower()
+    except Exception:
+        return {}
+    dt_json_path = Path(os.environ.get("DOCUMENT_TYPES_JSON",
+        "/opt/paperless-scripts/training/document_types.json"))
+    if not dt_json_path.exists():
+        return {}
+    try:
+        dt_data = json.loads(dt_json_path.read_text(encoding="utf-8"))
+        for t in dt_data.get("typen", []):
+            if t.get("name", "").lower() == dt_name:
+                return t.get("feldprofil", {}) or {}
+    except Exception as e:
+        log.warning("feldprofil laden fehlgeschlagen: %s", e)
+    return {}
+
+
+def _merge_custom_fields(doc_id: int, updates: list[dict]) -> list[dict]:
+    """Bestehende Custom Fields mit Review-Änderungen mergen."""
+    doc = pl_get(f"/documents/{doc_id}/")
+    merged = {cf["field"]: cf["value"] for cf in doc.get("custom_fields", []) if cf.get("field") is not None}
+    for item in updates:
+        field_id = item.get("field")
+        if field_id is None:
+            continue
+        value = item.get("value")
+        if value is None or str(value).strip() == "":
+            merged.pop(field_id, None)
+        else:
+            merged[field_id] = value
+    return [{"field": fid, "value": val} for fid, val in merged.items()]
+
+
+def _validate_pflicht_custom_fields(feldprofil: dict, custom_fields: list[dict]) -> None:
+    """Pflichtfelder aus feldprofil prüfen — HTTP 400 bei fehlenden Werten."""
+    if not feldprofil:
+        return
+    values = {cf["field"]: cf.get("value") for cf in custom_fields}
+    missing = []
+    for key, cfg in feldprofil.items():
+        if not cfg.get("pflicht"):
+            continue
+        fid = int(key)
+        val = values.get(fid)
+        if val is None or str(val).strip() == "":
+            missing.append(str(key))
+    if missing:
+        raise HTTPException(400, f"Pflichtfelder fehlen: {', '.join(missing)}")
+
+
 @app.post("/api/document-review/{index}")
 def api_document_review_action(index: int, body: dict = Body(...)):
     """
@@ -1795,6 +1852,16 @@ def api_document_review_action(index: int, body: dict = Body(...)):
                     patch["correspondent"] = body["correspondent_id"]
                 if body.get("document_type_id"):
                     patch["document_type"] = body["document_type_id"]
+
+            # Custom Fields aus Review-Formular (approve + reclassify)
+            if "custom_fields" in body:
+                doc_for_cf = pl_get(f"/documents/{doc_id}/")
+                dt_id = body.get("document_type_id") or doc_for_cf.get("document_type")
+                feldprofil = _feldprofil_for_document_type_id(dt_id)
+                merged_cfs = _merge_custom_fields(doc_id, body.get("custom_fields") or [])
+                if action == "approve":
+                    _validate_pflicht_custom_fields(feldprofil, merged_cfs)
+                patch["custom_fields"] = merged_cfs
 
             # pending Tags entfernen (alle drei)
             try:
@@ -1839,6 +1906,16 @@ def api_storage_paths():
     """Alle Storage Paths aus Paperless (für Reklassifizierung)."""
     try:
         result = pl_get("/storage_paths/", {"page_size": 200})
+        return {"results": result.get("results", [])}
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+@app.get("/api/paperless/custom-fields", response_class=JSONResponse)
+def api_custom_fields():
+    """Alle Custom Field Definitionen aus Paperless (inkl. Select-Optionen)."""
+    try:
+        result = pl_get("/custom_fields/", {"page_size": 200})
         return {"results": result.get("results", [])}
     except Exception as e:
         raise HTTPException(502, str(e))
