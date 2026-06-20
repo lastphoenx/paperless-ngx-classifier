@@ -23,6 +23,27 @@ if [ ! -f "$file" ]; then
 fi
 echo "[pre_consume] Verarbeite: $file"
 
+# ── Pipeline-Lock (shared mit post_consume.py — serialisiert OCR bei Parallel-Workern) ──
+PIPELINE_LOCK="/tmp/paperless_consume_pipeline.lock"
+exec 200>"$PIPELINE_LOCK"
+echo "[pre_consume] Warte auf Pipeline-Lock..."
+if ! flock -x -w 1800 200; then
+    echo "[pre_consume] FEHLER: Pipeline-Lock Timeout (1800s)" >&2
+    exit 1
+fi
+echo "[pre_consume] Pipeline-Lock erhalten"
+
+# Waisen: qr_meta.json ohne zugehöriges PDF (Split-Läufe / abgebrochene Consumes)
+consume_dir="$(dirname "$file")"
+for orphan in "$consume_dir"/*_qr_meta.json; do
+    [ -f "$orphan" ] || continue
+    base="${orphan%_qr_meta.json}"
+    if [ ! -f "${base}.pdf" ]; then
+        rm -f "$orphan"
+        echo "[pre_consume] Waise entfernt: $(basename "$orphan")"
+    fi
+done
+
 # Waisen aus früheren Läufen (post_consume hat Sidecar nicht gelöscht / PDF weg)
 qr_meta="${file%.pdf}_qr_meta.json"
 if [ -f "$qr_meta" ]; then

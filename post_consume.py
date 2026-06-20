@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.27.py — Paperless-NGX Post-Consume Pipeline v12.27
+post_consume_v12.28.py — Paperless-NGX Post-Consume Pipeline v12.28
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.27"  # 12.27: family_kennzeichen NameError in build_custom_fields
+POST_CONSUME_VERSION = "12.28"  # 12.28: Pipeline-Lock + API-URL Fix (Race bei parallelen Consumes)
 import sys
 import json
 import logging
@@ -596,7 +596,16 @@ DOCUMENT_SOURCE_PATH = os.environ.get("DOCUMENT_SOURCE_PATH", "")
 # ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
 
 def _headers() -> dict:
-    return {"Authorization": f"Token {PAPERLESS_TOKEN}", "Content-Type": "application/json"}
+    return {
+        "Authorization": f"Token {PAPERLESS_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _api_url(endpoint: str) -> str:
+    """Paperless API-URL ohne doppelte Slashes (api//documents → SPA-HTML)."""
+    return f"{PAPERLESS_URL.rstrip('/')}/api/{endpoint.lstrip('/')}"
 
 
 def _make_retry_session(
@@ -627,7 +636,7 @@ _http = _make_retry_session()
 
 def paperless_get(endpoint: str, params: dict | None = None) -> dict:
     r = _http.get(
-        f"{PAPERLESS_URL}/api/{endpoint}",
+        _api_url(endpoint),
         headers=_headers(),
         params=params,
         timeout=30,
@@ -3867,6 +3876,29 @@ Antworte NUR mit JSON:
     log.info("Eskalation abgeschlossen")
     log.info("=" * 70)
 
+# ─── Pipeline-Lock (pre_consume + post_consume teilen sich dieselbe Datei) ───
+PIPELINE_LOCK = Path("/tmp/paperless_consume_pipeline.lock")
+
+
+def _acquire_pipeline_lock():
+    """Exklusiver Lock — verhindert parallele OCR/LLM-Läufe bei mehreren Celery-Workern."""
+    import fcntl
+    fd = open(PIPELINE_LOCK, "w")
+    log.info("Pipeline-Lock: warte (PID %s, Dok %s)...", os.getpid(), DOCUMENT_ID or "?")
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    log.info("Pipeline-Lock: erhalten")
+    return fd
+
+
+def _release_pipeline_lock(fd) -> None:
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        fd.close()
+    log.info("Pipeline-Lock: freigegeben")
+
+
 # ─── PID-Registry für Prozess-Koordination ──────────────────────────────────
 PID_REGISTRY   = Path("/tmp/paperless_consume.pids")
 ESCALATION_LOCK = Path("/tmp/paperless_escalation.lock")
@@ -3928,6 +3960,7 @@ def is_last_consumer() -> bool:
 
 
 if __name__ == "__main__":
+    lock_fd = _acquire_pipeline_lock()
     register_pid()
     try:
         main()
@@ -3950,4 +3983,5 @@ if __name__ == "__main__":
                 process_escalation_queue()
             finally:
                 ESCALATION_LOCK.unlink(missing_ok=True)
+        _release_pipeline_lock(lock_fd)
         sys.exit(0)

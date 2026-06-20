@@ -236,6 +236,8 @@ PAPERLESS_PRE_CONSUME_SCRIPT=/opt/paperless-scripts/pre_consume.sh
 PAPERLESS_CONSUMER_POLLING=10
 PAPERLESS_CONSUMER_ENABLE_BARCODES=true
 PAPERLESS_TRAIN_TASK_CRON=disable
+# Ein Worker — verhindert Races bei gleichzeitigem Upload (pre/post_consume + consume/)
+PAPERLESS_TASK_WORKERS=1
 ```
 
 Paperless neu starten:

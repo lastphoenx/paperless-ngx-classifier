@@ -48,4 +48,4 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 |---|---|---|
 | UI | 2.28 | Doc Review: CF-Fallback ohne Feldprofil |
 | BE | 2.15 | Doc Review: Custom Fields PATCH + Pflichtfeld-Check |
-| Pipe | 12.27 | family_kennzeichen NameError behoben |
+| Pipe | 12.28 | Pipeline-Lock + API-URL Fix (Consume-Race) |
