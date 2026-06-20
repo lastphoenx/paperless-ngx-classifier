@@ -46,6 +46,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 2.28 | Doc Review: CF-Fallback ohne Feldprofil |
-| BE | 2.15 | Doc Review: Custom Fields PATCH + Pflichtfeld-Check |
+| UI | 2.29 | Doc Review: Tags bei Freigeben, alle CFs editierbar |
+| BE | 2.16 | Doc Review: tag_ids bei approve |
 | Pipe | 12.28 | Pipeline-Lock + API-URL Fix (Consume-Race) |

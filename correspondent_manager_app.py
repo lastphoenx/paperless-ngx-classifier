@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.15"  # 2.15: Doc Review — Custom Fields speichern + Pflichtfeld-Check
-UI_VERSION = "2.28"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.16"  # 2.16: Doc Review — Tags bei Freigeben, CF immer speichern
+UI_VERSION = "2.29"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -1845,22 +1845,18 @@ def api_document_review_action(index: int, body: dict = Body(...)):
                 # Manuelle Neuklassifizierung: Korrekturfelder aus Body
                 if body.get("storage_path_id"):
                     patch["storage_path"] = body["storage_path_id"]
-                # tag_ids immer ersetzen (nicht mergen) — auch [] = alle Tags entfernen
-                if "tag_ids" in body:
-                    patch["tags"] = list(dict.fromkeys(body["tag_ids"]))
                 if body.get("correspondent_id"):
                     patch["correspondent"] = body["correspondent_id"]
                 if body.get("document_type_id"):
                     patch["document_type"] = body["document_type_id"]
 
+            # Tags: bei Freigeben und Reklassifizieren (Auswahl ersetzt, pending wird unten entfernt)
+            if "tag_ids" in body:
+                patch["tags"] = list(dict.fromkeys(body["tag_ids"]))
+
             # Custom Fields aus Review-Formular (approve + reclassify)
             if "custom_fields" in body:
-                doc_for_cf = pl_get(f"/documents/{doc_id}/")
-                dt_id = body.get("document_type_id") or doc_for_cf.get("document_type")
-                feldprofil = _feldprofil_for_document_type_id(dt_id)
                 merged_cfs = _merge_custom_fields(doc_id, body.get("custom_fields") or [])
-                if action == "approve":
-                    _validate_pflicht_custom_fields(feldprofil, merged_cfs)
                 patch["custom_fields"] = merged_cfs
 
             # pending Tags entfernen (alle drei)
