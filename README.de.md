@@ -95,13 +95,14 @@ Automatisch extrahiert und befüllt:
 
 Zwei Quellen umgehen das LLM vollständig:
 
-**Kennzeichen** — als Fahrzeuge in `family.json` konfiguriert. Erkennt Vision ein bekanntes Kennzeichen, wird das Dokument direkt weitergeleitet.
+**Kennzeichen** — als Fahrzeuge in `family.json` konfiguriert. Bei Erkennung (Vision oder OCR) werden **immer** Custom Field «Auto-Kennzeichen» und **Person** gesetzt. **Ordner-Pre-Routing** nur wenn `routing_ordner: true` und Ziel-Ordner gesetzt (Garage/MFK); sonst bestimmen Korrespondent, Beziehungen oder LLM den Ordner (z. B. Versicherung).
 
 **Korrespondenten-Beziehungen (`beziehungen`)** — pro Korrespondent in `correspondents.json` konfiguriert und über die paper.manager-UI verwaltbar. Drei Abgleichmodi:
 
 | Modus | Bedingung | Ergebnis |
 |---|---|---|
-| Kennzeichen | Kennzeichen im Bild erkannt | Ordner aus `family.json` |
+| Kennzeichen (nur CF) | Kennzeichen erkannt, `routing_ordner: false` | CF + Person; Ordner über Korrespondent/LLM |
+| Kennzeichen (Pre-Route) | Kennzeichen erkannt, `routing_ordner: true` | Ordner deterministisch aus `family.json` |
 | Referenznummer | OCR/Vision-Text matched `extraktion_muster`-Regex | Fester Ordner + Dokumenttyp aus Beziehung |
 | Ref-Nr + Tiebreaker | Mehrere Ref-Matches: `dokumenttyp_visuell` von Vision über Synonym-Map gegen `erlaubte_doctypen` aufgelöst | Deterministisch, kein LLM |
 | Einzel-Beziehung | Korrespondent hat genau 1 konfigurierte Beziehung | Ordner deterministisch; Typ wenn eindeutig |
@@ -132,11 +133,11 @@ Kombiniert mit `verbotene_tags`, `verbotene_doctypen` und `verbotene_ordner` pro
 | Fällig am | Datum | QR-Rechnung |
 | Status | Auswahl | Automatisch (Offen/Bezahlt) |
 | Policennummer | Text | Vision |
-| Kennzeichen | Auswahl | Vision + family.json |
+| Kennzeichen | Auswahl | Vision/OCR + family.json |
 | Bezahlt am | Datum | Handschrift `bez.` |
 | Eingescannt am | Datum | Immer = heute |
 | Verarbeitung | Auswahl | `auto STP` wenn Korrespondent + DokTyp ohne menschliches Review gesetzt |
-| Person | Auswahl | `anzeigename` aus `family.json` bei klarer Beziehungs-Zuordnung (Ref-Nr/Person) |
+| Person | Auswahl | `family.json` bei Kennzeichen-Match oder klarer Beziehungs-Zuordnung |
 
 Pro Dokumenttyp kann ein **Feldprofil** festlegen, welche Custom Fields extrahiert, im Dokument-Review angezeigt und als Pflichtfeld gelten (Tab Dokumenttypen → Edit).
 
@@ -227,7 +228,7 @@ nano /opt/paperless/.env
 
 | Datei | Funktion |
 |---|---|
-| `family.json` | Haushalt: Personen und Fahrzeuge — Basis für Ordnerstruktur, Kennzeichen-Routing und Vision-Prompt-Kontext |
+| `family.json` | Haushalt: Personen und Fahrzeuge — Kennzeichen → CF/Person; optionales Ordner-Routing (`routing_ordner`) |
 | `correspondents.json` | Bekannte Absender: Fuzzy-Match-Regeln, Extraktionsmuster, Beziehungen (`beziehungen[]`), `fix_tags[]`, `verbotene_doctypen`, `verbotene_ordner`, `verbotene_tags` |
 | `document_types.json` | Dokumenttypen mit Synonymen und Ausschluss-Keywords |
 | `manifest.json` | Speicherordner-Struktur mit erlaubten Tags und Dokumenttypen |

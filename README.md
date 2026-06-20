@@ -93,13 +93,14 @@ Automatically extracts and populates:
 
 Two sources bypass the LLM entirely:
 
-**Licence plates** — configured as vehicles in `family.json`. When Vision spots a known plate, the document is routed directly.
+**Licence plates** — configured as vehicles in `family.json`. On match (Vision or OCR), the **Licence plate** custom field and **Person** are always set. **Folder pre-routing** only when `routing_ordner: true` and a target folder is set (garage/MOT); otherwise correspondent, relationships, or LLM choose the folder (e.g. insurance).
 
 **Correspondent relationships (`beziehungen`)** — configured per correspondent in `correspondents.json` and managed via the paper.manager UI. Three match modes:
 
 | Mode | Condition | Result |
 |---|---|---|
-| Licence plate | Plate spotted in image | Folder from `family.json` |
+| Licence plate (CF only) | Plate matched, `routing_ordner: false` | CF + Person; folder via correspondent/LLM |
+| Licence plate (pre-route) | Plate matched, `routing_ordner: true` | Folder from `family.json` deterministically |
 | Ref. number | OCR/Vision text matches `extraktion_muster` regex | Fixed folder + doc type from relationship |
 | Ref. number + tiebreaker | Multiple ref-matches: `dokumenttyp_visuell` from Vision resolved via synonym map against `erlaubte_doctypen` | Deterministic, no LLM |
 | Single relationship | Correspondent has exactly 1 configured relationship | Folder deterministic; doc type if uniquely defined |
@@ -130,11 +131,11 @@ Combined with `verbotene_tags`, `verbotene_doctypen`, and `verbotene_ordner` per
 | Due date | Date | QR-Bill |
 | Status | Select | Auto (Open/Paid) |
 | Policy number | Text | Vision |
-| Licence plate | Select | Vision + family.json |
+| Licence plate | Select | Vision/OCR + family.json |
 | Paid on | Date | Handwriting `bez.` |
 | Scanned on | Date | Always = today |
 | Processing | Select | `auto STP` when correspondent + doc type set without human review |
-| Person | Select | `anzeigename` from `family.json` when relationship match is clear (ref no./person) |
+| Person | Select | `family.json` on plate match or clear relationship assignment |
 
 Per document type, a **field profile** (`feldprofil`) controls which custom fields are extracted, shown in document review, and required (Document Types tab → Edit).
 
@@ -159,7 +160,7 @@ A single-page browser UI (no framework, no build step) for:
 | Sender detection | OCR text matching only | Vision + fuzzy matching + learning |
 | Document type | Manual or simple rules | LLM + synonym resolution + exclusions |
 | Handwriting | Not possible | Recognised and parsed |
-| Deterministic routing | Manual rule per document | Licence plates (family.json) + relationships per correspondent (3 match modes: ref-nr, single, Vision) — configured in UI, ~100% accurate |
+| Deterministic routing | Manual rule per document | Licence plates (optional folder routing via `routing_ordner`) + relationships per correspondent (3 match modes: ref-nr, single, Vision) — configured in UI |
 | Custom fields | Manual | Automatic (QR-Bill + Vision) |
 | Unknown senders | Silent failure | Review queue with suggested values |
 | Corrections | Lost | Feed back into next classification |
@@ -224,7 +225,7 @@ nano /opt/paperless/.env
 
 | File | Purpose |
 |---|---|
-| `family.json` | Household: persons and vehicles — basis for folder structure, licence-plate routing, and Vision prompt context |
+| `family.json` | Household: persons and vehicles — licence plates → CF/Person; optional folder routing (`routing_ordner`) |
 | `correspondents.json` | Known senders: fuzzy match rules, extraction patterns, relationships (`beziehungen[]`), `fix_tags[]`, `verbotene_doctypen`, `verbotene_ordner`, `verbotene_tags` |
 | `document_types.json` | Document types with synonyms and exclusion keywords |
 | `manifest.json` | Storage folder structure with allowed tags and document types |

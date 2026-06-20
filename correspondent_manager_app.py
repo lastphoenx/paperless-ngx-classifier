@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.10"  # 2.10: approved-for-docs, Corr-Reject→Doc-Review, enqueue helpers
-UI_VERSION = "2.22"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.11"  # 2.11: family.json routing_ordner + Fahrzeugtyp-Validierung
+UI_VERSION = "2.23"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -2225,9 +2225,21 @@ def api_patch_family(body: dict = Body(...)):
         if len(kennzeichen_list) != len(set(k for k in kennzeichen_list if k)):
             raise HTTPException(409, "Kennzeichen müssen eindeutig sein")
         person_ids = {p["id"] for p in data.get("personen", []) if "id" in p}
+        _valid_fz_typen = {"auto", "mofa", "moped"}
         for fz in data.get("fahrzeuge", []):
             if fz.get("person_id") and fz["person_id"] not in person_ids:
                 raise HTTPException(409, f"person_id '{fz['person_id']}' nicht in personen definiert — zuerst Personen speichern")
+            typ = (fz.get("typ") or "auto").strip().lower()
+            if typ and typ not in _valid_fz_typen:
+                raise HTTPException(400, f"Unbekannter Fahrzeugtyp '{typ}' — erlaubt: auto, mofa, moped")
+            routing = fz.get("routing_ordner")
+            if routing is None:
+                routing = bool((fz.get("ordner") or "").strip())
+                fz["routing_ordner"] = routing
+            if routing and not (fz.get("ordner") or "").strip():
+                raise HTTPException(400, f"Ziel-Ordner fehlt bei Kennzeichen «{fz.get('kennzeichen', '?')}» (routing_ordner aktiv)")
+            if not routing:
+                fz["ordner"] = ""
 
     # Validierung: Beziehungen
     if "beziehungen" in body:

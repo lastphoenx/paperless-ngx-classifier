@@ -22,14 +22,26 @@
     {
       "kennzeichen": "XX 000001",
       "person_id": "person1",
+      "typ": "auto",
       "ordner": "Person1/Auto",
-      "beschreibung": "Fahrzeug Person 1"
+      "routing_ordner": true,
+      "beschreibung": "Fahrzeug Person 1 — Ordner-Routing für Garage/MFK"
     },
     {
       "kennzeichen": "XX 000002",
       "person_id": "person2",
+      "typ": "auto",
       "ordner": "Person2/Auto",
+      "routing_ordner": true,
       "beschreibung": "Fahrzeug Person 2"
+    },
+    {
+      "kennzeichen": "AG 999999",
+      "person_id": "person1",
+      "typ": "mofa",
+      "ordner": "",
+      "routing_ordner": false,
+      "beschreibung": "Gemeinsames Mofa-Kennzeichen — nur CF/Person, kein Ordner-Routing"
     }
   ]
 }
