@@ -9,18 +9,24 @@
 #
 # Zusätzlich pre_consume (selten):
 #   ./scripts/deploy-to-ct121.sh --with-pre-consume
+#
+# Ohne Paperless-Container-Neustart (nur Scripts + correspondent-manager):
+#   ./scripts/deploy-to-ct121.sh --no-docker
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${PAPERLESS_SCRIPTS_DIR:-/opt/paperless-scripts}"
+PAPERLESS_COMPOSE_DIR="${PAPERLESS_COMPOSE_DIR:-/opt/paperless}"
 WITH_PRE_CONSUME=0
 RESTART=1
+RECREATE_DOCKER=1
 
 for arg in "$@"; do
   case "$arg" in
     --with-pre-consume|--with-pipeline) WITH_PRE_CONSUME=1 ;;
     --no-restart)    RESTART=0 ;;
+    --no-docker)     RECREATE_DOCKER=0 ;;
   esac
 done
 
@@ -48,6 +54,21 @@ done
 if [[ "$RESTART" -eq 1 ]] && systemctl is-active --quiet correspondent-manager 2>/dev/null; then
   echo "==> Restart correspondent-manager"
   systemctl restart correspondent-manager
+fi
+
+# post_consume/pre_consume laufen im Paperless-Container — env_file (.env) wird nur
+# beim Erstellen des Containers gelesen. restart reicht nicht für neue CF_*_ID etc.
+if [[ "$RECREATE_DOCKER" -eq 1 ]] && command -v docker >/dev/null 2>&1; then
+  compose_file="$PAPERLESS_COMPOSE_DIR/docker-compose.yml"
+  if [[ -f "$compose_file" ]]; then
+    echo "==> Paperless webserver neu erstellen (lädt /opt/paperless/.env neu)"
+    (cd "$PAPERLESS_COMPOSE_DIR" && docker compose up -d --force-recreate webserver)
+    if container_id="$(docker ps -qf name=webserver | head -1)"; then
+      echo "==> CF_* im Container: $(docker exec "$container_id" env | grep -c '^CF_' || true) Variablen"
+    fi
+  else
+    echo "==> Hinweis: $compose_file nicht gefunden — Paperless-Recreate übersprungen"
+  fi
 fi
 
 echo "==> Fertig."

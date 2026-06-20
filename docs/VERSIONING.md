@@ -38,6 +38,6 @@ cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
 grep -m1 POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
 ```
 
-`deploy-to-ct121.sh` kopiert **immer** `post_consume.py` (nicht nur UI/BE). Ohne das läuft auf dem Server weiter die alte Pipeline.
+`deploy-to-ct121.sh` kopiert **immer** `post_consume.py` (nicht nur UI/BE). Ohne das läuft auf dem Server weiter die alte Pipeline. Anschliessend wird `docker compose up -d --force-recreate webserver` ausgeführt (lädt `/opt/paperless/.env` neu — `restart` reicht nicht für neue `CF_*_ID`). Mit `--no-docker` überspringen.
 
 Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Refresh (`Ctrl+Shift+R`).

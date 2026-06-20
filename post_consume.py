@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.17.py — Paperless-NGX Post-Consume Pipeline v12.17
+post_consume_v12.18.py — Paperless-NGX Post-Consume Pipeline v12.18
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.17"  # 12.17: Bugfix _pre_route NameError _betrag bei Kennzeichen-Routing
+POST_CONSUME_VERSION = "12.18"  # 12.18: Kennzeichen-Pre-Route ohne Servicerechnung-Default; Rechnungsnr≠Betrag; paperless_get params
 import sys
 import json
 import logging
@@ -487,8 +487,13 @@ def _make_retry_session(
 _http = _make_retry_session()
 
 
-def paperless_get(endpoint: str) -> dict:
-    r = _http.get(f"{PAPERLESS_URL}/api/{endpoint}", headers=_headers(), timeout=30)
+def paperless_get(endpoint: str, params: dict | None = None) -> dict:
+    r = _http.get(
+        f"{PAPERLESS_URL}/api/{endpoint}",
+        headers=_headers(),
+        params=params,
+        timeout=30,
+    )
     r.raise_for_status()
     return r.json()
 
@@ -985,6 +990,39 @@ def normalize_decision_keys(d: dict) -> dict:
 VISION_SYSTEM = "Du bist ein JSON-Extraktor für Schweizer Dokumente. Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt. Kein Text davor oder danach. Kein Markdown."
 
 
+def _disambiguate_vision_money_fields(vision_meta: dict) -> dict:
+    """Trennt Schweizer Rechnungsnummern (z.B. Zürich 50.699.251.081) vom Zahlungsbetrag.
+
+    Auf Prämienrechnungen steht «Rechnung: 50.699.251.081» — das ist keine CHF-Summe.
+    """
+    if not vision_meta:
+        return vision_meta
+    import re as _re
+    meta = dict(vision_meta)
+    betrag = meta.get("betrag")
+    if not betrag or str(betrag).lower() in ("null", "none", ""):
+        return meta
+    raw = str(betrag).strip()
+    num = _re.sub(r"[^\d.]", "", raw.replace("'", ""))
+    is_rechnungsnr = False
+    if _re.fullmatch(r"\d{1,3}(\.\d{3}){2,}", num):
+        is_rechnungsnr = True
+    elif num.count(".") >= 2 and _re.fullmatch(r"[\d.]+", num):
+        is_rechnungsnr = True
+    else:
+        try:
+            if float(num.replace(",", ".")) > 500_000:
+                is_rechnungsnr = True
+        except ValueError:
+            pass
+    if is_rechnungsnr:
+        if not (meta.get("rechnungsnummer") or "").strip():
+            meta["rechnungsnummer"] = num or raw
+        meta["betrag"] = None
+        log.info("Vision: '%s' als Rechnungsnummer erkannt (kein Betrag)", raw)
+    return meta
+
+
 def vision_analyze(image_b64: Optional[str], ocr_text: str) -> dict:
     """Vision-LLM Analyse — Ollama natives Format (images-Array, nicht image_url)."""
 
@@ -1020,7 +1058,8 @@ def vision_analyze(image_b64: Optional[str], ocr_text: str) -> dict:
         f'{{"absender": "Firmenname oder Behörde nicht Empfänger", '
         f'"empfaenger": "Name des Empfängers", '
         f'"datum": "Datum des Dokuments als JJJJ-MM-TT oder null", '
-        f'"betrag": "CHF XX.XX oder null", '
+        f'"betrag": "Zahlungsbetrag CHF XX.XX oder null — NICHT die Rechnungsnummer", '
+        f'"rechnungsnummer": "Rechnungs-/Fakturanummer z.B. 50.699.251.081 oder null", '
         f'"kennzeichen": "Fahrzeugkennzeichen z.B. AG 239878 oder null", '
         f'"dokumenttyp_visuell": "z.B. Rechnung/Lohnabrechnung/Verfügung", '
         f'"layout": "Beschreibung des Layouts", '
@@ -2405,7 +2444,7 @@ def main():
     if pdf_path:
         image_b64 = pdf_to_base64_image(pdf_path)
     log.info("Schritt 2: Vision-LLM (%s)", MODEL_VISION)
-    vision_meta = vision_analyze(image_b64, ocr_text)
+    vision_meta = _disambiguate_vision_money_fields(vision_analyze(image_b64, ocr_text))
     log.info("Vision: %s", json.dumps(vision_meta, ensure_ascii=False))
     write_audit_entry(document_id, "vision", vision_meta)
 
@@ -2447,8 +2486,6 @@ def main():
         if not _korrespondent:
             _korrespondent = vision_meta.get("absender") or _extract_absender_from_ocr(ocr_text)
 
-        _titel = f"Servicerechnung {_korrespondent}" if _korrespondent else "Servicerechnung"
-        # Tags aus Manifest-Eintrag holen — nicht hardcodiert
         ordner_entry = next((e for e in manifest if e.get("pfad") == ordner), {})
         manifest_tags = ordner_entry.get("erlaubte_tags", [])
         _max = ordner_entry.get("max_tags", 4)
@@ -2456,7 +2493,11 @@ def main():
         for t in manifest_tags:
             if t not in auto_tags and len(auto_tags) < _max:
                 auto_tags.append(t)
-        doctyp = ordner_entry.get("dokumenttyp", {}).get("primär", "Servicerechnung")
+        # Dokumenttyp nur aus Manifest primär — kein Servicerechnung-Default (sonst Sanitize-Violation)
+        doctyp = (ordner_entry.get("dokumenttyp") or {}).get("primär") or ""
+        _vis_typ = (vision_meta.get("dokumenttyp_visuell") or "").strip()
+        _titel_typ = doctyp or _vis_typ or "Dokument"
+        _titel = f"{_titel_typ} {_korrespondent}".strip() if _korrespondent else _titel_typ
         return {
             "ordner": ordner,
             "tags": auto_tags,
@@ -3147,7 +3188,11 @@ def build_custom_fields(
         betrag_clean = _re.sub(r"[^\d.]", "", betrag_str)
         if betrag_clean:
             try:
-                _add(CF_BETRAG, float(betrag_clean), "Betrag")
+                amount = float(betrag_clean)
+                if amount <= 500_000:
+                    _add(CF_BETRAG, amount, "Betrag")
+                else:
+                    log.info("Betrag %s verworfen (unplausibel hoch — vermutlich Rechnungsnummer)", betrag)
             except ValueError:
                 pass
 

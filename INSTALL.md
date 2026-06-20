@@ -237,6 +237,8 @@ cd /opt/paperless
 docker compose down && docker compose up -d
 ```
 
+> **`.env`-Änderungen** (z. B. neue `CF_PERSON_ID`): `docker compose restart` reicht **nicht** — `env_file` wird nur beim Erstellen des Containers gelesen. Nutze `docker compose up -d --force-recreate webserver` oder `./scripts/deploy-to-ct121.sh` (macht das automatisch).
+
 Testen ob Scripts erkannt werden:
 
 ```bash
