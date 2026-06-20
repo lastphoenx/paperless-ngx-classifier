@@ -262,8 +262,8 @@ def main():
 
     qr_bills = extract_qr_from_pdf(pdf_path)
 
-    # Sidecar-Datei schreiben
-    sidecar_path = Path(pdf_path).with_suffix("").as_posix() + "_qr_meta.json"
+    p = Path(pdf_path)
+    sidecar_path = p.parent / f"{p.stem}_qr_meta.json"
 
     if qr_bills:
         # Ersten (meist einzigen) QR-Bill verwenden
