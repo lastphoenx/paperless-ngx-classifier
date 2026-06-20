@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.18.py — Paperless-NGX Post-Consume Pipeline v12.18
+post_consume_v12.19.py — Paperless-NGX Post-Consume Pipeline v12.19
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.18"  # 12.18: Kennzeichen-Pre-Route ohne Servicerechnung-Default; Rechnungsnr≠Betrag; paperless_get params
+POST_CONSUME_VERSION = "12.19"  # 12.19: Pre-Route ignoriert unbekannte Manifest-Doktypen; Log-Version fix
 import sys
 import json
 import logging
@@ -2371,7 +2371,7 @@ def _storage_path_name_by_id(sp_id: int) -> str:
 
 def main():
     log.info("=" * 70)
-    log.info("post_consume_v12.6 | ID=%s | Datei=%s", DOCUMENT_ID, DOCUMENT_FILE_NAME)
+    log.info("post_consume_v%s | ID=%s | Datei=%s", POST_CONSUME_VERSION, DOCUMENT_ID, DOCUMENT_FILE_NAME)
     log.info("Storage-Modus: %s | Vision-Modell: %s", STORAGE_MODE, MODEL_VISION)
 
     if not DOCUMENT_ID:
@@ -2493,8 +2493,14 @@ def main():
         for t in manifest_tags:
             if t not in auto_tags and len(auto_tags) < _max:
                 auto_tags.append(t)
-        # Dokumenttyp nur aus Manifest primär — kein Servicerechnung-Default (sonst Sanitize-Violation)
+        # Dokumenttyp nur aus Manifest primär — muss in Paperless existieren
         doctyp = (ordner_entry.get("dokumenttyp") or {}).get("primär") or ""
+        if doctyp:
+            _load_known_doctypes()
+            _dt_key = doctyp.lower()
+            if _dt_key not in _KNOWN_DOCTYPE_CACHE or not _KNOWN_DOCTYPE_CACHE[_dt_key].get("id"):
+                log.info("Pre-Route: Manifest-Dokumenttyp '%s' nicht in Paperless — ignoriert", doctyp)
+                doctyp = ""
         _vis_typ = (vision_meta.get("dokumenttyp_visuell") or "").strip()
         _titel_typ = doctyp or _vis_typ or "Dokument"
         _titel = f"{_titel_typ} {_korrespondent}".strip() if _korrespondent else _titel_typ
