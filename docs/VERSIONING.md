@@ -34,7 +34,10 @@ Drei unabhängige Versionsnummern — in der Sidebar und auf dem Home-Tab sichtb
 ## Prüfen nach Deploy
 
 ```bash
-curl -s http://localhost:8100/api/config | python3 -m json.tool | grep -A6 versions
+cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
+grep -m1 POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
 ```
+
+`deploy-to-ct121.sh` kopiert **immer** `post_consume.py` (nicht nur UI/BE). Ohne das läuft auf dem Server weiter die alte Pipeline.
 
 Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Refresh (`Ctrl+Shift+R`).
