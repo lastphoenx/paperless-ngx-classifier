@@ -43,7 +43,7 @@ Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochz
 | T Dokumenttypen | `#doctypes` | Synonyme + Ausschluss-Keywords |
 | ~ Tags | `#tags` | Tags + Ausschluss-Keywords |
 | M Manifest | `#manifest` | Ordner konfigurieren |
-| 👪 Familie | `#family` | Haushalt, Personen, Fahrzeuge |
+| 👪 Familie | `#family` | Haushalt, Personen, Referenzen (Kennzeichen) |
 
 Alle Tabs haben ein **Suchfeld** für live Filterung.
 
@@ -230,26 +230,27 @@ Zentrale Haushaltskonfiguration — wird von der Pipeline dynamisch geladen.
 - **Anzeigename** — für Logs und UI
 - **Ordner-Prefix** — erster Teil aller Ablage-Pfade (z.B. «Thomas» → `Thomas/Auto`, `Thomas/Steuern`)
 
-> Zuerst Personen speichern — dann können Fahrzeuge erfasst werden.
-> Person kann nicht gelöscht werden solange Fahrzeuge damit verknüpft sind.
+> Zuerst Personen speichern — dann können Referenzen erfasst werden.
+> Person kann nicht gelöscht werden solange Referenzen damit verknüpft sind.
 
-### Bereich 2: Fahrzeuge
+### Bereich 2: Referenzen (Kennzeichen)
 
-Jedes Kennzeichen in `family.json` steuert **immer** das Custom Field «Auto-Kennzeichen» und die **Person** (Vision oder OCR).
+Jede Referenz in `family.json` (`fahrzeuge[]`) steuert **immer** das Custom Field «Auto-Kennzeichen» und die **Person** (Vision oder OCR).
 
-**Ordner-Routing ist optional** («Ordner auto» / `routing_ordner`):
+**Ordner-Routing ist optional** («Ordner autom.» / `routing_ordner`):
 
 | Einstellung | Verhalten |
 |---|---|
-| Ordner auto **aus** | CF + Person gesetzt; Ordner/Dokumenttyp über Korrespondent, Beziehungen oder LLM (z. B. Versicherungspolice) |
-| Ordner auto **an** | Zusätzlich deterministisches Pre-Routing in den Ziel-Ordner (Garage, MFK, Werkstatt) — kein LLM |
+| Ordner autom. **aus** | CF + Person gesetzt; Ordner/Dokumenttyp über Korrespondent, Beziehungen oder LLM (z. B. Versicherungspolice) |
+| Ordner autom. **an** | Zusätzlich deterministisches Pre-Routing in den Ziel-Ordner (Garage, MFK, Werkstatt) — kein LLM |
 
-- **Kennzeichen** — Pflicht, eindeutig; muss als Option im Paperless-Select «Auto-Kennzeichen» existieren
-- **Typ** — Auto / Mofa / Moped (nur Anzeige/Hilfe in der UI)
+- **Referenz** — Kennzeichen/ID, Pflicht, eindeutig; muss als Option im Paperless-Select «Auto-Kennzeichen» existieren
+- **Kategorie** — frei pflegbar in `fahrzeug_kategorien` (nur Anzeige/Hilfe in der UI, kein Pipeline-Routing)
 - **Person** — Pflicht, aus gespeicherten Personen
-- **Ziel-Ordner** — nur bei aktivem «Ordner auto», Format `Person/Kategorie` (z. B. `Monika/Auto`)
+- **Ziel-Ordner** — nur bei aktivem «Ordner autom.», Format `Person/Kategorie` (z. B. `Monika/Auto`)
 
-> Mofas mit gemeinsamem Schild: ein Eintrag, Person setzen, **Ordner auto aus** — Versicherungsdokumente sollen nicht in `Person/Auto` landen.
+> Mofas mit gemeinsamem Schild: ein Eintrag, Person setzen, **Ordner autom. aus** — Versicherungsdokumente sollen nicht in `Person/Auto` landen.
+> Policen- und Vertragsnummern gehören in **Beziehungen**, nicht in Referenzen.
 
 ### Bereich 3: Beziehungen (Stufe 1)
 

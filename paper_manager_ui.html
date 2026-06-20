@@ -413,7 +413,7 @@
         <div class="card-header"><span class="card-title">Deterministisches Routing — kein LLM nötig</span></div>
         <div style="display:grid;grid-template-columns:120px 1fr;gap:4px 12px;font-size:12px;color:var(--muted);line-height:1.9;margin-top:8px">
           <span style="color:var(--accent)">Kennzeichen</span>
-          <span>Bekanntes Kennzeichen aus family.json → CF «Auto-Kennzeichen» + Person. Ordner nur wenn «Ordner automatisch» aktiv (Familie → Fahrzeuge)</span>
+          <span>Bekannte Referenz aus family.json → CF «Auto-Kennzeichen» + Person. Ordner nur wenn «Ordner automatisch» aktiv (Familie → Referenzen)</span>
           <span style="color:var(--accent)">Arbeitgeber</span>
           <span>«Reformierte Kirche» = Arbeitgeber von Monika → Monika/Kirchgemeinde/Lohnabrechnung</span>
           <span style="color:var(--accent)">Bank / Arzt</span>
@@ -584,7 +584,7 @@
         <strong>Personen</strong> definieren den Ordner-Namensraum: der <em>Ordner-Prefix</em> ist der erste Teil aller Ablage-Pfade
         (z.B. «Vorname» → <code>Vorname/Auto</code>, <code>Vorname/Steuern</code>).
         Die <em>ID</em> ist ein interner Schlüssel — Kleinbuchstaben, keine Leerzeichen, eindeutig.
-        <strong>Personen zuerst speichern</strong> bevor Fahrzeuge erfasst werden.
+        <strong>Personen zuerst speichern</strong> bevor Referenzen erfasst werden.
       </p>
 
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
@@ -614,33 +614,44 @@
       <div id="family-personen-error" style="display:none;color:#f87171;font-size:12px;margin-top:8px"></div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
         <button class="btn btn-success" onclick="saveFamilyPersonen()">✓ Haushalt &amp; Personen speichern</button>
-        <span style="color:var(--muted);font-size:11px">Danach können Fahrzeuge den Personen zugewiesen werden.</span>
+        <span style="color:var(--muted);font-size:11px">Danach können Referenzen den Personen zugewiesen werden.</span>
       </div>
     </div>
 
-    <!-- BEREICH 2: Fahrzeuge -->
+    <!-- BEREICH 2: Referenzen (Kennzeichen) -->
     <div class="card" style="margin-bottom:16px">
-      <div class="card-header"><span class="card-title">2 — Fahrzeuge</span></div>
+      <div class="card-header"><span class="card-title">2 — Referenzen (Kennzeichen)</span></div>
       <p style="color:var(--muted);font-size:11px;margin:8px 0 12px;line-height:1.7">
-        Kennzeichen in <strong>family.json</strong> steuern das CF «Auto-Kennzeichen» und die Person.
-        Optional: <strong>Ordner automatisch setzen</strong> für Garage/MFK-Rechnungen (deterministisch, ohne LLM).
-        Mofas mit gemeinsamem Schild: Kennzeichen + Person, Routing aus — Versicherung/Korrespondent bestimmt den Ordner.<br>
-        Jedes Kennzeichen nur <strong>einmal</strong>. Optionen müssen im Paperless-Select «Auto-Kennzeichen» existieren.
+        Einträge in <strong>family.json</strong> steuern das CF «Auto-Kennzeichen» und die Person (aus OCR/Vision erkannt).
+        Optional: <strong>Ordner automatisch setzen</strong> für Werkstatt/MFK-Rechnungen (deterministisch, ohne LLM).
+        Gemeinsame Kennzeichen (z.&nbsp;B. Mofa): Referenz + Person, Routing aus — Korrespondent/Beziehungen bestimmen den Ordner.<br>
+        Jede Referenz nur <strong>einmal</strong>. Werte müssen als Option im Paperless-Select «Auto-Kennzeichen» existieren.
+        Policen- und Vertragsnummern gehören in <strong>Beziehungen</strong>, nicht hierher.
       </p>
-      <div style="display:grid;grid-template-columns:1fr 72px 1fr 100px 1fr 32px;gap:6px;margin-bottom:6px">
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">KENNZEICHEN</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">TYP</div>
+      <div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:6px">KATEGORIEN <span style="font-weight:normal">(Dropdown pro Eintrag — frei pflegbar)</span></div>
+        <div id="fz-kategorien-chips" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:28px"></div>
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+          <input type="text" id="fz-kat-input" placeholder="z.B. Sonstiges" maxlength="32"
+            style="max-width:160px;font-size:12px"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();addFzKategorie();}">
+          <button type="button" class="btn btn-primary" style="font-size:11px" onclick="addFzKategorie()">+ Kategorie</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr minmax(80px,auto) 1fr 110px 1fr 32px;gap:6px;margin-bottom:6px">
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">REFERENZ</div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">KATEGORIE</div>
         <div style="font-size:10px;color:var(--muted);padding:0 4px">PERSON</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ORDNER AUTO</div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ORDNER AUTOM.</div>
         <div style="font-size:10px;color:var(--muted);padding:0 4px">ZIEL-ORDNER</div>
         <div></div>
       </div>
       <div id="family-fahrzeuge"></div>
-      <button class="btn btn-primary" style="margin-top:8px;font-size:11px" onclick="addFamilyFahrzeug()">+ Fahrzeug hinzufügen</button>
+      <button class="btn btn-primary" style="margin-top:8px;font-size:11px" onclick="addFamilyFahrzeug()">+ Referenz hinzufügen</button>
 
       <div id="family-fahrzeuge-error" style="display:none;color:#f87171;font-size:12px;margin-top:8px"></div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
-        <button class="btn btn-success" onclick="saveFamilyFahrzeuge()">✓ Fahrzeuge speichern</button>
+        <button class="btn btn-success" onclick="saveFamilyFahrzeuge()">✓ Referenzen speichern</button>
         <span style="color:var(--muted);font-size:11px">Aktiv beim nächsten Scan.</span>
       </div>
     </div>
@@ -693,7 +704,7 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.24';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.25';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -3293,10 +3304,87 @@ async function submitDocReview(index, action) {
 // ──────────────────────────────────────────────
 let _familyData = null;
 
+const DEFAULT_FZ_KATEGORIEN = ['auto', 'mofa', 'moped'];
+
+function fzKategorienList(d) {
+  const raw = d?.fahrzeug_kategorien;
+  if (!raw || !raw.length) return [...DEFAULT_FZ_KATEGORIEN];
+  const seen = new Set();
+  const out = [];
+  for (const k of raw) {
+    const s = String(k).trim().toLowerCase();
+    if (s && !seen.has(s)) { seen.add(s); out.push(s); }
+  }
+  return out.length ? out : [...DEFAULT_FZ_KATEGORIEN];
+}
+
+function fzKatDisplay(slug) {
+  if (!slug) return '';
+  return slug.charAt(0).toUpperCase() + slug.slice(1);
+}
+
+function ensureFzKategorien() {
+  if (!_familyData) return;
+  _familyData.fahrzeug_kategorien = fzKategorienList(_familyData);
+}
+
+function renderFzKategorien() {
+  const el = document.getElementById('fz-kategorien-chips');
+  if (!el || !_familyData) return;
+  ensureFzKategorien();
+  const kats = _familyData.fahrzeug_kategorien;
+  if (!kats.length) {
+    el.innerHTML = '<span style="color:var(--muted);font-size:12px;font-style:italic">Keine Kategorien — mindestens eine anlegen.</span>';
+    return;
+  }
+  el.innerHTML = kats.map(kat => `
+    <span class="tag-chip">${fzKatDisplay(kat)}
+      <span class="remove" onclick="removeFzKategorie('${kat.replace(/'/g, "\\'")}')">×</span>
+    </span>`).join('');
+}
+
+function addFzKategorie() {
+  if (!_familyData) return;
+  const inp = document.getElementById('fz-kat-input');
+  const val = (inp?.value || '').trim().toLowerCase();
+  if (!val) return;
+  ensureFzKategorien();
+  if (_familyData.fahrzeug_kategorien.includes(val)) {
+    _showFamilyError('family-fahrzeuge-error', `Kategorie «${fzKatDisplay(val)}» existiert bereits.`);
+    return;
+  }
+  _showFamilyError('family-fahrzeuge-error', null);
+  _familyData.fahrzeug_kategorien.push(val);
+  if (inp) inp.value = '';
+  renderFzKategorien();
+  renderFamilyFahrzeuge(_familyData);
+}
+
+function removeFzKategorie(kat) {
+  if (!_familyData) return;
+  ensureFzKategorien();
+  const inUse = (_familyData.fahrzeuge || []).some(f => (f.typ || '').toLowerCase() === kat);
+  if (inUse) {
+    _showFamilyError('family-fahrzeuge-error',
+      `Kategorie «${fzKatDisplay(kat)}» wird noch von Referenzen verwendet — zuerst umstellen oder löschen.`);
+    return;
+  }
+  if (_familyData.fahrzeug_kategorien.length <= 1) {
+    _showFamilyError('family-fahrzeuge-error', 'Mindestens eine Kategorie muss bleiben.');
+    return;
+  }
+  _showFamilyError('family-fahrzeuge-error', null);
+  _familyData.fahrzeug_kategorien = _familyData.fahrzeug_kategorien.filter(k => k !== kat);
+  renderFzKategorien();
+  renderFamilyFahrzeuge(_familyData);
+}
+
 async function loadFamilyConfig() {
   try {
     const r = await fetch(`${API_BASE}/family`);
     _familyData = await r.json();
+    ensureFzKategorien();
+    renderFzKategorien();
     renderFamilyPersonen(_familyData);
     renderFamilyFahrzeuge(_familyData);
     await renderFamilyBeziehungen(_familyData);
@@ -3327,7 +3415,8 @@ function renderFamilyPersonen(d) {
 }
 
 function normalizeFahrzeug(fz) {
-  if (!fz.typ) fz.typ = 'auto';
+  const kats = fzKategorienList(_familyData || {});
+  if (!fz.typ || !kats.includes(String(fz.typ).toLowerCase())) fz.typ = kats[0];
   if (fz.routing_ordner === undefined) {
     fz.routing_ordner = !!(fz.ordner && String(fz.ordner).trim());
   }
@@ -3345,28 +3434,37 @@ function fzSetRouting(i, on) {
 function renderFamilyFahrzeuge(d) {
   const fContainer = document.getElementById('family-fahrzeuge');
   if (!fContainer) return;
+  ensureFzKategorien();
+  const kats = _familyData.fahrzeug_kategorien;
+  const katOptions = (slug, selected) => {
+    const opts = kats.map(k =>
+      `<option value="${k}" ${k === selected ? 'selected' : ''}>${fzKatDisplay(k)}</option>`
+    ).join('');
+    if (slug && !kats.includes(slug)) {
+      return `<option value="${slug}" selected>${fzKatDisplay(slug)}</option>` + opts;
+    }
+    return opts;
+  };
   const list = (d.fahrzeuge || []).map(normalizeFahrzeug);
   d.fahrzeuge = list;
   const personen = d.personen || [];
 
   if (!personen.length) {
-    fContainer.innerHTML = '<div style="color:var(--warn);font-size:12px;padding:8px 0">⚠ Zuerst Personen speichern — dann können Fahrzeuge zugewiesen werden.</div>';
+    fContainer.innerHTML = '<div style="color:var(--warn);font-size:12px;padding:8px 0">⚠ Zuerst Personen speichern — dann können Referenzen zugewiesen werden.</div>';
     return;
   }
   if (!list.length) {
-    fContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;font-style:italic;padding:8px 0">Noch keine Fahrzeuge erfasst.</div>';
+    fContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;font-style:italic;padding:8px 0">Noch keine Referenzen erfasst.</div>';
     return;
   }
 
   fContainer.innerHTML = list.map((fz, i) => `
-    <div style="display:grid;grid-template-columns:1fr 72px 1fr 100px 1fr 32px;gap:6px;margin-bottom:6px;align-items:center">
+    <div style="display:grid;grid-template-columns:1fr minmax(80px,auto) 1fr 110px 1fr 32px;gap:6px;margin-bottom:6px;align-items:center">
       <input type="text" placeholder="AG 123456" value="${fz.kennzeichen||''}"
         style="font-family:monospace;text-transform:uppercase"
         oninput="_familyData.fahrzeuge[${i}].kennzeichen=this.value.toUpperCase()">
       <select onchange="_familyData.fahrzeuge[${i}].typ=this.value">
-        <option value="auto" ${fz.typ==='auto'?'selected':''}>Auto</option>
-        <option value="mofa" ${fz.typ==='mofa'?'selected':''}>Mofa</option>
-        <option value="moped" ${fz.typ==='moped'?'selected':''}>Moped</option>
+        ${katOptions((fz.typ||'').toLowerCase(), (fz.typ||'').toLowerCase())}
       </select>
       <select onchange="_familyData.fahrzeuge[${i}].person_id=this.value">
         <option value="">Person…</option>
@@ -3374,9 +3472,9 @@ function renderFamilyFahrzeuge(d) {
           `<option value="${p.id}" ${p.id===fz.person_id?'selected':''}>${p.anzeigename}</option>`
         ).join('')}
       </select>
-      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer">
+      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
         <input type="checkbox" ${fz.routing_ordner?'checked':''} onchange="fzSetRouting(${i}, this.checked)">
-        Ordner auto
+        Ordner autom.
       </label>
       <input type="text" placeholder="Vorname/Auto" value="${fz.ordner||''}"
         ${fz.routing_ordner?'':'disabled'}
@@ -3406,18 +3504,19 @@ function addFamilyFahrzeug() {
     return;
   }
   _familyData.fahrzeuge = _familyData.fahrzeuge || [];
-  _familyData.fahrzeuge.push({kennzeichen: '', person_id: '', typ: 'auto', ordner: '', routing_ordner: false});
+  const defaultTyp = fzKategorienList(_familyData)[0];
+  _familyData.fahrzeuge.push({kennzeichen: '', person_id: '', typ: defaultTyp, ordner: '', routing_ordner: false});
   renderFamilyFahrzeuge(_familyData);
 }
 function removeFamilyPerson(i) {
   const person = _familyData.personen[i];
   if (!person) return;
-  // Prüfen ob noch Fahrzeuge mit dieser Person verknüpft sind
+  // Prüfen ob noch Referenzen mit dieser Person verknüpft sind
   const verknuepft = (_familyData.fahrzeuge||[]).filter(f => f.person_id === person.id);
   if (verknuepft.length > 0) {
     const kz = verknuepft.map(f => f.kennzeichen).join(', ');
     _showFamilyError('family-personen-error',
-      `Person «${person.anzeigename}» kann nicht gelöscht werden — noch ${verknuepft.length} Fahrzeug(e) verknüpft: ${kz}. Zuerst Fahrzeuge löschen oder neu zuweisen.`);
+      `Person «${person.anzeigename}» kann nicht gelöscht werden — noch ${verknuepft.length} Referenz(en) verknüpft: ${kz}. Zuerst Referenzen löschen oder neu zuweisen.`);
     return;
   }
   _showFamilyError('family-personen-error', null);
@@ -3476,11 +3575,16 @@ async function saveFamilyPersonen() {
 async function saveFamilyFahrzeuge() {
   if (!_familyData) return;
   _showFamilyError('family-fahrzeuge-error', null);
+  ensureFzKategorien();
 
   const personen = _familyData.personen || [];
   if (!personen.length) {
     _showFamilyError('family-fahrzeuge-error', 'Zuerst Personen speichern.'); return;
   }
+  if (!_familyData.fahrzeug_kategorien.length) {
+    _showFamilyError('family-fahrzeuge-error', 'Mindestens eine Kategorie erforderlich.'); return;
+  }
+  const validKats = new Set(_familyData.fahrzeug_kategorien);
   const validPersonIds = new Set(personen.map(p => p.id));
   const fahrzeuge = (_familyData.fahrzeuge||[])
     .map(normalizeFahrzeug)
@@ -3490,20 +3594,23 @@ async function saveFamilyFahrzeuge() {
   const kzList = fahrzeuge.map(f => f.kennzeichen.replace(/\s/g,'').toUpperCase());
   const dupKz = kzList.find((k, i) => k && kzList.indexOf(k) !== i);
   if (dupKz) {
-    _showFamilyError('family-fahrzeuge-error', `Kennzeichen «${dupKz}» ist doppelt.`); return;
+    _showFamilyError('family-fahrzeuge-error', `Referenz «${dupKz}» ist doppelt.`); return;
   }
   for (const fz of fahrzeuge) {
     if (!fz.kennzeichen.trim()) {
-      _showFamilyError('family-fahrzeuge-error', 'Kennzeichen darf nicht leer sein.'); return;
+      _showFamilyError('family-fahrzeuge-error', 'Referenz darf nicht leer sein.'); return;
     }
     if (!fz.person_id) {
-      _showFamilyError('family-fahrzeuge-error', `Person fehlt bei Kennzeichen «${fz.kennzeichen}».`); return;
+      _showFamilyError('family-fahrzeuge-error', `Person fehlt bei Referenz «${fz.kennzeichen}».`); return;
     }
     if (!validPersonIds.has(fz.person_id)) {
       _showFamilyError('family-fahrzeuge-error', `Person «${fz.person_id}» nicht in gespeicherten Personen gefunden.`); return;
     }
+    if (!validKats.has((fz.typ || '').toLowerCase())) {
+      _showFamilyError('family-fahrzeuge-error', `Unbekannte Kategorie bei «${fz.kennzeichen}».`); return;
+    }
     if (fz.routing_ordner && !fz.ordner.trim()) {
-      _showFamilyError('family-fahrzeuge-error', `Ziel-Ordner fehlt bei «${fz.kennzeichen}» (Ordner auto aktiv).`); return;
+      _showFamilyError('family-fahrzeuge-error', `Ziel-Ordner fehlt bei «${fz.kennzeichen}» (Ordner automatisch aktiv).`); return;
     }
     if (!fz.routing_ordner) fz.ordner = '';
   }
@@ -3511,10 +3618,13 @@ async function saveFamilyFahrzeuge() {
   const r = await fetch(`${API_BASE}/family`, {
     method: 'PATCH',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ fahrzeuge })
+    body: JSON.stringify({
+      fahrzeuge,
+      fahrzeug_kategorien: _familyData.fahrzeug_kategorien
+    })
   });
   if (r.ok) {
-    showToast('Fahrzeuge gespeichert', 'success');
+    showToast('Referenzen gespeichert', 'success');
     await loadFamilyConfig();
   } else {
     const err = await r.json().catch(()=>({}));

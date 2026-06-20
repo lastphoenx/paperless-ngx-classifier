@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.12"  # 2.12: Beziehung stichworte[] validieren
-UI_VERSION = "2.24"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.13"  # 2.13: family.json fahrzeug_kategorien pflegbar
+UI_VERSION = "2.25"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -2214,13 +2214,32 @@ def api_manifest_patch_ordner(pfad: str, body: dict = Body(...)):
         fd.close()
 
 
+_DEFAULT_FZ_KATEGORIEN = ["auto", "mofa", "moped"]
+
+
+def _normalize_fahrzeug_kategorien(raw) -> list[str]:
+    """Kleinbuchstaben, eindeutig, Reihenfolge beibehalten."""
+    if not raw:
+        return list(_DEFAULT_FZ_KATEGORIEN)
+    seen: set[str] = set()
+    out: list[str] = []
+    for k in raw:
+        s = str(k).strip().lower()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out or list(_DEFAULT_FZ_KATEGORIEN)
+
+
 @app.get("/api/family", response_class=JSONResponse)
 def api_family():
     """Haushaltskonfiguration lesen (family.json)."""
     if not FAMILY_JSON.exists():
         return {"version": "1.0", "haushalt": {"name": "", "land": "CH", "sprache": "de"},
-                "personen": [], "fahrzeuge": []}
-    return json.loads(FAMILY_JSON.read_text(encoding="utf-8"))
+                "personen": [], "fahrzeuge": [], "fahrzeug_kategorien": list(_DEFAULT_FZ_KATEGORIEN)}
+    data = json.loads(FAMILY_JSON.read_text(encoding="utf-8"))
+    data["fahrzeug_kategorien"] = _normalize_fahrzeug_kategorien(data.get("fahrzeug_kategorien"))
+    return data
 
 
 @app.patch("/api/family")
@@ -2228,7 +2247,7 @@ def api_patch_family(body: dict = Body(...)):
     """Haushaltskonfiguration speichern (family.json).
     Schreibt haushalt, personen, fahrzeuge, beziehungen atomar zurück.
     """
-    allowed = {"haushalt", "personen", "fahrzeuge", "beziehungen"}
+    allowed = {"haushalt", "personen", "fahrzeuge", "fahrzeug_kategorien", "beziehungen"}
     if not set(body.keys()) <= allowed:
         raise HTTPException(400, f"Unbekannte Felder: {set(body.keys()) - allowed}")
 
@@ -2241,6 +2260,10 @@ def api_patch_family(body: dict = Body(...)):
             data[key] = body[key]
 
     data.setdefault("version", "1.0")
+    data["fahrzeug_kategorien"] = _normalize_fahrzeug_kategorien(data.get("fahrzeug_kategorien"))
+
+    if "fahrzeug_kategorien" in body and not data["fahrzeug_kategorien"]:
+        raise HTTPException(400, "Mindestens eine Kategorie erforderlich")
 
     # Validierung: Kennzeichen müssen unique sein
     if "fahrzeuge" in body:
@@ -2249,13 +2272,16 @@ def api_patch_family(body: dict = Body(...)):
         if len(kennzeichen_list) != len(set(k for k in kennzeichen_list if k)):
             raise HTTPException(409, "Kennzeichen müssen eindeutig sein")
         person_ids = {p["id"] for p in data.get("personen", []) if "id" in p}
-        _valid_fz_typen = {"auto", "mofa", "moped"}
+        valid_fz_typen = set(data["fahrzeug_kategorien"])
+        default_typ = data["fahrzeug_kategorien"][0]
         for fz in data.get("fahrzeuge", []):
             if fz.get("person_id") and fz["person_id"] not in person_ids:
                 raise HTTPException(409, f"person_id '{fz['person_id']}' nicht in personen definiert — zuerst Personen speichern")
-            typ = (fz.get("typ") or "auto").strip().lower()
-            if typ and typ not in _valid_fz_typen:
-                raise HTTPException(400, f"Unbekannter Fahrzeugtyp '{typ}' — erlaubt: auto, mofa, moped")
+            typ = (fz.get("typ") or default_typ).strip().lower()
+            fz["typ"] = typ
+            if typ and typ not in valid_fz_typen:
+                erlaubt = ", ".join(data["fahrzeug_kategorien"])
+                raise HTTPException(400, f"Unbekannte Kategorie '{typ}' — erlaubt: {erlaubt}")
             routing = fz.get("routing_ordner")
             if routing is None:
                 routing = bool((fz.get("ordner") or "").strip())
