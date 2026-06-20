@@ -20,7 +20,7 @@ import json
 import os
 
 __version__ = "2.15"  # 2.15: Doc Review — Custom Fields speichern + Pflichtfeld-Check
-UI_VERSION = "2.27"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+UI_VERSION = "2.28"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
