@@ -422,7 +422,9 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | Thumbnail/PDF leer im Dokument-Review (IP-Zugriff) | Direkte Paperless-URLs ohne Session | ab v2.8: Proxy-Endpoints; `PAPERLESS_TOKEN` in `.env` und Service-Env |
 | Titel-Kollisionen / falscher Ordner im Dateinamen | Bug in `_make_unique_titel` (bis pipe 12.14) | `post_consume.py` ≥ 12.15 deployen |
 | Routing funktioniert nicht (Kennzeichen/Arbeitgeber/Bank) | family.json leer oder Beziehung fehlt | paper.manager → Familie → Fahrzeuge / Beziehungen prüfen |
-| Kennzeichen erkannt, aber falsches Versicherungs-Routing in `Person/Auto` | `routing_ordner: true` auf Versicherungs-Kennzeichen | Familie → Fahrzeuge: «Ordner auto» deaktivieren (`routing_ordner: false`) |
+| Kennzeichen erkannt, falsches Routing in `Person/Auto` | `routing_ordner: true` auf Versicherungs-Kennzeichen | Familie → Fahrzeuge: «Ordner auto» aus |
+| Kennzeichen erkannt, Person falsch (Versicherung) | Beziehung/Empfänger vor Kennzeichen (bis 12.21) oder `family.json` falsch | pipe ≥ 12.22; Kennzeichen → Person in Familie prüfen |
+| Stufe 1 ohne Ref-Match trotzdem geroutet | Alte «einzelne Beziehung»-Logik (bis 12.21) | pipe ≥ 12.21; Ref-Nr in Beziehung pflegen |
 | Deploy zeigt alte Pipeline-Version (z. B. 12.19 statt 12.20) | `git pull` ohne neuen Commit auf `main` | Lokal committen/pushen, dann erneut `git pull && ./scripts/deploy-to-ct121.sh` |
 | Permissions-Fehler auf Dokumenten | Gruppen-IDs falsch | PAPERLESS_VIEW_GROUP_IDS in .env |
 | Falscher Ordner trotz korrekter Vision | Paperless Classifier noch aktiv | Schritt 7b — alle 3 Objekttypen zurücksetzen |
