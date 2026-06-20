@@ -4,22 +4,22 @@
 # One-time setup on ct-121:
 #   git clone git@github.com:lastphoenx/paperless-ngx-classifier.git /opt/paperless-ngx-classifier
 #
-# Update (UI + backend only):
+# Update (UI + backend + post_consume — Standard):
 #   cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
 #
-# Update including pipeline:
-#   ./scripts/deploy-to-ct121.sh --with-pipeline
+# Zusätzlich pre_consume (selten):
+#   ./scripts/deploy-to-ct121.sh --with-pre-consume
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${PAPERLESS_SCRIPTS_DIR:-/opt/paperless-scripts}"
-WITH_PIPELINE=0
+WITH_PRE_CONSUME=0
 RESTART=1
 
 for arg in "$@"; do
   case "$arg" in
-    --with-pipeline) WITH_PIPELINE=1 ;;
+    --with-pre-consume|--with-pipeline) WITH_PRE_CONSUME=1 ;;
     --no-restart)    RESTART=0 ;;
   esac
 done
@@ -27,11 +27,11 @@ done
 FILES=(
   correspondent_manager_app.py
   paper_manager_ui.html
+  post_consume.py
 )
 
-if [[ "$WITH_PIPELINE" -eq 1 ]]; then
+if [[ "$WITH_PRE_CONSUME" -eq 1 ]]; then
   FILES+=(
-    post_consume.py
     pre_consume.sh
     pre_consume_qr.py
   )
@@ -51,3 +51,6 @@ if [[ "$RESTART" -eq 1 ]] && systemctl is-active --quiet correspondent-manager 2
 fi
 
 echo "==> Fertig."
+if [[ -f "$TARGET/post_consume.py" ]]; then
+  echo "==> post_consume: $(grep -m1 '^POST_CONSUME_VERSION' "$TARGET/post_consume.py" || true)"
+fi
