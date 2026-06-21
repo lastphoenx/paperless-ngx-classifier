@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VERSION: 1.4 — Legacy-Migration Orchestrierung
+# VERSION: 1.5 — Legacy-Migration Orchestrierung (Chunk-Import, Preflight, --stop)
 #
 #   ./scripts/legacy-migrate-all.sh              # voller Lauf
 #   ./scripts/legacy-migrate-all.sh --status     # Übersicht
@@ -34,6 +34,8 @@ DUPLICATE_DELETE_KEY="PAPERLESS_CONSUMER_DELETE_DUPLICATES"
 DUPLICATE_DELETE_BACKUP="__unset__"
 LOCK_FILE="$STATE_DIR/legacy-migrate.lock"
 API_TIMEOUT="${LEGACY_API_TIMEOUT:-10}"
+CHUNK_SIZE="${LEGACY_CHUNK_SIZE:-25}"
+IMPORTED_DIR="$STATE_DIR/imported"
 
 FROM_SLUG=""
 FROM_ACTIVE=0
@@ -43,9 +45,10 @@ WITH_RETRY=0
 DO_CLEANUP=0
 DO_RETRY=0
 RETRY_BATCH=""
+DO_STOP=0
 MIGRATION_ACTIVE=0
 
-mkdir -p "$STATE_DIR" "$SKIP_ROOT"
+mkdir -p "$STATE_DIR" "$SKIP_ROOT" "$IMPORTED_DIR"
 
 if [[ ! -f "$STATE_FILE" ]]; then
   printf '%s\n' 'slug	status	source	expected	legacy_before	legacy_after	skipped	started	finished' >"$STATE_FILE"
@@ -64,7 +67,66 @@ usage() {
   echo "  --cleanup-consume     Hänger aus consume/legacy + altes consume/_skipped räumen"
   echo "  --retry-skipped [batch]  PDFs aus skipped/ erneut in consume legen"
   echo "  --with-retry          Voller Lauf, danach --retry-skipped"
+  echo "  --stop                Laufende Migration stoppen"
   echo "  --dry-run | -h"
+}
+
+count_consume_all() {
+  find "$CONSUME_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' '
+}
+
+imported_list_path() {
+  echo "$IMPORTED_DIR/$1.lst"
+}
+
+mark_imported_rel() {
+  local slug="$1" rel="$2"
+  local lst
+  lst="$(imported_list_path "$slug")"
+  printf '%s\n' "$rel" >>"$lst"
+  sort -u -o "$lst" "$lst"
+}
+
+mark_chunk_imported() {
+  local slug="$1"
+  local chunk_file="$STATE_DIR/last-chunk-${slug}.txt"
+  [[ -f "$chunk_file" ]] || return 0
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] && mark_imported_rel "$slug" "$rel"
+  done <"$chunk_file"
+  rm -f "$chunk_file"
+}
+
+preflight_migration() {
+  local n d bn c
+  n=$(count_consume_all)
+  if [[ "$n" -gt 0 ]]; then
+    echo "FEHLER: $n PDFs noch in $CONSUME_ROOT — Migration startet nicht." >&2
+    echo "  $0 --stop && $0 --cleanup-consume" >&2
+    for d in "$CONSUME_ROOT"/*/; do
+      [[ -d "$d" ]] || continue
+      bn=$(basename "$d")
+      c=$(find "$d" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' ')
+      [[ "$c" -gt 0 ]] && echo "    $bn: $c PDFs" >&2
+    done
+    exit 1
+  fi
+}
+
+stop_migration() {
+  local mypid=$$
+  echo "Stoppe legacy-migrate-all …"
+  local pid
+  while read -r pid; do
+    [[ -z "$pid" || "$pid" == "$mypid" ]] && continue
+    kill "$pid" 2>/dev/null || true
+  done < <(pgrep -f 'legacy-migrate-all\.sh' 2>/dev/null || true)
+  sleep 2
+  rm -f "$LOCK_FILE"
+  local n
+  n=$(count_consume_all)
+  echo "Gestoppt. PDFs in consume/legacy: $n"
+  echo "Aufräumen: $0 --cleanup-consume"
 }
 
 count_pdfs() {
@@ -190,6 +252,7 @@ skip_remaining_pdfs() {
     mkdir -p "$(dirname "$dest_file")"
     mv "$f" "$dest_file"
     record_skip "$slug" "$rel" "$reason"
+    mark_imported_rel "$slug" "$rel"
     log "SKIP $slug: $rel ($reason)"
   done < <(find "$dir" -type f \( -iname '*.pdf' \) -print0 2>/dev/null)
   echo "$n"
@@ -197,6 +260,7 @@ skip_remaining_pdfs() {
 
 wait_consume_batch() {
   local slug="$1"
+  local finalize="${2:-1}"
   local dir="$CONSUME_ROOT/$slug"
   local idle=0 last=-1 n=0
 
@@ -223,8 +287,12 @@ wait_consume_batch() {
     log "WAIT $slug: noch $n PDFs"
     sleep "$STALL_SLEEP"
   done
-  rm -rf "$dir"
-  log "DONE consume $slug"
+  if [[ "$finalize" -eq 1 ]]; then
+    rm -rf "$dir"
+    log "DONE consume $slug"
+  else
+    log "CHUNK fertig $slug"
+  fi
 }
 
 enable_delete_duplicates() {
@@ -397,8 +465,32 @@ run_batch() {
     return 0
   fi
 
-  "$IMPORT_SH" "$src" "$slug" >>"$LOG_FILE" 2>&1
-  wait_consume_batch "$slug"
+  local chunk_file rc imported_lst
+  imported_lst="$(imported_list_path "$slug")"
+  touch "$imported_lst"
+  export LEGACY_IMPORTED_LIST="$imported_lst"
+
+  while true; do
+    chunk_file="$STATE_DIR/last-chunk-${slug}.txt"
+    rm -f "$chunk_file"
+    export LEGACY_LAST_CHUNK_FILE="$chunk_file"
+    set +e
+    "$IMPORT_SH" "$src" "$slug" --chunk "$CHUNK_SIZE" >>"$LOG_FILE" 2>&1
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 2 ]]; then
+      log "IMPORT $slug: alle PDFs verarbeitet"
+      break
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+      log "FEHLER: import $slug exit $rc"
+      return 1
+    fi
+    wait_consume_batch "$slug" 0
+    mark_chunk_imported "$slug"
+  done
+  rm -rf "$CONSUME_ROOT/$slug"
+  log "DONE batch consume $slug"
 
   la=$(legacy_api_count)
   sk=$(awk -F'\t' -v b="$slug" '$2==b {c++} END{print c+0}' "$SKIPPED_TSV")
@@ -432,10 +524,19 @@ print_status() {
   local total_sk skip_pdfs consume_left
   total_sk=$(awk -F'\t' 'NR>1{c++} END{print c+0}' "$SKIPPED_TSV")
   skip_pdfs=$(find "$SKIP_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' ')
-  consume_left=$(find "$CONSUME_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' ')
+  consume_left=$(count_consume_all)
   status_line "Skipped-Einträge (skipped.tsv): $total_sk"
   status_line "PDFs in $SKIP_ROOT: $skip_pdfs"
   status_line "PDFs noch in consume/legacy: $consume_left"
+  local _pid _d _bn _c
+  _pid=$(pgrep -f 'legacy-migrate-all\.sh' 2>/dev/null | head -1 || true)
+  [[ -n "$_pid" ]] && status_line "Aktiver Lauf: PID $_pid"
+  for _d in "$CONSUME_ROOT"/*/; do
+    [[ -d "$_d" ]] || continue
+    _bn=$(basename "$_d")
+    _c=$(find "$_d" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' ')
+    [[ "$_c" -gt 0 ]] && status_line "  → consume/$_bn: $_c PDFs"
+  done
   if [[ -d "$OLD_SKIP_ROOT" ]] && find "$OLD_SKIP_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | grep -q .; then
     status_line "WARN: altes $OLD_SKIP_ROOT noch belegt — --cleanup-consume ausführen"
   fi
@@ -529,11 +630,17 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --with-retry) WITH_RETRY=1; shift ;;
+    --stop) DO_STOP=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unbekannt: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+if [[ "$DO_STOP" -eq 1 ]]; then
+  stop_migration
+  exit 0
+fi
 
 if [[ -n "$MARK_DONE" ]]; then
   IFS=',' read -ra _marks <<<"$MARK_DONE"
@@ -577,6 +684,7 @@ fi
 
 acquire_lock
 trap migration_trap_exit EXIT
+preflight_migration
 exec >>"$LOG_FILE" 2>&1
-log "=== legacy-migrate-all.sh start (PID $$) ==="
+log "=== legacy-migrate-all.sh start (PID $$) chunk=$CHUNK_SIZE ==="
 run_all_batches

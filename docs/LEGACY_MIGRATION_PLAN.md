@@ -35,6 +35,18 @@ Bereits erledigte Batches markieren (z. B. nach manuellem CS/Policen-Lauf):
 Verschiebt alle PDFs aus `consume/legacy/*` und dem alten `consume/_skipped/` nach  
 `/mnt/paperless-data/legacy-migrate/skipped/<batch>/`.
 
+## Notfall: Lauf stoppen + consume leeren
+
+```bash
+/opt/paperless-scripts/legacy-migrate-all.sh --stop
+/opt/paperless-scripts/legacy-migrate-all.sh --cleanup-consume
+/opt/paperless-scripts/legacy-migrate-all.sh --status
+```
+
+Migration startet **nicht**, solange PDFs in `consume/legacy` liegen (Preflight).
+
+Chunk-Größe (Standard 25): `LEGACY_CHUNK_SIZE=30` in der Umgebung.
+
 ## Migration starten (unbeaufsichtigt)
 
 ```bash
