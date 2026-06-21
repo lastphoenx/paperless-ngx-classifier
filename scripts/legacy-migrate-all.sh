@@ -2,12 +2,15 @@
 # Legacy-Migration: alle Batches nacheinander, mit Fortschritts-Log und Auto-Skip bei Hängern.
 #
 #   ./scripts/legacy-migrate-all.sh              # voller Lauf
-#   ./scripts/legacy-migrate-all.sh --status   # Übersicht
+#   ./scripts/legacy-migrate-all.sh --status     # Übersicht
 #   ./scripts/legacy-migrate-all.sh --from lohn  # ab Batch (cs/policen überspringen)
+#   ./scripts/legacy-migrate-all.sh --cleanup-consume   # hängende PDFs aus consume räumen
+#   ./scripts/legacy-migrate-all.sh --retry-skipped     # skipped/ erneut importieren
+#   ./scripts/legacy-migrate-all.sh --with-retry        # voller Lauf + Retry am Ende
 #
 # State:  /mnt/paperless-data/legacy-migrate/state.tsv
 # Log:    /mnt/paperless-data/legacy-migrate/migrate.log
-# Skip:   /mnt/paperless-data/consume/_skipped/<batch>/ + skipped.tsv
+# Skip:   /mnt/paperless-data/legacy-migrate/skipped/<batch>/  (NICHT unter consume/)
 #
 set -euo pipefail
 
@@ -15,20 +18,32 @@ NAS_ROOT="${LEGACY_NAS_FINANZEN:-/mnt/nas-legacy/Eltern/Finanzen}"
 IMPORT_SH="${LEGACY_IMPORT_SH:-/opt/paperless-scripts/legacy-import-batch.sh}"
 CONSUME_ROOT="${LEGACY_CONSUME_ROOT:-/mnt/paperless-data/consume/legacy}"
 STATE_DIR="${LEGACY_MIGRATE_STATE_DIR:-/mnt/paperless-data/legacy-migrate}"
+SKIP_ROOT="${LEGACY_SKIP_ROOT:-$STATE_DIR/skipped}"
+OLD_SKIP_ROOT="${LEGACY_OLD_SKIP_ROOT:-$(dirname "$CONSUME_ROOT")/_skipped}"
 STATE_FILE="$STATE_DIR/state.tsv"
 SKIPPED_TSV="$STATE_DIR/skipped.tsv"
 LOG_FILE="$STATE_DIR/migrate.log"
 ENV_FILE="${PAPERLESS_ENV:-/opt/paperless/.env}"
+COMPOSE_FILE="${PAPERLESS_COMPOSE:-/opt/paperless/docker-compose.yml}"
 
 STALL_SLEEP="${LEGACY_STALL_SLEEP:-30}"       # Sekunden zwischen Prüfungen
-STALL_CYCLES="${LEGACY_STALL_CYCLES:-10}"     # 10×30s = 5 min ohne Fortschritt → _skipped
+STALL_CYCLES="${LEGACY_STALL_CYCLES:-10}"     # 10×30s = 5 min ohne Fortschritt → skipped
+FAST_STALL_CYCLES="${LEGACY_FAST_STALL_CYCLES:-3}"  # 3×30s + Duplikat-Logs → sofort skipped
+DUPLOG_SINCE="${LEGACY_DUPLOG_SINCE:-3m}"
+DUPLICATE_DELETE_KEY="PAPERLESS_CONSUMER_DELETE_DUPLICATES"
+DUPLICATE_DELETE_BACKUP="__unset__"
 
 FROM_SLUG=""
 FROM_ACTIVE=0
 MARK_DONE=""
 DRY_RUN=0
+WITH_RETRY=0
+DO_CLEANUP=0
+DO_RETRY=0
+RETRY_BATCH=""
+MIGRATION_ACTIVE=0
 
-mkdir -p "$STATE_DIR" "$(dirname "$CONSUME_ROOT")/_skipped"
+mkdir -p "$STATE_DIR" "$SKIP_ROOT"
 
 if [[ ! -f "$STATE_FILE" ]]; then
   printf '%s\n' 'slug	status	source	expected	legacy_before	legacy_after	skipped	started	finished' >"$STATE_FILE"
@@ -38,9 +53,16 @@ if [[ ! -f "$SKIPPED_TSV" ]]; then
 fi
 
 usage() {
-  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
   echo ""
-  echo "Optionen: --status | --from <slug> | --dry-run | -h"
+  echo "Optionen:"
+  echo "  --status              Übersicht"
+  echo "  --from <slug>         Ab Batch starten"
+  echo "  --mark-done <a,b>     Batches als erledigt markieren"
+  echo "  --cleanup-consume     Hänger aus consume/legacy + altes consume/_skipped räumen"
+  echo "  --retry-skipped [batch]  PDFs aus skipped/ erneut in consume legen"
+  echo "  --with-retry          Voller Lauf, danach --retry-skipped"
+  echo "  --dry-run | -h"
 }
 
 count_pdfs() {
@@ -81,17 +103,71 @@ record_state() {
   mv "$tmp" "$STATE_FILE"
 }
 
+consumer_logs() {
+  [[ -f "$COMPOSE_FILE" ]] || return 0
+  docker compose -f "$COMPOSE_FILE" logs webserver --since "$DUPLOG_SINCE" 2>&1 || true
+}
+
+# Alle verbleibenden PDFs eines Batches erscheinen als Duplikat in den Paperless-Logs?
+files_all_duplicate_in_logs() {
+  local slug="$1"
+  local dir="$CONSUME_ROOT/$slug"
+  local logs total=0 dup=0 f base
+
+  logs=$(consumer_logs)
+  while IFS= read -r -d '' f; do
+    total=$((total + 1))
+    base=$(basename "$f")
+    if echo "$logs" | grep -qF "Not consuming ${base}:"; then
+      dup=$((dup + 1))
+    fi
+  done < <(find "$dir" -type f \( -iname '*.pdf' \) -print0 2>/dev/null)
+
+  [[ "$total" -gt 0 && "$dup" -eq "$total" ]]
+}
+
+record_skip() {
+  local batch="$1" relpath="$2" reason="$3"
+  printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$batch" "$relpath" "$reason" >>"$SKIPPED_TSV"
+}
+
+# Altes consume/_skipped → legacy-migrate/skipped/ (Paperless scannt consume rekursiv!)
+migrate_old_skip_folder() {
+  [[ -d "$OLD_SKIP_ROOT" ]] || return 0
+  local n=0 f rel dest
+  while IFS= read -r -d '' f; do
+    rel="${f#$OLD_SKIP_ROOT/}"
+    dest="$SKIP_ROOT/$rel"
+    mkdir -p "$(dirname "$dest")"
+    if [[ -e "$dest" ]]; then
+      rm -f "$f"
+    else
+      mv "$f" "$dest"
+    fi
+    n=$((n + 1))
+  done < <(find "$OLD_SKIP_ROOT" -type f \( -iname '*.pdf' \) -print0 2>/dev/null)
+  if [[ "$n" -gt 0 ]]; then
+    log "MIGRATE old skip: $n PDFs von $OLD_SKIP_ROOT → $SKIP_ROOT"
+  fi
+  rmdir -p "$OLD_SKIP_ROOT" 2>/dev/null || true
+}
+
 skip_remaining_pdfs() {
   local slug="$1" reason="$2"
   local dir="$CONSUME_ROOT/$slug"
-  local dest="$(dirname "$CONSUME_ROOT")/_skipped/$slug"
-  local n=0 f
+  local dest="$SKIP_ROOT/$slug"
+  local n=0 f rel dest_file
+
   mkdir -p "$dest"
   while IFS= read -r -d '' f; do
-  n=$((n + 1))
-  mv "$f" "$dest/"
-  printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$slug" "$(basename "$f")" "$reason" >>"$SKIPPED_TSV"
-  log "SKIP $slug: $(basename "$f") ($reason)"
+    n=$((n + 1))
+    rel="${f#$dir/}"
+    rel="${rel#/}"
+    dest_file="$dest/$rel"
+    mkdir -p "$(dirname "$dest_file")"
+    mv "$f" "$dest_file"
+    record_skip "$slug" "$rel" "$reason"
+    log "SKIP $slug: $rel ($reason)"
   done < <(find "$dir" -type f \( -iname '*.pdf' \) -print0 2>/dev/null)
   echo "$n"
 }
@@ -107,9 +183,14 @@ wait_consume_batch() {
     [[ "$n" -eq 0 ]] && break
     if [[ "$n" -eq "$last" ]]; then
       idle=$((idle + 1))
+      if [[ "$idle" -ge "$FAST_STALL_CYCLES" ]] && files_all_duplicate_in_logs "$slug"; then
+        log "FAST-SKIP $slug: $n PDFs — alle Duplikate laut Logs → $SKIP_ROOT"
+        skip_remaining_pdfs "$slug" "duplicate"
+        break
+      fi
       if [[ "$idle" -ge "$STALL_CYCLES" ]]; then
-        log "STALL $slug: $n PDFs seit $((STALL_CYCLES * STALL_SLEEP))s unverändert → _skipped"
-        skip_remaining_pdfs "$slug" "stall/duplicate"
+        log "STALL $slug: $n PDFs seit $((STALL_CYCLES * STALL_SLEEP))s unverändert → $SKIP_ROOT"
+        skip_remaining_pdfs "$slug" "stall"
         break
       fi
     else
@@ -121,6 +202,122 @@ wait_consume_batch() {
   done
   rm -rf "$dir"
   log "DONE consume $slug"
+}
+
+enable_delete_duplicates() {
+  [[ "${LEGACY_DELETE_DUPLICATES:-1}" == "0" ]] && return 0
+  [[ -f "$ENV_FILE" ]] || { log "WARN: $ENV_FILE fehlt — DELETE_DUPLICATES nicht gesetzt"; return 0; }
+
+  local current=""
+  if grep -q "^${DUPLICATE_DELETE_KEY}=" "$ENV_FILE"; then
+    current=$(grep -m1 "^${DUPLICATE_DELETE_KEY}=" "$ENV_FILE" | cut -d= -f2-)
+  else
+    current="false"
+  fi
+
+  if [[ "$current" == "true" ]]; then
+    DUPLICATE_DELETE_BACKUP=""
+    return 0
+  fi
+
+  DUPLICATE_DELETE_BACKUP="$current"
+  if grep -q "^${DUPLICATE_DELETE_KEY}=" "$ENV_FILE"; then
+    sed -i "s/^${DUPLICATE_DELETE_KEY}=.*/${DUPLICATE_DELETE_KEY}=true/" "$ENV_FILE"
+  else
+    printf '\n%s=true\n' "$DUPLICATE_DELETE_KEY" >>"$ENV_FILE"
+  fi
+  log "SET ${DUPLICATE_DELETE_KEY}=true (Duplikate werden aus consume entfernt)"
+
+  if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
+    docker compose -f "$COMPOSE_FILE" up -d --force-recreate webserver
+    log "Paperless webserver neu erstellt (DELETE_DUPLICATES aktiv)"
+  fi
+}
+
+restore_delete_duplicates() {
+  [[ "$MIGRATION_ACTIVE" -eq 0 ]] && return 0
+  [[ "$DUPLICATE_DELETE_BACKUP" == "__unset__" ]] && return 0
+  [[ -z "$DUPLICATE_DELETE_BACKUP" ]] && return 0
+  [[ -f "$ENV_FILE" ]] || return 0
+
+  sed -i "s/^${DUPLICATE_DELETE_KEY}=.*/${DUPLICATE_DELETE_KEY}=${DUPLICATE_DELETE_BACKUP}/" "$ENV_FILE"
+  log "RESTORE ${DUPLICATE_DELETE_KEY}=${DUPLICATE_DELETE_BACKUP}"
+
+  if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
+    docker compose -f "$COMPOSE_FILE" up -d --force-recreate webserver
+  fi
+}
+
+migration_trap_exit() {
+  local rc=$?
+  restore_delete_duplicates
+  exit "$rc"
+}
+
+# Hängende PDFs in consume/legacy/<batch>/ → skipped/; altes consume/_skipped migrieren
+cleanup_consume() {
+  migrate_old_skip_folder
+  local total=0 n slug d
+
+  for d in "$CONSUME_ROOT"/*/; do
+    [[ -d "$d" ]] || continue
+    slug=$(basename "$d")
+    [[ "$slug" == "_retry" ]] && continue
+    n=$(count_consume_pdfs "$slug")
+    [[ "$n" -eq 0 ]] && continue
+    log "CLEANUP $slug: $n PDFs → $SKIP_ROOT"
+    n=$(skip_remaining_pdfs "$slug" "cleanup")
+    total=$((total + n))
+    rm -rf "$d"
+  done
+
+  log "CLEANUP fertig: $total PDFs nach $SKIP_ROOT"
+  print_status
+}
+
+# PDFs aus skipped/ erneut importieren (optional nur ein Batch)
+retry_skipped() {
+  local filter="${1:-}"
+  migrate_old_skip_folder
+
+  local retry_slug="_retry"
+  local dest="$CONSUME_ROOT/$retry_slug"
+  local n=0 f rel batch subpath src
+
+  rm -rf "$dest"
+  mkdir -p "$dest"
+
+  while IFS= read -r -d '' f; do
+    rel="${f#$SKIP_ROOT/}"
+    batch="${rel%%/*}"
+    [[ -n "$filter" && "$batch" != "$filter" ]] && continue
+    subpath="${rel#*/}"
+    src="$dest/$batch/$subpath"
+    mkdir -p "$(dirname "$src")"
+    cp -f "$f" "$src"
+    n=$((n + 1))
+    log "RETRY queue: $batch/$subpath"
+  done < <(find "$SKIP_ROOT" -type f \( -iname '*.pdf' \) -print0 2>/dev/null | sort -z)
+
+  if [[ "$n" -eq 0 ]]; then
+    log "RETRY: keine PDFs in $SKIP_ROOT${filter:+ (batch=$filter)}"
+    return 0
+  fi
+
+  log "RETRY: $n PDFs → consume/legacy/$retry_slug/ (Originale bleiben in $SKIP_ROOT)"
+  MIGRATION_ACTIVE=1
+  trap migration_trap_exit EXIT
+  enable_delete_duplicates
+
+  local lb la started finished sk
+  lb=$(legacy_api_count)
+  started=$(date '+%F %T')
+  wait_consume_batch "$retry_slug"
+  la=$(legacy_api_count)
+  finished=$(date '+%F %T')
+  sk=$(awk -F'\t' -v b="$retry_slug" '$2==b {c++} END{print c+0}' "$SKIPPED_TSV")
+  record_state "$retry_slug" "retry" "$SKIP_ROOT" "$n" "$lb" "$la" "$sk" "$started" "$finished"
+  log "RETRY fertig | neu legacy: $((la == "?" || lb == "?" ? -1 : la - lb)) | erneut skipped: $sk"
 }
 
 run_batch() {
@@ -168,12 +365,21 @@ print_status() {
   echo ""
   echo "=== Legacy-Migration Status ==="
   echo "State: $STATE_FILE"
+  echo "Skip:  $SKIP_ROOT"
   echo ""
   column -t -s $'\t' "$STATE_FILE" 2>/dev/null || cat "$STATE_FILE"
   echo ""
-  local total_sk
+  local total_sk skip_pdfs
   total_sk=$(awk -F'\t' 'NR>1{c++} END{print c+0}' "$SKIPPED_TSV")
-  echo "Skipped-Dateien gesamt: $total_sk (Details: $SKIPPED_TSV)"
+  skip_pdfs=$(find "$SKIP_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' ')
+  echo "Skipped-Einträge (skipped.tsv): $total_sk"
+  echo "PDFs in $SKIP_ROOT: $skip_pdfs"
+  local consume_left
+  consume_left=$(find "$CONSUME_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' ')
+  echo "PDFs noch in consume/legacy: $consume_left"
+  if [[ -d "$OLD_SKIP_ROOT" ]] && find "$OLD_SKIP_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | grep -q .; then
+    echo "WARN: altes $OLD_SKIP_ROOT noch belegt — --cleanup-consume ausführen"
+  fi
   echo "Legacy-Doks jetzt: $(legacy_api_count)"
   echo ""
   local nas_total
@@ -181,10 +387,17 @@ print_status() {
     ! -path '*/Vorsorge/Moni/2015/*' ! -path '*/Vorsorge/Moni/2016/*' 2>/dev/null | wc -l | tr -d ' ')
   echo "NAS Inventur (ohne Moni 2015/2016): $nas_total PDFs"
   echo "Log: $LOG_FILE"
+  echo ""
+  echo "Nachholen: $0 --retry-skipped"
 }
 
 # --- Batch-Liste (Reihenfolge) ---
 run_all_batches() {
+  migrate_old_skip_folder
+  MIGRATION_ACTIVE=1
+  trap migration_trap_exit EXIT
+  enable_delete_duplicates
+
   run_batch "$NAS_ROOT/CS" cs
   run_batch "$NAS_ROOT/Policen" policen
   run_batch "$NAS_ROOT/Lohn" lohn
@@ -233,6 +446,10 @@ run_all_batches() {
   fi
 
   log "========== MIGRATION FERTIG =========="
+  if [[ "$WITH_RETRY" -eq 1 ]]; then
+    log "========== RETRY SKIPPED =========="
+    retry_skipped
+  fi
   print_status
 }
 
@@ -242,6 +459,16 @@ while [[ $# -gt 0 ]]; do
     --status) print_status; exit 0 ;;
     --from) FROM_SLUG="${2:?}"; shift 2 ;;
     --mark-done) MARK_DONE="${2:?}"; shift 2 ;;
+    --cleanup-consume) DO_CLEANUP=1; shift ;;
+    --retry-skipped)
+      DO_RETRY=1
+      if [[ "${2:-}" != "" && "${2:0:1}" != "-" ]]; then
+        RETRY_BATCH="$2"
+        shift
+      fi
+      shift
+      ;;
+    --with-retry) WITH_RETRY=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unbekannt: $1" >&2; usage; exit 1 ;;
@@ -254,6 +481,21 @@ if [[ -n "$MARK_DONE" ]]; then
     record_state "$_m" "done" "(manuell)" "?" "?" "$(legacy_api_count)" "?" "$(date '+%F %T')" "$(date '+%F %T')"
     echo "markiert: $_m"
   done
+  print_status
+  exit 0
+fi
+
+if [[ "$DO_CLEANUP" -eq 1 ]]; then
+  exec >>"$LOG_FILE" 2>&1
+  log "=== --cleanup-consume (PID $$) ==="
+  cleanup_consume
+  exit 0
+fi
+
+if [[ "$DO_RETRY" -eq 1 ]]; then
+  exec >>"$LOG_FILE" 2>&1
+  log "=== --retry-skipped (PID $$) batch=${RETRY_BATCH:-all} ==="
+  retry_skipped "$RETRY_BATCH"
   print_status
   exit 0
 fi

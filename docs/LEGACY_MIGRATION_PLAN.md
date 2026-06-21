@@ -24,14 +24,16 @@ Bereits erledigte Batches markieren (z. B. nach manuellem CS/Policen-Lauf):
 /opt/paperless-scripts/legacy-migrate-all.sh --mark-done cs,policen
 ```
 
-Hängende PDFs in consume (Duplikate) — einmalig wegräumen:
+## Hängende PDFs aufräumen (einmalig nach Bugfix)
+
+**Wichtig:** Skip-Ordner liegt **nicht** mehr unter `consume/` (Paperless scannt rekursiv).
 
 ```bash
-mkdir -p /mnt/paperless-data/consume/_skipped/policen
-find /mnt/paperless-data/consume/legacy/policen -type f -iname '*.pdf' \
-  -exec mv -t /mnt/paperless-data/consume/_skipped/policen/ {} + 2>/dev/null || true
-rm -rf /mnt/paperless-data/consume/legacy/policen
+/opt/paperless-scripts/legacy-migrate-all.sh --cleanup-consume
 ```
+
+Verschiebt alle PDFs aus `consume/legacy/*` und dem alten `consume/_skipped/` nach  
+`/mnt/paperless-data/legacy-migrate/skipped/<batch>/`.
 
 ## Migration starten (unbeaufsichtigt)
 
@@ -43,6 +45,12 @@ Ab bestimmtem Batch (z. B. lohn):
 
 ```bash
 nohup /opt/paperless-scripts/legacy-migrate-all.sh --from lohn >> /mnt/paperless-data/legacy-migrate/nohup.out 2>&1 &
+```
+
+Mit automatischem Nachhol-Versuch am Ende:
+
+```bash
+nohup /opt/paperless-scripts/legacy-migrate-all.sh --with-retry >> /mnt/paperless-data/legacy-migrate/nohup.out 2>&1 &
 ```
 
 ## Überblick — jederzeit
@@ -57,7 +65,7 @@ Zeigt Tabelle pro Batch:
 |--------|-----------|
 | `expected` | PDFs auf NAS in diesem Ordner |
 | `legacy_before` / `legacy_after` | Paperless-Tag `legacy` vor/nach Batch |
-| `skipped` | nach `_skipped` verschoben (Duplikate/Hänger) |
+| `skipped` | nach `legacy-migrate/skipped/` verschoben (Duplikate/Hänger) |
 
 Details jeder übersprungenen Datei:
 
@@ -74,8 +82,33 @@ tail -f /mnt/paperless-data/legacy-migrate/migrate.log
 ## Automatik bei Hängern
 
 - Wartet auf **PDF-Dateien** (nicht leere Unterordner).
-- **5 Minuten** ohne Fortschritt → Rest nach `consume/_skipped/<batch>/`, Batch wird **done** markiert, weiter mit nächstem Ordner.
+- **Duplikate:** Script setzt temporär `PAPERLESS_CONSUMER_DELETE_DUPLICATES=true` — abgelehnte Dateien verschwinden aus consume, der Batch läuft weiter.
+- **90 s** ohne Fortschritt + alle Rest-PDFs als Duplikat in Logs → sofort nach `skipped/`.
+- **5 Minuten** ohne Fortschritt → Rest nach `legacy-migrate/skipped/<batch>/`, Batch **done**, weiter.
 - Kein manuelles Eingreifen nötig.
+
+## Versäumtes nachholen
+
+Nach Abschluss oder bei transienten Fehlern:
+
+```bash
+# alle skipped PDFs erneut versuchen
+/opt/paperless-scripts/legacy-migrate-all.sh --retry-skipped
+
+# nur einen Batch
+/opt/paperless-scripts/legacy-migrate-all.sh --retry-skipped policen
+```
+
+Originale bleiben in `skipped/`; Kopien gehen nach `consume/legacy/_retry/`.  
+Echte Duplikate (Inhalt schon in Paperless) werden erneut übersprungen — siehe `skipped.tsv` mit Grund `duplicate`.
+
+## Duplikate (Inhalt bereits in Paperless)
+
+Wenn Import abgelehnt wird (`duplicate of #NNN`): Inhalt ist schon da, nur ohne `legacy`-Tag.  
+Optionen:
+
+- In der UI dem bestehenden Dokument Tag `legacy` geben, oder
+- Eintrag in `skipped.tsv` ignorieren (kein Datenverlust)
 
 ## Einzelbatch (manuell)
 
@@ -88,3 +121,13 @@ tail -f /mnt/paperless-data/legacy-migrate/migrate.log
 - `--status`: Summe `legacy_after` vs. NAS-Inventur
 - `skipped.tsv`: welche Dateien nicht importiert wurden (meist schon in Paperless)
 - NAS-Originale bleiben unverändert unter `Eltern/Finanzen`
+
+## Pfade
+
+| Pfad | Zweck |
+|------|--------|
+| `consume/legacy/<batch>/` | Import-Queue (Paperless überwacht) |
+| `legacy-migrate/skipped/<batch>/` | Übersprungene PDFs (**außerhalb** consume) |
+| `legacy-migrate/skipped.tsv` | Protokoll mit Grund |
+| `legacy-migrate/state.tsv` | Batch-Fortschritt |
+| ~~`consume/_skipped/`~~ | **Veraltet** — per `--cleanup-consume` migrieren |
