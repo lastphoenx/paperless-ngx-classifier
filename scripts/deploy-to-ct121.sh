@@ -34,6 +34,7 @@ FILES=(
   pre_consume.sh
   pre_consume_qr.py
   scripts/legacy-import-batch.sh
+  scripts/legacy-migrate-all.sh
 )
 
 echo "==> Repo:   $REPO_DIR"
