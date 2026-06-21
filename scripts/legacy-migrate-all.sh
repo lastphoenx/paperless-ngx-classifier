@@ -340,7 +340,16 @@ retry_skipped() {
   finished=$(date '+%F %T')
   sk=$(awk -F'\t' -v b="$retry_slug" '$2==b {c++} END{print c+0}' "$SKIPPED_TSV")
   record_state "$retry_slug" "retry" "$SKIP_ROOT" "$n" "$lb" "$la" "$sk" "$started" "$finished"
-  log "RETRY fertig | neu legacy: $((la == "?" || lb == "?" ? -1 : la - lb)) | erneut skipped: $sk"
+  log "RETRY fertig | neu legacy: $(legacy_import_delta "$lb" "$la") | erneut skipped: $sk"
+}
+
+legacy_import_delta() {
+  local lb="$1" la="$2"
+  if [[ "$lb" == "?" || "$la" == "?" ]]; then
+    echo "?"
+  else
+    echo $((la - lb))
+  fi
 }
 
 run_batch() {
@@ -380,8 +389,7 @@ run_batch() {
   finished=$(date '+%F %T')
   record_state "$slug" "done" "$src" "$expected" "$lb" "$la" "$sk" "$started" "$finished"
 
-  local imported=$((la == "?" || lb == "?" ? -1 : la - lb))
-  log "END $slug | erwartet: $expected | neu legacy: $imported | skipped: $sk | legacy gesamt: $la"
+  log "END $slug | erwartet: $expected | neu legacy: $(legacy_import_delta "$lb" "$la") | skipped: $sk | legacy gesamt: $la"
 }
 
 status_line() {
