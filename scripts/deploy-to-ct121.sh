@@ -7,7 +7,7 @@
 # Update (UI + backend + post_consume — Standard):
 #   cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
 #
-# pre_consume.sh + pre_consume_qr.py werden mitdeployt (Consume-Pipeline).
+# pre_consume.sh + pre_consume_qr.py + legacy-import-batch.sh werden mitdeployt.
 #
 # Ohne Paperless-Container-Neustart (nur Scripts + correspondent-manager):
 #   ./scripts/deploy-to-ct121.sh --no-docker
@@ -33,14 +33,17 @@ FILES=(
   post_consume.py
   pre_consume.sh
   pre_consume_qr.py
+  scripts/legacy-import-batch.sh
 )
 
 echo "==> Repo:   $REPO_DIR"
 echo "==> Target: $TARGET"
 for f in "${FILES[@]}"; do
   src="$REPO_DIR/$f"
+  dest_name="$(basename "$f")"
   [[ -f "$src" ]] || { echo "FEHLER: $src fehlt" >&2; exit 1; }
-  cp -v "$src" "$TARGET/$f"
+  cp -v "$src" "$TARGET/$dest_name"
+  [[ "$dest_name" == *.sh ]] && chmod +x "$TARGET/$dest_name"
 done
 
 if [[ "$RESTART" -eq 1 ]] && systemctl is-active --quiet correspondent-manager 2>/dev/null; then

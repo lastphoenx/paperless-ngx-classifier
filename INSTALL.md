@@ -238,7 +238,15 @@ PAPERLESS_CONSUMER_ENABLE_BARCODES=true
 PAPERLESS_TRAIN_TASK_CRON=disable
 # Ein Worker — verhindert Races bei gleichzeitigem Upload (pre/post_consume + consume/)
 PAPERLESS_TASK_WORKERS=1
+# Legacy-Altbestand (optional): siehe docs/LEGACY_IMPORT.md
+# LEGACY_CONSUME_MARKERS=/legacy/
+# LEGACY_TAG=legacy
+# PAPERLESS_CONSUMER_RECURSIVE=true
+# PAPERLESS_OCR_MODE=skip
+# NFS auf CT 121: /mnt/nas-legacy ← 192.168.141.140:/srv/nas
 ```
+
+**Legacy-NAS-Import:** [`docs/LEGACY_IMPORT.md`](docs/LEGACY_IMPORT.md)
 
 Paperless neu starten:
 
