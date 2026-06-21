@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pre-Consume Skript für Paperless-NGX
-# VERSION: 1.1 — Legacy-Pfad-Erkennung (LEGACY_CONSUME_MARKERS)
+# VERSION: 1.2 — Legacy-Marker für post_consume (DOCUMENT_SOURCE_PATH zeigt dort originals/)
 # Schritt 1: PDF-Qualität via ocrmypdf verbessern
 # Schritt 2: Swiss QR Bill Daten extrahieren (Sidecar JSON)
 # Läuft auf CT 121
@@ -34,6 +34,9 @@ for _m in "${_markers[@]}"; do
     _m="${_m%"${_m##*[![:space:]]}"}"
     [[ -z "$_m" ]] && continue
     if [[ "$_file_lc" == *"${_m,,}"* ]]; then
+        _marker_dir="/tmp/paperless_legacy_markers"
+        mkdir -p "$_marker_dir"
+        printf '%s' "$file" > "$_marker_dir/$(basename "$file")"
         echo "[pre_consume] Legacy-Import — übersprungen ($file)"
         exit 0
     fi

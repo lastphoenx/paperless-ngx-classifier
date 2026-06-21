@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.29.py — Paperless-NGX Post-Consume Pipeline v12.29
+post_consume_v12.30.py — Paperless-NGX Post-Consume Pipeline v12.30
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.29"  # 12.29: Legacy-Import — Pipeline überspringen, nur Legacy-Tag
+POST_CONSUME_VERSION = "12.30"  # 12.30: Legacy-Erkennung via Marker + DOCUMENT_TAGS (post: originals/)
 import sys
 import json
 import logging
@@ -1846,7 +1846,7 @@ def _load_known_tags() -> None:
 
 
 def _is_legacy_consume_path(path: str) -> bool:
-    """True wenn DOCUMENT_SOURCE_PATH unter consume/legacy/ (oder LEGACY_CONSUME_MARKERS)."""
+    """True wenn Pfad LEGACY_CONSUME_MARKERS enthält (pre_consume: consume/legacy/…)."""
     markers = [
         m.strip() for m in os.environ.get("LEGACY_CONSUME_MARKERS", "/legacy/").split(",")
         if m.strip()
@@ -1855,6 +1855,58 @@ def _is_legacy_consume_path(path: str) -> bool:
         return False
     p = path.replace("\\", "/").lower()
     return any(m.lower() in p for m in markers)
+
+
+LEGACY_MARKER_DIR = Path(
+    os.environ.get("LEGACY_MARKER_DIR", "/tmp/paperless_legacy_markers")
+)
+
+
+def _has_legacy_tags_in_env() -> bool:
+    """Sidecar-Tags sind beim post_consume bereits in DOCUMENT_TAGS (vor Pipeline)."""
+    tags_raw = os.environ.get("DOCUMENT_TAGS", "")
+    if not tags_raw.strip():
+        return False
+    legacy_tag = os.environ.get("LEGACY_TAG", "legacy").lower()
+    for t in tags_raw.split(","):
+        tl = t.strip().lower()
+        if not tl:
+            continue
+        if tl == legacy_tag or tl.startswith("legacy-"):
+            return True
+    return False
+
+
+def _consume_legacy_marker(filename: str) -> bool:
+    """Marker von pre_consume.sh (consume-Pfad); post_consume hat nur originals/-Pfad."""
+    if not filename:
+        return False
+    marker = LEGACY_MARKER_DIR / Path(filename).name
+    if not marker.is_file():
+        return False
+    try:
+        stored = marker.read_text(encoding="utf-8").strip()
+        marker.unlink(missing_ok=True)
+    except OSError as e:
+        log.warning("Legacy-Marker lesen fehlgeschlagen (%s): %s", marker, e)
+        return False
+    if _is_legacy_consume_path(stored):
+        return True
+    log.warning("Legacy-Marker ignoriert (kein Legacy-Pfad): %s", stored)
+    return False
+
+
+def _is_legacy_import() -> bool:
+    """Legacy-Altbestand — pre_consume-Pfad, Sidecar-Tags oder pre_consume-Marker."""
+    if _is_legacy_consume_path(DOCUMENT_SOURCE_PATH):
+        return True
+    if _has_legacy_tags_in_env():
+        return True
+    orig = os.environ.get("DOCUMENT_ORIGINAL_FILENAME", "").strip()
+    for name in (orig, DOCUMENT_FILE_NAME):
+        if name and _consume_legacy_marker(name):
+            return True
+    return False
 
 
 def _ensure_legacy_tag(document_id: int) -> None:
@@ -4002,10 +4054,12 @@ if __name__ == "__main__":
     register_pid()
     try:
         # Legacy: kein Pipeline-Lock, keine Vision/LLM — nur Tag-Fallback
-        if _is_legacy_consume_path(DOCUMENT_SOURCE_PATH):
+        if _is_legacy_import():
             log.info(
-                "Legacy-Import — Pipeline übersprungen (Pfad: %s)",
-                DOCUMENT_SOURCE_PATH or DOCUMENT_FILE_NAME,
+                "Legacy-Import — Pipeline übersprungen (source=%s, original=%s, tags=%s)",
+                DOCUMENT_SOURCE_PATH or "-",
+                os.environ.get("DOCUMENT_ORIGINAL_FILENAME", "-"),
+                os.environ.get("DOCUMENT_TAGS", "-"),
             )
             if DOCUMENT_ID and PAPERLESS_TOKEN:
                 _ensure_legacy_tag(int(DOCUMENT_ID))

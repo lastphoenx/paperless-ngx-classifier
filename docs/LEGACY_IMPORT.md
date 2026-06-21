@@ -1,6 +1,6 @@
 # Legacy-Altbestand importieren
 
-NAS-Ordner (verstreut auf pi-nas) schrittweise in Paperless übernehmen — **nur Indexierung**, ohne OCR/Vision/LLM-Pipeline.
+NAS-Ordner schrittweise in Paperless übernehmen — **nur Indexierung**, ohne OCR/Vision/LLM-Pipeline.
 
 ## Voraussetzungen (einmalig)
 
@@ -8,69 +8,48 @@ NAS-Ordner (verstreut auf pi-nas) schrittweise in Paperless übernehmen — **nu
 
 Admin → Tags → **legacy** erstellen → Zuweisungsregel: **Keine Zuweisung**.
 
-### 2. NAS auf CT 121 erreichbar machen
+### 2. NAS auf dem Paperless-Host erreichbar machen
 
-**Aktueller Stand auf CT 121** (typisch):
+| Mount (Beispiel CT 121) | Quelle | Inhalt |
+|-------------------------|--------|--------|
+| `/mnt/paperless-media` | `nas-host:/srv/nas/Paperless/media` | Bereits importierte Paperless-PDFs |
+| `/mnt/paperless-data/consume` | lokales Volume | Ziel für Legacy-Kopien |
+| `/mnt/nas-legacy` | `nas-host:/mnt/ssd1` | Legacy-Quell-PDFs |
 
-| Mount | Quelle | Inhalt |
-|-------|--------|--------|
-| `/mnt/paperless-media` | `192.168.141.140:/srv/nas/Paperless/media` | Bereits importierte Paperless-PDFs |
-| `/mnt/paperless-data/consume` | lokales LVM | Consume-Ordner (Ziel für Legacy-Kopien) |
-| `/srv/nas` | — | **existiert nicht** auf CT 121 |
+#### Wichtig: mergerfs auf pi-nas
 
-Legacy-PDFs liegen auf **pi-nas** (`192.168.141.140`) unter `/srv/nas/Eltern/…`, `/srv/nas/Thomas/…` usw. — **nicht** unter `Paperless/media`.
+`/srv/nas` ist auf pi-nas oft **mergerfs** (FUSE). NFS-Export von `/srv/nas` zeigt Unterordner auf Clients **unvollständig** (z. B. kein `Eltern/Finanzen`), obwohl lokal alles sichtbar ist.
 
-#### Option A (empfohlen): NFS-Readonly-Mount auf CT 121
+**Lösung:** Auf pi-nas **`/mnt/ssd1`** exportieren (ext4, echte Platte), nicht `/srv/nas`.
 
-**Auf pi-nas** (`/etc/exports`) — CT 121 hat i. d. R. `192.168.131.31`:
+**pi-nas** `/etc/exports` (IP des Paperless-Hosts anpassen):
 
 ```bash
-# Read-only für Legacy-Import
-/srv/nas  192.168.131.31(ro,sync,no_subtree_check)
+/mnt/ssd1  PAPERLESS_HOST_IP(ro,sync,no_subtree_check,no_root_squash)
 ```
 
-Dann auf pi-nas: `exportfs -ra`
+```bash
+exportfs -ra
+```
 
-**Auf CT 121** (`/etc/fstab`):
+`no_root_squash` wegen Gruppe `parents` (`drwxrws---`) auf `Eltern/Finanzen`.
+
+**Paperless-Host** `/etc/fstab`:
 
 ```fstab
-192.168.141.140:/srv/nas  /mnt/nas-legacy  nfs4  rw,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
+nas-host.example:/mnt/ssd1  /mnt/nas-legacy  nfs4  rw,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
 ```
 
 ```bash
 mkdir -p /mnt/nas-legacy
-mount -a
-# Prüfen:
+systemctl daemon-reload
+mount -v /mnt/nas-legacy
 ls /mnt/nas-legacy/Eltern/Finanzen | head
-find /mnt/nas-legacy -name '*.pdf' | wc -l
 ```
 
-> Export ist `ro` auf NFS-Server — Mount-Option `rw` auf dem Client ist ok; Schreibzugriff kommt vom Server.
+### 3. `.env` (produktiv manuell)
 
-#### Option B: rsync über SSH (ohne NFS-Export)
-
-Wenn NFS nicht gewünscht — Staging auf CT 121 per `rsync` von pi-nas (User braucht **Lese-Recht** auf die Ordner):
-
-```bash
-# Beispiel — User/Host anpassen
-rsync -a paperlessbackup@192.168.141.140:/srv/nas/Eltern/Finanzen/ \
-  /mnt/nas-legacy/Eltern/Finanzen/
-```
-
-`paperlessbackup` hat auf pi-nas aktuell **kein** Leserecht auf `Eltern/Finanzen` → ACL/`exports` oder dedizierter User nötig (siehe unten).
-
-#### Quellpfad für `legacy-import-batch.sh`
-
-| Umgebung | Beispiel-Quellpfad |
-|----------|-------------------|
-| CT 121 mit NFS | `/mnt/nas-legacy/Eltern/Finanzen` |
-| pi-nas direkt | `/srv/nas/Eltern/Finanzen` (nur wenn Script dort läuft) |
-
-Umgebungsvariable (optional): `LEGACY_NAS_ROOT=/mnt/nas-legacy` — nur Dokumentation/Hilfstext; das Script erwartet den **vollen Quellpfad** als erstes Argument.
-
-### 3. `.env` auf CT 121 (`/opt/paperless/.env`)
-
-Produktiv manuell ergänzen:
+Siehe `.env.example` — mindestens:
 
 ```bash
 LEGACY_CONSUME_MARKERS=/legacy/
@@ -80,13 +59,13 @@ PAPERLESS_OCR_MODE=skip
 PAPERLESS_TASK_WORKERS=1
 ```
 
-`LEGACY_*` muss im **Container** ankommen (pre/post_consume laufen dort):
+Prüfen im Container:
 
 ```bash
 docker exec $(docker ps -qf name=webserver | head -1) env | grep LEGACY
 ```
 
-Nach `.env`-Änderung:
+Nach Änderung:
 
 ```bash
 cd /opt/paperless && docker compose up -d --force-recreate webserver
@@ -99,63 +78,59 @@ cd /opt/paperless-ngx-classifier && git pull
 ./scripts/deploy-to-ct121.sh
 ```
 
-Deploy kopiert u. a. `pre_consume.sh`, `post_consume.py`, `legacy-import-batch.sh` nach `/opt/paperless-scripts/`.
+Kopiert u. a. `pre_consume.sh`, `post_consume.py`, `legacy-import-batch.sh` nach `/opt/paperless-scripts/`.
 
-## Ablauf pro NAS-Ordner
+## Ablauf
 
 ```
-/mnt/nas-legacy/...     rsync (Kopie)          Paperless consume
-─────────────────  ──────────────────────►  consume/legacy/<batch>/
-                                              + datei.pdf.json (Tags)
-                                                    │
-                                                    ▼
-                                              pre_consume  → skip
-                                              Paperless    → OCR skip, index
-                                              post_consume → nur Tag legacy
+/mnt/nas-legacy/...  →  consume/legacy/<batch>/  (+ .pdf.json)
+                              → pre_consume skip
+                              → Paperless index (OCR skip)
+                              → post_consume nur Tag legacy
 ```
 
-**Wichtig:** Niemals NAS-Originale direkt als `consume/` mounten — Paperless **löscht** verarbeitete Dateien aus `consume/`.
+**Niemals** NAS-Originale direkt als `consume/` mounten — Paperless **löscht** verarbeitete Dateien dort.
 
-## Testlauf (kleiner Ordner)
+## Erster Test: Moni/2016 (kleiner Ordner)
+
+Kandidat für einen ersten Lauf (ca. 10 Jahre alt — ggf. später auf NAS löschen, in Paperless bleibt es).
 
 ```bash
+# Wie viele PDFs?
+find /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2016 -name '*.pdf' | wc -l
+
 # Dry-run
 /opt/paperless-scripts/legacy-import-batch.sh \
-  /mnt/nas-legacy/Eltern/Finanzen \
-  finanzen-test \
-  --limit 5 \
+  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2016 \
+  moni-2016-test \
   --dry-run
 
-# Echter Lauf
+# Echter Lauf (ganzer Ordner — ohne --limit)
 /opt/paperless-scripts/legacy-import-batch.sh \
-  /mnt/nas-legacy/Eltern/Finanzen \
-  finanzen-test \
-  --limit 5
+  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2016 \
+  moni-2016-test
 ```
 
 ### Erfolg prüfen
 
-1. **Consume-Ordner leert sich** (`/mnt/paperless-data/consume/legacy/finanzen-test/`)
-2. **Paperless UI:** Filter `Tag: legacy` und `Tag: legacy-finanzen-test`
-3. **Logs:**
+1. `consume/legacy/moni-2016-test/` leert sich
+2. Paperless: Filter `Tag: legacy` und `Tag: legacy-moni-2016-test`
+3. Logs:
    ```bash
    docker compose -f /opt/paperless/docker-compose.yml logs webserver 2>&1 | \
      grep -E 'pre_consume.*Legacy|Legacy-Import' | tail -20
    ```
-   Erwartung:
-   - `[pre_consume] Legacy-Import — übersprungen`
-   - `Legacy-Import — Pipeline übersprungen`
-4. **Volltextsuche** nach einem bekannten Begriff aus einem Test-PDF
+4. Volltextsuche in einem bekannten Dokument
 
-### Wenn etwas schiefgeht
+## Weitere Testläufe
 
-| Symptom | Lösung |
-|---------|--------|
-| `Permission denied` auf pi-nas | NFS-Mount (Option A) oder ACL für Import-User; `/srv/nas` existiert nicht auf CT 121 ohne Mount |
-| Pipeline läuft trotzdem (Vision in Logs) | `LEGACY_CONSUME_MARKERS` in `.env`, Container recreate |
-| `LEGACY` leer in `docker exec env` | `.env` in `docker-compose` `env_file`, recreate |
-| Kein Tag `legacy` | Tag in Paperless anlegen; Sidecar `.pdf.json` prüfen |
-| Dateien bleiben in consume/ | `docker compose logs webserver` auf Fehler prüfen |
+```bash
+/opt/paperless-scripts/legacy-import-batch.sh \
+  /mnt/nas-legacy/Eltern/Finanzen \
+  eltern-finanzen \
+  --limit 5 \
+  --dry-run
+```
 
 ## Produktiv-Import
 
@@ -167,31 +142,42 @@ Pro Batch warten bis `consume/legacy/<batch>/` leer ist:
   eltern-finanzen
 ```
 
-`rsync --ignore-existing` im Script: erneuter Lauf kopiert keine Duplikate.
+`rsync --ignore-existing`: erneuter Lauf kopiert keine Duplikate.
 
 ## Sidecar-Format
 
-Für `rechnung.pdf` wird `rechnung.pdf.json` erzeugt:
+`rechnung.pdf` → `rechnung.pdf.json`:
 
 ```json
-{"tags": ["legacy", "legacy-finanzen-test"]}
+{"tags": ["legacy", "legacy-moni-2016-test"]}
 ```
 
-Paperless wendet Tags beim Import an. `post_consume.py` setzt `legacy` zusätzlich als Fallback per API.
+## Fehlerbehebung
 
-## pi-nas: Berechtigungen (Permission denied)
+| Symptom | Lösung |
+|---------|--------|
+| Pipeline läuft trotzdem (Vision, `pending_review`) | **Bug bis Pipe 12.29:** `post_consume` sieht nur `originals/`-Pfad, nicht `consume/legacy/`. Fix: **12.30+** deployen (Marker + `DOCUMENT_TAGS`). Fehlimporte löschen, Consume leeren, neu importieren. |
+| `Eltern/Finanzen` auf Client leer, lokal auf NAS ok | mergerfs — `/mnt/ssd1` exportieren |
+| `LEGACY` leer in Container | `.env` + `force-recreate webserver` |
+| Permission denied | NFS `no_root_squash` oder ACL Gruppe `parents` |
 
-Wenn `ssh paperlessbackup@192.168.141.140 'ls /srv/nas/Eltern/Finanzen'` scheitert:
+### Fehlimport rückgängig (Pipeline lief versehentlich)
 
-1. **NFS-Export** für CT 121 (Option A) — umgeht SSH-User-Rechte
-2. Oder auf pi-nas ACL für Import-User, z. B.:
-   ```bash
-   # Beispiel — Pfade/User anpassen
-   setfacl -R -m u:paperlessbackup:rx /srv/nas/Eltern /srv/nas/Thomas
-   ```
-3. Inventur auf pi-nas als root:
-   ```bash
-   find /srv/nas -name '*.pdf' | wc -l
-   ```
+```bash
+# 1) Deploy Fix (Pipe ≥ 12.30)
+cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
 
-Neue Scans direkt in `consume/` (ohne `legacy/`) laufen weiter mit voller Pipeline.
+# 2) Reste im Consume
+rm -rf /mnt/paperless-data/consume/legacy/moni-2016-test/*
+
+# 3) In Paperless UI: 8 Test-Dokumente löschen (Filter legacy-moni-2016-test oder Datum)
+
+# 4) Neu importieren
+/opt/paperless-scripts/legacy-import-batch.sh \
+  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2016 \
+  moni-2016-test
+```
+
+Logs müssen zeigen: `Legacy-Import — Pipeline übersprungen` — **ohne** Vision/Ollama danach.
+
+Neue Scans in `consume/` (ohne `legacy/`) → volle Pipeline unverändert.
