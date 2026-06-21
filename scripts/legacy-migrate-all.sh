@@ -32,6 +32,8 @@ FAST_STALL_CYCLES="${LEGACY_FAST_STALL_CYCLES:-3}"  # 3×30s + Duplikat-Logs →
 DUPLOG_SINCE="${LEGACY_DUPLOG_SINCE:-3m}"
 DUPLICATE_DELETE_KEY="PAPERLESS_CONSUMER_DELETE_DUPLICATES"
 DUPLICATE_DELETE_BACKUP="__unset__"
+LOCK_FILE="$STATE_DIR/legacy-migrate.lock"
+API_TIMEOUT="${LEGACY_API_TIMEOUT:-10}"
 
 FROM_SLUG=""
 FROM_ACTIVE=0
@@ -79,7 +81,8 @@ legacy_api_count() {
   local token
   token=$(grep -m1 '^PAPERLESS_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
   [[ -n "$token" ]] || { echo "?"; return; }
-  curl -sf -H "Authorization: Token $token" \
+  curl -sf --connect-timeout "$API_TIMEOUT" --max-time "$API_TIMEOUT" \
+    -H "Authorization: Token $token" \
     'http://127.0.0.1:8000/api/documents/?tags__name__iexact=legacy&page_size=1' \
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('count','?'))" 2>/dev/null || echo "?"
 }
@@ -90,7 +93,27 @@ batch_done() {
 }
 
 log() {
-  echo "[$(date '+%F %T')] $*" | tee -a "$LOG_FILE"
+  local msg="[$(date '+%F %T')] $*"
+  if [[ -t 1 ]]; then
+    echo "$msg" | tee -a "$LOG_FILE"
+  else
+    echo "$msg" >>"$LOG_FILE"
+  fi
+}
+
+acquire_lock() {
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    echo "FEHLER: anderer legacy-migrate-all Lauf aktiv (Lock: $LOCK_FILE)" >&2
+    echo "Prüfen: pgrep -af legacy-migrate-all" >&2
+    exit 1
+  fi
+  echo "$$" >"$LOCK_FILE"
+}
+
+release_lock() {
+  flock -u 9 2>/dev/null || true
+  rm -f "$LOCK_FILE"
 }
 
 record_state() {
@@ -105,7 +128,7 @@ record_state() {
 
 consumer_logs() {
   [[ -f "$COMPOSE_FILE" ]] || return 0
-  docker compose -f "$COMPOSE_FILE" logs webserver --since "$DUPLOG_SINCE" 2>&1 || true
+  timeout 30 docker compose -f "$COMPOSE_FILE" logs webserver --since "$DUPLOG_SINCE" --tail 500 2>&1 || true
 }
 
 # Alle verbleibenden PDFs eines Batches erscheinen als Duplikat in den Paperless-Logs?
@@ -251,6 +274,7 @@ restore_delete_duplicates() {
 migration_trap_exit() {
   local rc=$?
   restore_delete_duplicates
+  release_lock
   exit "$rc"
 }
 
@@ -272,7 +296,7 @@ cleanup_consume() {
   done
 
   log "CLEANUP fertig: $total PDFs nach $SKIP_ROOT"
-  print_status
+  print_status quick
 }
 
 # PDFs aus skipped/ erneut importieren (optional nur ein Batch)
@@ -306,7 +330,6 @@ retry_skipped() {
 
   log "RETRY: $n PDFs → consume/legacy/$retry_slug/ (Originale bleiben in $SKIP_ROOT)"
   MIGRATION_ACTIVE=1
-  trap migration_trap_exit EXIT
   enable_delete_duplicates
 
   local lb la started finished sk
@@ -361,41 +384,54 @@ run_batch() {
   log "END $slug | erwartet: $expected | neu legacy: $imported | skipped: $sk | legacy gesamt: $la"
 }
 
+status_line() {
+  if [[ -t 1 ]]; then
+    echo "$@"
+  else
+    printf '%s\n' "$@" >>"$LOG_FILE"
+  fi
+}
+
 print_status() {
-  echo ""
-  echo "=== Legacy-Migration Status ==="
-  echo "State: $STATE_FILE"
-  echo "Skip:  $SKIP_ROOT"
-  echo ""
-  column -t -s $'\t' "$STATE_FILE" 2>/dev/null || cat "$STATE_FILE"
-  echo ""
-  local total_sk skip_pdfs
+  local mode="${1:-full}"
+  status_line ""
+  status_line "=== Legacy-Migration Status ==="
+  status_line "State: $STATE_FILE"
+  status_line "Skip:  $SKIP_ROOT"
+  status_line ""
+  if [[ -t 1 ]]; then
+    column -t -s $'\t' "$STATE_FILE" 2>/dev/null || cat "$STATE_FILE"
+  else
+    { column -t -s $'\t' "$STATE_FILE" 2>/dev/null || cat "$STATE_FILE"; } >>"$LOG_FILE"
+  fi
+  status_line ""
+  local total_sk skip_pdfs consume_left
   total_sk=$(awk -F'\t' 'NR>1{c++} END{print c+0}' "$SKIPPED_TSV")
   skip_pdfs=$(find "$SKIP_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' ')
-  echo "Skipped-Einträge (skipped.tsv): $total_sk"
-  echo "PDFs in $SKIP_ROOT: $skip_pdfs"
-  local consume_left
   consume_left=$(find "$CONSUME_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | wc -l | tr -d ' ')
-  echo "PDFs noch in consume/legacy: $consume_left"
+  status_line "Skipped-Einträge (skipped.tsv): $total_sk"
+  status_line "PDFs in $SKIP_ROOT: $skip_pdfs"
+  status_line "PDFs noch in consume/legacy: $consume_left"
   if [[ -d "$OLD_SKIP_ROOT" ]] && find "$OLD_SKIP_ROOT" -type f \( -iname '*.pdf' \) 2>/dev/null | grep -q .; then
-    echo "WARN: altes $OLD_SKIP_ROOT noch belegt — --cleanup-consume ausführen"
+    status_line "WARN: altes $OLD_SKIP_ROOT noch belegt — --cleanup-consume ausführen"
   fi
-  echo "Legacy-Doks jetzt: $(legacy_api_count)"
-  echo ""
-  local nas_total
-  nas_total=$(find "$NAS_ROOT" -type f \( -iname '*.pdf' \) \
-    ! -path '*/Vorsorge/Moni/2015/*' ! -path '*/Vorsorge/Moni/2016/*' 2>/dev/null | wc -l | tr -d ' ')
-  echo "NAS Inventur (ohne Moni 2015/2016): $nas_total PDFs"
-  echo "Log: $LOG_FILE"
-  echo ""
-  echo "Nachholen: $0 --retry-skipped"
+  status_line "Legacy-Doks jetzt: $(legacy_api_count)"
+  if [[ "$mode" == "full" ]]; then
+    status_line ""
+    local nas_total="?"
+    nas_total=$(timeout 120 find "$NAS_ROOT" -type f \( -iname '*.pdf' \) \
+      ! -path '*/Vorsorge/Moni/2015/*' ! -path '*/Vorsorge/Moni/2016/*' 2>/dev/null | wc -l | tr -d ' ') || true
+    status_line "NAS Inventur (ohne Moni 2015/2016): $nas_total PDFs"
+  fi
+  status_line "Log: $LOG_FILE"
+  status_line ""
+  status_line "Nachholen: $0 --retry-skipped"
 }
 
 # --- Batch-Liste (Reihenfolge) ---
 run_all_batches() {
   migrate_old_skip_folder
   MIGRATION_ACTIVE=1
-  trap migration_trap_exit EXIT
   enable_delete_duplicates
 
   run_batch "$NAS_ROOT/CS" cs
@@ -486,20 +522,25 @@ if [[ -n "$MARK_DONE" ]]; then
 fi
 
 if [[ "$DO_CLEANUP" -eq 1 ]]; then
-  exec >>"$LOG_FILE" 2>&1
+  acquire_lock
+  trap 'release_lock' EXIT
   log "=== --cleanup-consume (PID $$) ==="
   cleanup_consume
   exit 0
 fi
 
 if [[ "$DO_RETRY" -eq 1 ]]; then
+  acquire_lock
+  trap migration_trap_exit EXIT
   exec >>"$LOG_FILE" 2>&1
   log "=== --retry-skipped (PID $$) batch=${RETRY_BATCH:-all} ==="
   retry_skipped "$RETRY_BATCH"
-  print_status
+  print_status quick
   exit 0
 fi
 
+acquire_lock
+trap migration_trap_exit EXIT
 exec >>"$LOG_FILE" 2>&1
 log "=== legacy-migrate-all.sh start (PID $$) ==="
 run_all_batches
