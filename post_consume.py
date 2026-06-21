@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.31.py — Paperless-NGX Post-Consume Pipeline v12.31
+post_consume_v12.32.py — Paperless-NGX Post-Consume Pipeline v12.32
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.31"  # 12.31: Legacy-Tags legacy + legacy-<batch> via Marker-Pfad
+POST_CONSUME_VERSION = "12.32"  # 12.32: Legacy nur Tag legacy + Storage Path legacy/{title}
 import sys
 import json
 import logging
@@ -1860,6 +1860,11 @@ def _is_legacy_consume_path(path: str) -> bool:
 LEGACY_MARKER_DIR = Path(
     os.environ.get("LEGACY_MARKER_DIR", "/tmp/paperless_legacy_markers")
 )
+LEGACY_SET_BATCH_TAG = os.environ.get("LEGACY_SET_BATCH_TAG", "false").lower() in (
+    "1", "true", "yes",
+)
+LEGACY_STORAGE_PATH_NAME = os.environ.get("LEGACY_STORAGE_PATH_NAME", "Legacy")
+LEGACY_STORAGE_PATH_TEMPLATE = os.environ.get("LEGACY_STORAGE_PATH_TEMPLATE", "legacy/{title}")
 
 
 def _has_legacy_tags_in_env() -> bool:
@@ -1926,17 +1931,19 @@ def _is_legacy_import(marker_path: str = "") -> bool:
     return False
 
 
-def _ensure_legacy_tags(document_id: int, consume_path: str = "") -> None:
-    """Altbestand: legacy + legacy-<batch> setzen (Paperless liest .pdf.json nicht)."""
+def _finalize_legacy_import(document_id: int, consume_path: str = "") -> None:
+    """Altbestand: Tag legacy (+ optional Batch), Speicherpfad legacy/{title}."""
     tag_names = [os.environ.get("LEGACY_TAG", "legacy")]
-    batch_tag = _legacy_batch_tag_from_path(consume_path)
-    if batch_tag:
-        tag_names.append(batch_tag)
+    if LEGACY_SET_BATCH_TAG:
+        batch_tag = _legacy_batch_tag_from_path(consume_path)
+        if batch_tag:
+            tag_names.append(batch_tag)
+    patch: dict = {}
     try:
         doc = _http.get(
             _api_url(f"documents/{document_id}/"), headers=_headers(), timeout=30
         ).json()
-        existing = list(doc.get("tags") or [])
+        existing_tags = list(doc.get("tags") or [])
         to_add: list[int] = []
         for name in tag_names:
             tid = resolve_tag(name)
@@ -1946,20 +1953,44 @@ def _ensure_legacy_tags(document_id: int, consume_path: str = "") -> None:
                         "Legacy-Tag '%s' fehlt in Paperless — bitte in Admin anlegen", name
                     )
                 continue
-            if tid not in existing and tid not in to_add:
+            if tid not in existing_tags and tid not in to_add:
                 to_add.append(tid)
-        if not to_add:
-            log.info("Legacy-Import #%s — alle Legacy-Tags bereits gesetzt", document_id)
+        if to_add:
+            patch["tags"] = existing_tags + to_add
+
+        if STORAGE_MODE == "api":
+            sp_id = resolve_storage_path_with_template(
+                LEGACY_STORAGE_PATH_NAME, LEGACY_STORAGE_PATH_TEMPLATE
+            )
+            if sp_id and doc.get("storage_path") != sp_id:
+                patch["storage_path"] = sp_id
+            elif not sp_id:
+                log.warning(
+                    "Legacy-Speicherpfad '%s' nicht anlegbar", LEGACY_STORAGE_PATH_NAME
+                )
+
+        if not patch:
+            log.info("Legacy-Import #%s — bereits korrekt getaggt/gespeichert", document_id)
             return
         _http.patch(
             _api_url(f"documents/{document_id}/"),
             headers=_headers(),
-            json={"tags": existing + to_add},
+            json=patch,
             timeout=30,
         ).raise_for_status()
-        log.info("Legacy-Import #%s — Tags gesetzt: %s", document_id, tag_names)
+        log.info(
+            "Legacy-Import #%s — %s",
+            document_id,
+            ", ".join(
+                x for x in (
+                    f"Tags: {tag_names}" if to_add else "",
+                    f"Speicherpfad: {LEGACY_STORAGE_PATH_TEMPLATE}"
+                    if patch.get("storage_path") else "",
+                ) if x
+            ),
+        )
     except Exception as e:
-        log.warning("Legacy-Tags für #%s fehlgeschlagen: %s", document_id, e)
+        log.warning("Legacy-Finalize für #%s fehlgeschlagen: %s", document_id, e)
 
 
 def resolve_tag(name: str) -> Optional[int]:
@@ -2583,30 +2614,26 @@ def resolve_document_type(name: str, ocr_text: str = "", vision_meta: dict = Non
     return None
 
 
-def resolve_storage_path(pfad: str) -> Optional[int]:
-    """Storage Path suchen oder anlegen.
-    Template: pfad/{created_year}/{correspondent}/{title}
-    WICHTIG: {correspondent} wird von Paperless auf "none" gesetzt wenn kein Korrespondent
-    zugewiesen ist — das erzeugt Pfade wie Familie/Sonstiges/2017/none/Titel.
-    Workaround: correspondent im Template durch einen Literal-Fallback ersetzen
-    via Paperless-internem Fallback-Segment. Da Paperless das Template 1:1 verwendet,
-    lassen wir {correspondent} weg und ersetzen durch {document_type} als sinnvolleres
-    Gruppierungsmerkmal für dokumente ohne Korrespondent.
-    """
-    if not pfad:
+def resolve_storage_path_with_template(name: str, template: str) -> Optional[int]:
+    """Storage Path nach Name — Template explizit (z. B. legacy/{title})."""
+    if not name or not template:
         return None
     try:
-        sp_id = _get_by_name("storage_paths", pfad)
+        sp_id = _get_by_name("storage_paths", name)
         if sp_id:
             return sp_id
-        # Template ohne {correspondent} — verhindert "none"-Verzeichnisse
-        # Stattdessen: Ordner/Jahr/Titel (flacher, robuster)
-        template = f"{pfad}/{{created_year}}/{{title}}"
-        return _create_obj("storage_paths", pfad, {"path": template})
+        return _create_obj("storage_paths", name, {"path": template})
     except Exception as e:
-        log.warning("Storage Path '%s': %s", pfad, e)
+        log.warning("Storage Path '%s': %s", name, e)
         return None
 
+
+def resolve_storage_path(pfad: str) -> Optional[int]:
+    """Storage Path suchen oder anlegen (Pipeline: pfad/{created_year}/{title})."""
+    if not pfad:
+        return None
+    template = f"{pfad}/{{created_year}}/{{title}}"
+    return resolve_storage_path_with_template(pfad, template)
 
 
 def ensure_all_storage_paths(manifest: list[dict]):
@@ -4091,7 +4118,7 @@ if __name__ == "__main__":
                 marker_path or "-",
             )
             if DOCUMENT_ID and PAPERLESS_TOKEN:
-                _ensure_legacy_tags(int(DOCUMENT_ID), marker_path)
+                _finalize_legacy_import(int(DOCUMENT_ID), marker_path)
             sys.exit(0)
 
         lock_fd = _acquire_pipeline_lock()

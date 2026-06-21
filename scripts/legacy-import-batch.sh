@@ -77,6 +77,17 @@ fi
 DEST="${CONSUME_LEGACY_ROOT%/}/${BATCH_SLUG}"
 mkdir -p "$DEST"
 
+# Alte .pdf.json-Waisen (frühere Script-Version) — Paperless liest sie nicht, erzeugt nur Log-Warnungen
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  shopt -s nullglob
+  orphans=( "$DEST"/*.pdf.json "$DEST"/*/*.pdf.json )
+  if [[ ${#orphans[@]} -gt 0 ]]; then
+    echo "==> Entferne ${#orphans[@]} alte Sidecar-Waisen (*.pdf.json)"
+    rm -f "${orphans[@]}"
+  fi
+  shopt -u nullglob
+fi
+
 mapfile -d '' PDFS < <(find "$SRC" -type f \( -iname '*.pdf' \) -print0 | sort -z)
 TOTAL="${#PDFS[@]}"
 
@@ -93,7 +104,7 @@ fi
 echo "==> Quelle:  $SRC"
 echo "==> Ziel:    $DEST"
 echo "==> PDFs:    ${#PDFS[@]}"
-echo "==> Tag:     $LEGACY_TAG + legacy-${BATCH_SLUG} (via post_consume nach Import)"
+echo "==> Tag:     $LEGACY_TAG (Speicherpfad: legacy/{title} via post_consume)"
 [[ "$DRY_RUN" -eq 1 ]] && echo "==> Modus:   dry-run"
 
 RSYNC_OPTS=(-a --ignore-existing)
