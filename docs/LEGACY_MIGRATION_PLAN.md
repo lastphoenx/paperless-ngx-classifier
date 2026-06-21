@@ -2,144 +2,89 @@
 
 Stand: Juni 2026 · Quelle: `/mnt/nas-legacy/Eltern/Finanzen` · ~2322 PDFs (ohne `Vorsorge/Moni/2015` und `2016`)
 
-Geschätzte Dauer: **~6 s/PDF** → große Batches mehrere Stunden.
+**Orchestrierung:** `scripts/legacy-migrate-all.sh` — nicht manuell warten/skippen.
 
-## Vor dem Start
+## Einmalig vorbereiten
 
 ```bash
-# 1) Pipe 12.32 + .env (LEGACY_SET_BATCH_TAG=false, LEGACY_STORAGE_PATH_*)
 cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
-
-# 2) Alte Test-Dokumente in Paperless UI löschen (legacy-moni-2015-test, blkb-smoke, none/none-Tests)
-
-# 3) Inventur (optional)
-find /mnt/nas-legacy/Eltern/Finanzen -name '*.pdf' \
-  ! -path '*/Vorsorge/Moni/2015/*' \
-  ! -path '*/Vorsorge/Moni/2016/*' | wc -l
-
-# PDFs pro Top-Level-Ordner
-for d in /mnt/nas-legacy/Eltern/Finanzen/*/; do
-  printf '%5d  %s\n' "$(find "$d" -name '*.pdf' | wc -l)" "$(basename "$d")"
-done | sort -rn
+# Pipe 12.32 + LEGACY_* in /opt/paperless/.env — siehe LEGACY_IMPORT.md
 ```
 
-## Warten bis Batch fertig
+Alte kaputte Scripts auf CT121 stoppen:
 
 ```bash
-# Wiederholen bis leer (oder watch):
-watch -n 30 'ls /mnt/paperless-data/consume/legacy/BATCHNAME/ 2>/dev/null | wc -l'
-
-# Oder einmalig:
-test -z "$(ls -A /mnt/paperless-data/consume/legacy/BATCHNAME/ 2>/dev/null)" && echo FERTIG
+pkill -f legacy-migrate-all.sh || true
+pkill -f legacy-migrate-resume.sh || true
 ```
 
-Nächsten Batch **erst** starten, wenn der vorherige Consume-Ordner leer ist (`PAPERLESS_TASK_WORKERS=1`).
-
-## Migrations-Reihenfolge
-
-Klein → groß. Jede Zeile = ein Befehl, nacheinander ausführen.
-
-### Phase 1 — kleine Ordner (~30–60 Min gesamt)
+Bereits erledigte Batches markieren (z. B. nach manuellem CS/Policen-Lauf):
 
 ```bash
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/CS cs
-# warten …
-
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Policen policen
-# warten …
-
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Lohn lohn
-# warten …
-
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Fano fano
-# warten …
-
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Bestellungen bestellungen
-# warten …
+/opt/paperless-scripts/legacy-migrate-all.sh --mark-done cs,policen
 ```
 
-### Phase 2 — mittel (~25–45 Min pro Batch)
+Hängende PDFs in consume (Duplikate) — einmalig wegräumen:
+
+```bash
+mkdir -p /mnt/paperless-data/consume/_skipped/policen
+find /mnt/paperless-data/consume/legacy/policen -type f -iname '*.pdf' \
+  -exec mv -t /mnt/paperless-data/consume/_skipped/policen/ {} + 2>/dev/null || true
+rm -rf /mnt/paperless-data/consume/legacy/policen
+```
+
+## Migration starten (unbeaufsichtigt)
+
+```bash
+nohup /opt/paperless-scripts/legacy-migrate-all.sh >> /mnt/paperless-data/legacy-migrate/nohup.out 2>&1 &
+```
+
+Ab bestimmtem Batch (z. B. lohn):
+
+```bash
+nohup /opt/paperless-scripts/legacy-migrate-all.sh --from lohn >> /mnt/paperless-data/legacy-migrate/nohup.out 2>&1 &
+```
+
+## Überblick — jederzeit
+
+```bash
+/opt/paperless-scripts/legacy-migrate-all.sh --status
+```
+
+Zeigt Tabelle pro Batch:
+
+| Spalte | Bedeutung |
+|--------|-----------|
+| `expected` | PDFs auf NAS in diesem Ordner |
+| `legacy_before` / `legacy_after` | Paperless-Tag `legacy` vor/nach Batch |
+| `skipped` | nach `_skipped` verschoben (Duplikate/Hänger) |
+
+Details jeder übersprungenen Datei:
+
+```bash
+column -t -s $'\t' /mnt/paperless-data/legacy-migrate/skipped.tsv
+```
+
+Vollständiges Log:
+
+```bash
+tail -f /mnt/paperless-data/legacy-migrate/migrate.log
+```
+
+## Automatik bei Hängern
+
+- Wartet auf **PDF-Dateien** (nicht leere Unterordner).
+- **5 Minuten** ohne Fortschritt → Rest nach `consume/_skipped/<batch>/`, Batch wird **done** markiert, weiter mit nächstem Ordner.
+- Kein manuelles Eingreifen nötig.
+
+## Einzelbatch (manuell)
 
 ```bash
 /opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/BLKB blkb
-# ~242 PDFs · warten …
-
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Ameritrade ameritrade
-# warten …
-
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Erb_Bern erb-bern
-# warten …
-
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Erbschaft_Gassacker erbschaft-gassacker
-# warten …
-```
-
-### Phase 3 — Vorsorge (Moni 2015/2016 auslassen)
-
-Bereits in Paperless oder Test — **nicht** nochmals importieren.
-
-```bash
-# Nur Unterordner einzeln, NICHT Moni/2015 und Moni/2016:
-for sub in /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/*/; do
-  base=$(basename "$sub")
-  [[ "$base" == "Moni" ]] && continue
-  echo "=== $base ===" && find "$sub" -name '*.pdf' | wc -l
-done
-
-# Beispiel einzelner Unterordner (Namen anpassen nach Inventur):
-# /opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/<name> vorsorge-<name>
-```
-
-Für `Vorsorge/Moni`: nur Jahre **≠** 2015 und 2016:
-
-```bash
-for y in /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/*/; do
-  base=$(basename "$y")
-  [[ "$base" == "2015" || "$base" == "2016" ]] && continue
-  /opt/paperless-scripts/legacy-import-batch.sh "$y" "vorsorge-moni-$base"
-  # warten bis consume leer …
-done
-```
-
-### Phase 4 — große Batches (abends / nachts)
-
-```bash
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Steuern steuern
-# ~800 PDFs · ~1.5 h · warten …
-
-/opt/paperless-scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Rechnungen rechnungen
-# ~800 PDFs · ~1.5 h · warten …
-```
-
-Weitere Top-Level-Ordner aus der Inventur (`Familien_*`, `Jörg*`, …) analog:
-
-```bash
-/opt/paperless-scripts/legacy-import-batch.sh "/mnt/nas-legacy/Eltern/Finanzen/ORDNER" batch-slug
-```
-
-### Phase 5 — Einzel-PDFs im Wurzelverzeichnis
-
-```bash
-mkdir -p /mnt/paperless-data/consume/legacy/finanzen-root
-find /mnt/nas-legacy/Eltern/Finanzen -maxdepth 1 -name '*.pdf' -exec cp -n {} /mnt/paperless-data/consume/legacy/finanzen-root/ \;
-# warten …
-```
-
-## Stichprobe nach jedem großen Batch
-
-```bash
-# Anzahl legacy-Doks in API
-TOKEN=$(grep '^PAPERLESS_TOKEN=' /opt/paperless/.env | cut -d= -f2-)
-curl -s -H "Authorization: Token $TOKEN" \
-  'http://127.0.0.1:8000/api/documents/?tags__id__all=TAG_ID_LEGACY&page_size=1' | \
-  python3 -c "import sys,json; print(json.load(sys.stdin).get('count'))"
-
-# Physisch auf ssd1
-find /mnt/ssd1/Paperless/media/documents/originals/legacy -type f | wc -l
 ```
 
 ## Nach Abschluss
 
-- UI: Filter `Tag: legacy` — Stichproben öffnen (PDF, Speicherpfad `legacy/...`)
-- NAS-Originale unter `Eltern/Finanzen` **bleiben** (nur Kopien importiert)
-- Optional: `rm -rf /mnt/ssd2/Paperless.mergerfs-alt-*` auf pi-nas nach finaler Prüfung
+- `--status`: Summe `legacy_after` vs. NAS-Inventur
+- `skipped.tsv`: welche Dateien nicht importiert wurden (meist schon in Paperless)
+- NAS-Originale bleiben unverändert unter `Eltern/Finanzen`
