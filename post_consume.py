@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.28.py — Paperless-NGX Post-Consume Pipeline v12.28
+post_consume_v12.29.py — Paperless-NGX Post-Consume Pipeline v12.29
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.28"  # 12.28: Pipeline-Lock + API-URL Fix (Race bei parallelen Consumes)
+POST_CONSUME_VERSION = "12.29"  # 12.29: Legacy-Import — Pipeline überspringen, nur Legacy-Tag
 import sys
 import json
 import logging
@@ -1845,6 +1845,44 @@ def _load_known_tags() -> None:
         log.warning("Tag-Cache laden fehlgeschlagen: %s", e)
 
 
+def _is_legacy_consume_path(path: str) -> bool:
+    """True wenn DOCUMENT_SOURCE_PATH unter consume/legacy/ (oder LEGACY_CONSUME_MARKERS)."""
+    markers = [
+        m.strip() for m in os.environ.get("LEGACY_CONSUME_MARKERS", "/legacy/").split(",")
+        if m.strip()
+    ]
+    if not markers or not path:
+        return False
+    p = path.replace("\\", "/").lower()
+    return any(m.lower() in p for m in markers)
+
+
+def _ensure_legacy_tag(document_id: int) -> None:
+    """Altbestand: Legacy-Tag setzen (Fallback wenn Sidecar beim Consume fehlte)."""
+    tag_name = os.environ.get("LEGACY_TAG", "legacy")
+    tid = resolve_tag(tag_name)
+    if not tid:
+        log.warning("Legacy-Tag '%s' fehlt in Paperless — bitte in Admin anlegen", tag_name)
+        return
+    try:
+        doc = _http.get(
+            _api_url(f"documents/{document_id}/"), headers=_headers(), timeout=30
+        ).json()
+        existing = list(doc.get("tags") or [])
+        if tid in existing:
+            log.info("Legacy-Import #%s — Tag '%s' bereits gesetzt", document_id, tag_name)
+            return
+        _http.patch(
+            _api_url(f"documents/{document_id}/"),
+            headers=_headers(),
+            json={"tags": existing + [tid]},
+            timeout=30,
+        ).raise_for_status()
+        log.info("Legacy-Import #%s — Tag '%s' gesetzt", document_id, tag_name)
+    except Exception as e:
+        log.warning("Legacy-Tag für #%s fehlgeschlagen: %s", document_id, e)
+
+
 def resolve_tag(name: str) -> Optional[int]:
     """Tag-ID nachschlagen — NUR bestehende Tags.
     Neue Tags werden NICHT angelegt (nur menschliche Pflege erlaubt).
@@ -2590,6 +2628,7 @@ def main():
         sys.exit(1)
 
     document_id = int(DOCUMENT_ID)
+
     start_time = time.monotonic()
 
     # ── Manifest + Korrekturen laden ──────────────────────────────────────────
@@ -3960,10 +3999,23 @@ def is_last_consumer() -> bool:
 
 
 if __name__ == "__main__":
-    lock_fd = _acquire_pipeline_lock()
     register_pid()
     try:
-        main()
+        # Legacy: kein Pipeline-Lock, keine Vision/LLM — nur Tag-Fallback
+        if _is_legacy_consume_path(DOCUMENT_SOURCE_PATH):
+            log.info(
+                "Legacy-Import — Pipeline übersprungen (Pfad: %s)",
+                DOCUMENT_SOURCE_PATH or DOCUMENT_FILE_NAME,
+            )
+            if DOCUMENT_ID and PAPERLESS_TOKEN:
+                _ensure_legacy_tag(int(DOCUMENT_ID))
+            sys.exit(0)
+
+        lock_fd = _acquire_pipeline_lock()
+        try:
+            main()
+        finally:
+            _release_pipeline_lock(lock_fd)
     except Exception:
         log.critical("Unbehandelter Fehler:\n%s", traceback.format_exc())
     finally:
@@ -3983,5 +4035,4 @@ if __name__ == "__main__":
                 process_escalation_queue()
             finally:
                 ESCALATION_LOCK.unlink(missing_ok=True)
-        _release_pipeline_lock(lock_fd)
         sys.exit(0)

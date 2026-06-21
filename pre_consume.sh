@@ -1,5 +1,6 @@
 #!/bin/bash
 # Pre-Consume Skript für Paperless-NGX
+# VERSION: 1.1 — Legacy-Pfad-Erkennung (LEGACY_CONSUME_MARKERS)
 # Schritt 1: PDF-Qualität via ocrmypdf verbessern
 # Schritt 2: Swiss QR Bill Daten extrahieren (Sidecar JSON)
 # Läuft auf CT 121
@@ -22,6 +23,21 @@ if [ ! -f "$file" ]; then
     echo "[pre_consume] Fehler: Datei nicht gefunden: $file" >&2; exit 1
 fi
 echo "[pre_consume] Verarbeite: $file"
+
+# ── Legacy-Altbestand: keine OCR / kein QR (nur Paperless-Indexierung) ────────
+_legacy_markers="${LEGACY_CONSUME_MARKERS:-/legacy/}"
+_file_lc="${file//\\//}"
+_file_lc="${_file_lc,,}"
+IFS=',' read -r -a _markers <<< "$_legacy_markers"
+for _m in "${_markers[@]}"; do
+    _m="${_m#"${_m%%[![:space:]]*}"}"
+    _m="${_m%"${_m##*[![:space:]]}"}"
+    [[ -z "$_m" ]] && continue
+    if [[ "$_file_lc" == *"${_m,,}"* ]]; then
+        echo "[pre_consume] Legacy-Import — übersprungen ($file)"
+        exit 0
+    fi
+done
 
 # ── Pipeline-Lock (shared mit post_consume.py — serialisiert OCR bei Parallel-Workern) ──
 PIPELINE_LOCK="/tmp/paperless_consume_pipeline.lock"

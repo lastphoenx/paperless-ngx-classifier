@@ -48,4 +48,4 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 |---|---|---|
 | UI | 2.29 | Doc Review: Tags bei Freigeben, alle CFs editierbar |
 | BE | 2.16 | Doc Review: tag_ids bei approve |
-| Pipe | 12.28 | Pipeline-Lock + API-URL Fix (Consume-Race) |
+| Pipe | 12.29 | Legacy-Import: Pipeline skip + NAS-Batch-Script |
