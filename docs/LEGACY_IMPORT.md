@@ -38,6 +38,8 @@ LEGACY_STORAGE_PATH_TEMPLATE=legacy/{title}
 PAPERLESS_CONSUMER_RECURSIVE=true
 PAPERLESS_OCR_MODE=skip
 PAPERLESS_TASK_WORKERS=1
+# Optional manuell; legacy-migrate-all.sh setzt DELETE_DUPLICATES temporär auf true:
+# PAPERLESS_CONSUMER_DELETE_DUPLICATES=true
 ```
 
 Nach Änderung: `cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh`
@@ -104,6 +106,8 @@ Logs: `Legacy-Import — Pipeline übersprungen` — kein Vision/Ollama.
 | Read-only / Webserver-Crash | Kein `/mnt/ssd1` ro-Gesamtexport; siehe ct121-nfs-fix.md |
 | Stale file handle | `umount` + `mount -a` auf CT121 nach nfs-server restart |
 | `none/none/` statt `legacy/` | `.env` LEGACY_STORAGE_* + Pipe 12.32 + recreate webserver |
+| Migration hängt / Duplikate in consume | `legacy-migrate-all.sh --cleanup-consume`; Skip-Ordner nie unter `consume/` |
+| `duplicate of #NNN` | Inhalt schon in Paperless — kein Re-Import nötig; optional `legacy`-Tag am bestehenden Doc |
 | Permission denied auf NAS | Export `no_root_squash` für `/srv/nas` ro |
 
 Neue Scans in `consume/` (ohne `legacy/`) → volle Pipeline unverändert.
