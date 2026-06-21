@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Legacy-Altbestand: NAS-Ordner → consume/legacy/<batch>/ + Paperless-Sidecar (Tag legacy)
+# Legacy-Altbestand: NAS-Ordner → consume/legacy/<batch>/ (Tags setzt post_consume per API)
 #
 # Aufruf (auf dem Paperless-Host CT 121, nach NFS-Mount):
 #   ./scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen eltern-finanzen --limit 10
@@ -28,7 +28,7 @@ Argumente:
 
 Optionen:
   --limit N       Nur die ersten N PDFs kopieren (Testlauf)
-  --dry-run       Zeigt rsync/Sidecars an, schreibt nichts
+  --dry-run       Zeigt rsync an, schreibt nichts
   -h, --help      Diese Hilfe
 
 Umgebungsvariablen:
@@ -42,34 +42,6 @@ EOF
 
 slugify() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'
-}
-
-write_sidecar() {
-  local pdf="$1"
-  local batch_slug="$2"
-  local sidecar="${pdf}.json"
-  local batch_tag="legacy-${batch_slug}"
-
-  if [[ -f "$sidecar" ]]; then
-    echo "  Sidecar existiert: $(basename "$sidecar")"
-    return 0
-  fi
-
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "  [dry-run] Sidecar: $(basename "$sidecar") tags=[$LEGACY_TAG, $batch_tag]"
-    return 0
-  fi
-
-  python3 - "$sidecar" "$LEGACY_TAG" "$batch_tag" <<'PY'
-import json
-import sys
-
-path, legacy_tag, batch_tag = sys.argv[1:4]
-with open(path, "w", encoding="utf-8") as f:
-    json.dump({"tags": [legacy_tag, batch_tag]}, f, ensure_ascii=False)
-    f.write("\n")
-PY
-  echo "  Sidecar: $(basename "$sidecar")"
 }
 
 if [[ $# -lt 2 ]]; then
@@ -121,7 +93,7 @@ fi
 echo "==> Quelle:  $SRC"
 echo "==> Ziel:    $DEST"
 echo "==> PDFs:    ${#PDFS[@]}"
-echo "==> Tag:     $LEGACY_TAG + legacy-${BATCH_SLUG}"
+echo "==> Tag:     $LEGACY_TAG + legacy-${BATCH_SLUG} (via post_consume nach Import)"
 [[ "$DRY_RUN" -eq 1 ]] && echo "==> Modus:   dry-run"
 
 RSYNC_OPTS=(-a --ignore-existing)
@@ -139,7 +111,6 @@ for pdf in "${PDFS[@]}"; do
 
   echo "→ $(basename "$pdf")"
   rsync "${RSYNC_OPTS[@]}" "$pdf" "$dest_pdf"
-  write_sidecar "$dest_pdf" "$BATCH_SLUG"
 done
 
 echo ""

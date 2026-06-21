@@ -83,38 +83,38 @@ Kopiert u. a. `pre_consume.sh`, `post_consume.py`, `legacy-import-batch.sh` nach
 ## Ablauf
 
 ```
-/mnt/nas-legacy/...  →  consume/legacy/<batch>/  (+ .pdf.json)
+/mnt/nas-legacy/...  →  consume/legacy/<batch>/
                               → pre_consume skip
                               → Paperless index (OCR skip)
-                              → post_consume nur Tag legacy
+                              → post_consume setzt Tags legacy + legacy-<batch>
 ```
 
 **Niemals** NAS-Originale direkt als `consume/` mounten — Paperless **löscht** verarbeitete Dateien dort.
 
-## Erster Test: Moni/2016 (kleiner Ordner)
+## Erster Test: Moni/2015 (kleiner Ordner)
 
 Kandidat für einen ersten Lauf (ca. 10 Jahre alt — ggf. später auf NAS löschen, in Paperless bleibt es).
 
 ```bash
 # Wie viele PDFs?
-find /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2016 -name '*.pdf' | wc -l
+find /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2015 -name '*.pdf' | wc -l
 
 # Dry-run
 /opt/paperless-scripts/legacy-import-batch.sh \
-  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2016 \
-  moni-2016-test \
+  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2015 \
+  moni-2015-test \
   --dry-run
 
 # Echter Lauf (ganzer Ordner — ohne --limit)
 /opt/paperless-scripts/legacy-import-batch.sh \
-  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2016 \
-  moni-2016-test
+  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2015 \
+  moni-2015-test
 ```
 
 ### Erfolg prüfen
 
-1. `consume/legacy/moni-2016-test/` leert sich
-2. Paperless: Filter `Tag: legacy` und `Tag: legacy-moni-2016-test`
+1. `consume/legacy/moni-2015-test/` leert sich
+2. Paperless: Filter `Tag: legacy` und `Tag: legacy-moni-2015-test`
 3. Logs:
    ```bash
    docker compose -f /opt/paperless/docker-compose.yml logs webserver 2>&1 | \
@@ -144,13 +144,14 @@ Pro Batch warten bis `consume/legacy/<batch>/` leer ist:
 
 `rsync --ignore-existing`: erneuter Lauf kopiert keine Duplikate.
 
-## Sidecar-Format
+## Tags
 
-`rechnung.pdf` → `rechnung.pdf.json`:
+Paperless liest **keine** `.pdf.json`-Sidecars. Tags setzt `post_consume.py` per API nach dem Import:
 
-```json
-{"tags": ["legacy", "legacy-moni-2016-test"]}
-```
+- `legacy` (aus `LEGACY_TAG` in `.env`)
+- `legacy-<batch>` (aus Ordnername, z. B. `legacy-moni-2015-test`)
+
+Beide Tags müssen in Paperless **vorher** angelegt sein (Admin → Tags, Zuweisungsregel: Keine).
 
 ## Fehlerbehebung
 
@@ -168,14 +169,14 @@ Pro Batch warten bis `consume/legacy/<batch>/` leer ist:
 cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
 
 # 2) Reste im Consume
-rm -rf /mnt/paperless-data/consume/legacy/moni-2016-test/*
+rm -rf /mnt/paperless-data/consume/legacy/moni-2015-test/*
 
-# 3) In Paperless UI: 8 Test-Dokumente löschen (Filter legacy-moni-2016-test oder Datum)
+# 3) In Paperless UI: Test-Dokumente löschen (Filter legacy-moni-2015-test oder Datum)
 
 # 4) Neu importieren
 /opt/paperless-scripts/legacy-import-batch.sh \
-  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2016 \
-  moni-2016-test
+  /mnt/nas-legacy/Eltern/Finanzen/Vorsorge/Moni/2015 \
+  moni-2015-test
 ```
 
 Logs müssen zeigen: `Legacy-Import — Pipeline übersprungen` — **ohne** Vision/Ollama danach.
