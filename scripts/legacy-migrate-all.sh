@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Legacy-Migration: alle Batches nacheinander, mit Fortschritts-Log und Auto-Skip bei Hängern.
+# VERSION: 1.4 — Legacy-Migration Orchestrierung
 #
 #   ./scripts/legacy-migrate-all.sh              # voller Lauf
 #   ./scripts/legacy-migrate-all.sh --status     # Übersicht
@@ -254,6 +254,7 @@ enable_delete_duplicates() {
   if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
     docker compose -f "$COMPOSE_FILE" up -d --force-recreate webserver
     log "Paperless webserver neu erstellt (DELETE_DUPLICATES aktiv)"
+    wait_paperless_api || true
   fi
 }
 
@@ -345,11 +346,26 @@ retry_skipped() {
 
 legacy_import_delta() {
   local lb="$1" la="$2"
-  if [[ "$lb" == "?" || "$la" == "?" ]]; then
-    echo "?"
-  else
+  if [[ "$lb" =~ ^[0-9]+$ && "$la" =~ ^[0-9]+$ ]]; then
     echo $((la - lb))
+  else
+    echo "?"
   fi
+}
+
+wait_paperless_api() {
+  local i n
+  for i in $(seq 1 30); do
+    n=$(legacy_api_count)
+    [[ "$n" =~ ^[0-9]+$ ]] && return 0
+    sleep 2
+  done
+  log "WARN: Paperless API nach 60s nicht erreichbar"
+  return 1
+}
+
+run_batch_safe() {
+  run_batch "$@" || log "FEHLER: Batch '$2' abgebrochen (exit $?) — weiter mit nächstem"
 }
 
 run_batch() {
@@ -381,7 +397,7 @@ run_batch() {
     return 0
   fi
 
-  "$IMPORT_SH" "$src" "$slug"
+  "$IMPORT_SH" "$src" "$slug" >>"$LOG_FILE" 2>&1
   wait_consume_batch "$slug"
 
   la=$(legacy_api_count)
@@ -442,38 +458,38 @@ run_all_batches() {
   MIGRATION_ACTIVE=1
   enable_delete_duplicates
 
-  run_batch "$NAS_ROOT/CS" cs
-  run_batch "$NAS_ROOT/Policen" policen
-  run_batch "$NAS_ROOT/Lohn" lohn
-  run_batch "$NAS_ROOT/Fano" fano
-  run_batch "$NAS_ROOT/Bestellungen" bestellungen
-  run_batch "$NAS_ROOT/BLKB" blkb
-  run_batch "$NAS_ROOT/Ameritrade" ameritrade
-  run_batch "$NAS_ROOT/Erb_Bern" erb-bern
-  run_batch "$NAS_ROOT/Erbschaft_Gassacker" erbschaft-gassacker
+  run_batch_safe "$NAS_ROOT/CS" cs
+  run_batch_safe "$NAS_ROOT/Policen" policen
+  run_batch_safe "$NAS_ROOT/Lohn" lohn
+  run_batch_safe "$NAS_ROOT/Fano" fano
+  run_batch_safe "$NAS_ROOT/Bestellungen" bestellungen
+  run_batch_safe "$NAS_ROOT/BLKB" blkb
+  run_batch_safe "$NAS_ROOT/Ameritrade" ameritrade
+  run_batch_safe "$NAS_ROOT/Erb_Bern" erb-bern
+  run_batch_safe "$NAS_ROOT/Erbschaft_Gassacker" erbschaft-gassacker
 
   local y base sub name slug
   for y in "$NAS_ROOT/Vorsorge/Moni"/*/; do
     [[ -d "$y" ]] || continue
     base=$(basename "$y")
     [[ "$base" == "2015" || "$base" == "2016" ]] && continue
-    run_batch "$y" "vorsorge-moni-$base"
+    run_batch_safe "$y" "vorsorge-moni-$base"
   done
   for sub in "$NAS_ROOT/Vorsorge"/*/; do
     [[ -d "$sub" ]] || continue
     [[ "$(basename "$sub")" == "Moni" ]] && continue
-    run_batch "$sub" "vorsorge-$(basename "$sub" | tr '[:upper:]' '[:lower:]')"
+    run_batch_safe "$sub" "vorsorge-$(basename "$sub" | tr '[:upper:]' '[:lower:]')"
   done
 
-  run_batch "$NAS_ROOT/Steuern" steuern
-  run_batch "$NAS_ROOT/Rechnungen" rechnungen
+  run_batch_safe "$NAS_ROOT/Steuern" steuern
+  run_batch_safe "$NAS_ROOT/Rechnungen" rechnungen
 
   local SKIP_RE='^(CS|Policen|Lohn|Fano|Bestellungen|BLKB|Ameritrade|Erb_Bern|Erbschaft_Gassacker|Steuern|Rechnungen|Vorsorge)$'
   for d in "$NAS_ROOT"/*/; do
     name=$(basename "$d")
     [[ "$name" =~ $SKIP_RE ]] && continue
     slug=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g')
-    run_batch "$d" "$slug"
+    run_batch_safe "$d" "$slug"
   done
 
   # Wurzel-PDFs
@@ -522,11 +538,23 @@ done
 if [[ -n "$MARK_DONE" ]]; then
   IFS=',' read -ra _marks <<<"$MARK_DONE"
   for _m in "${_marks[@]}"; do
+    _m="${_m// /}"
+    [[ -z "$_m" ]] && continue
+    if batch_done "$_m"; then
+      echo "bereits done: $_m"
+      continue
+    fi
     record_state "$_m" "done" "(manuell)" "?" "?" "$(legacy_api_count)" "?" "$(date '+%F %T')" "$(date '+%F %T')"
     echo "markiert: $_m"
   done
   print_status
   exit 0
+fi
+
+# Syntax-Check vor Lauf (fängt Bash-Fehler wie ungültige $(( )) ab)
+if ! bash -n "$0" 2>/dev/null; then
+  echo "FEHLER: Syntax-Check fehlgeschlagen — $0" >&2
+  exit 1
 fi
 
 if [[ "$DO_CLEANUP" -eq 1 ]]; then
