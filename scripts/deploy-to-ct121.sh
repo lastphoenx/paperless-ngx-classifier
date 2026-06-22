@@ -37,6 +37,7 @@ FILES=(
   scripts/legacy-migrate-all.sh
   scripts/legacy-one-batch.sh
   scripts/legacy-tasks-summary.sh
+  scripts/legacy-duplicate-audit.sh
 )
 
 echo "==> Repo:   $REPO_DIR"

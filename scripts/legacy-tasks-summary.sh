@@ -19,8 +19,17 @@ if [[ -n "$TOKEN" ]]; then
     name="${spec#*:}"
     n=$(curl -sf --connect-timeout 5 --max-time 15 \
       -H "Authorization: Token $TOKEN" \
-      "http://127.0.0.1:8000/api/tasks/?task_name=consume_file&status=$key&page_size=1" \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('count','?'))" 2>/dev/null || echo "?")
+      "http://127.0.0.1:8000/api/tasks/?task_name=consume_file&status=$key" \
+      | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if isinstance(d, list):
+    print(len(d))
+elif isinstance(d, dict):
+    print(d.get('count', len(d.get('results', []))))
+else:
+    print('?')
+" 2>/dev/null || echo "?")
     echo "  Dateiaufgaben $name: $n"
   done
 
