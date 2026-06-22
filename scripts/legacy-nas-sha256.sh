@@ -19,6 +19,7 @@ ENV_FILE="${PAPERLESS_ENV:-/opt/paperless/.env}"
 INVENTORY="${LEGACY_NAS_SHA256_TSV:-$STATE_DIR/nas-sha256.tsv}"
 DUPES_TSV="${LEGACY_NAS_DUPES_TSV:-$STATE_DIR/nas-duplicates.tsv}"
 MISSING_TSV="${LEGACY_NAS_MISSING_TSV:-$STATE_DIR/nas-missing-import.tsv}"
+MISSING_DONE="${LEGACY_NAS_MISSING_DONE:-$STATE_DIR/nas-missing-done.lst}"
 SUMMARY_FILE="${LEGACY_NAS_SHA256_SUMMARY:-$STATE_DIR/nas-sha256-summary.txt}"
 # Standard: Moni 2015/2016 aus Migration-Plan ausschliessen (| als Trenner)
 PL_CACHE="${LEGACY_PL_CHECKSUM_CACHE:-$STATE_DIR/paperless-checksums.tsv}"
@@ -34,9 +35,11 @@ usage() {
   echo "Optionen (vs-paperless|fetch-paperless): --refresh-paperless  Checksums neu von API"
   echo "Optionen (duplicates): --min N   nur Gruppen mit >= N Dateien (default 2)"
   echo "Optionen (copy-missing): --batch NAME  consume/legacy/NAME/ (default: queue)"
-  echo "                         --chunk N     nur erste N fehlende PDFs"
+  echo "                         --chunk N     nur erste N noch nicht kopierte PDFs"
   echo "                         --dry-run"
+  echo "                         --reset-done  Fortschritt ($MISSING_DONE) leeren"
   echo ""
+  echo "Fortschritt copy-missing: $MISSING_DONE (eine Zeile pro kopiertem relpath)"
   echo "Ausgabe: $INVENTORY | missing: $MISSING_TSV"
 }
 
@@ -564,13 +567,26 @@ cmd_fetch_paperless() {
     run_python fetch-paperless
 }
 
+missing_already_done() {
+  local rel="$1"
+  [[ -f "$MISSING_DONE" ]] && grep -qxF "$rel" "$MISSING_DONE" 2>/dev/null
+}
+
+mark_missing_done() {
+  local rel="$1"
+  mkdir -p "$(dirname "$MISSING_DONE")"
+  touch "$MISSING_DONE"
+  grep -qxF "$rel" "$MISSING_DONE" 2>/dev/null || echo "$rel" >>"$MISSING_DONE"
+}
+
 cmd_copy_missing() {
-  local batch="queue" chunk=0 dry=0
+  local batch="queue" chunk=0 dry=0 reset=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --batch) batch="${2:?}"; shift 2 ;;
       --chunk) chunk="${2:?}"; shift 2 ;;
       --dry-run) dry=1; shift ;;
+      --reset-done) reset=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
     esac
@@ -581,14 +597,32 @@ cmd_copy_missing() {
     exit 1
   }
 
+  if [[ "$reset" -eq 1 ]]; then
+    rm -f "$MISSING_DONE"
+    echo "Fortschritt geleert: $MISSING_DONE"
+    exit 0
+  fi
+
   local dest="$CONSUME_ROOT/$batch"
-  local n=0 copied=0
+  local n=0 copied=0 skipped_done=0 skipped_consume=0
   local rel src dest_file dest_dir
+  local total_missing total_done
+
+  total_missing=$(($(wc -l <"$MISSING_TSV") - 1))
+  total_done=0
+  [[ -f "$MISSING_DONE" ]] && total_done=$(wc -l <"$MISSING_DONE" | tr -d ' ')
+
+  echo "Queue: $total_missing in missing.tsv | $total_done bereits kopiert (done.lst)"
 
   while IFS=$'\t' read -r rel _chk _copies _sha; do
     [[ "$rel" == "relpath" || -z "$rel" ]] && continue
     n=$((n + 1))
     [[ "$chunk" -gt 0 && "$copied" -ge "$chunk" ]] && break
+
+    if missing_already_done "$rel"; then
+      skipped_done=$((skipped_done + 1))
+      continue
+    fi
 
     src="$NAS_ROOT/$rel"
     dest_file="$dest/$rel"
@@ -599,7 +633,8 @@ cmd_copy_missing() {
       continue
     fi
     if [[ -f "$dest_file" ]]; then
-      echo "übersprungen (schon in consume): $rel"
+      echo "übersprungen (noch in consume): $rel"
+      skipped_consume=$((skipped_consume + 1))
       continue
     fi
 
@@ -608,13 +643,15 @@ cmd_copy_missing() {
     else
       mkdir -p "$dest_dir"
       rsync -a "$src" "$dest_file"
+      mark_missing_done "$rel"
       echo "→ $rel"
     fi
     copied=$((copied + 1))
   done <"$MISSING_TSV"
 
   echo ""
-  echo "copy-missing: $copied PDFs nach $dest/ ($n in Liste, chunk=${chunk:-all}, dry=$dry)"
+  echo "copy-missing: $copied neu kopiert | $skipped_done schon in done.lst | $skipped_consume noch in consume"
+  echo "  Ziel: $dest/ | chunk=${chunk:-all} | dry=$dry | Fortschritt: $MISSING_DONE"
 }
 
 cmd_missing() {
