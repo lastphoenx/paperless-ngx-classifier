@@ -108,6 +108,7 @@ Logs: `Legacy-Import — Pipeline übersprungen` — kein Vision/Ollama.
 | `none/none/` statt `legacy/` | `.env` LEGACY_STORAGE_* + Pipe 12.32 + recreate webserver |
 | Migration hängt / Duplikate in consume | `legacy-migrate-all.sh --cleanup-consume`; Skip-Ordner nie unter `consume/` |
 | `duplicate of #NNN` | Inhalt schon in Paperless — kein Re-Import nötig; optional `legacy`-Tag am bestehenden Doc |
+| Wie viele Dubletten erwarten? | `legacy-nas-sha256.sh all` — SHA256-Inventar NAS + Abgleich Paperless-Checksums |
 | Permission denied auf NAS | Export `no_root_squash` für `/srv/nas` ro |
 
 Neue Scans in `consume/` (ohne `legacy/`) → volle Pipeline unverändert.

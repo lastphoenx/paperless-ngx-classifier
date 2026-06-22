@@ -40,6 +40,7 @@ mv /root/legacy-migrate-resume.sh /root/legacy-migrate-resume.sh.DISABLED 2>/dev
 ```bash
 /opt/paperless-scripts/legacy-tasks-summary.sh
 /opt/paperless-scripts/legacy-duplicate-audit.sh   # Tasks vs. einzigartige Duplikat-Dateien
+/opt/paperless-scripts/legacy-nas-sha256.sh all      # NAS SHA256-Inventar + erwartete Dubletten
 ```
 
 Zeigt dieselben Zahlen wie die UI: Fehlgeschlagen / Warteschlange / legacy-Tag / consume.
