@@ -6,15 +6,19 @@
 #   ./scripts/legacy-nas-sha256.sh summary       # Kurzstatistik
 #   ./scripts/legacy-nas-sha256.sh duplicates    # Dubletten-Gruppen (TSV)
 #   ./scripts/legacy-nas-sha256.sh vs-paperless  # erwartete Import-Dubletten
+#   ./scripts/legacy-nas-sha256.sh missing      # TSV: NAS-Pfade die in Paperless fehlen
+#   ./scripts/legacy-nas-sha256.sh copy-missing --batch queue --chunk 20
 #   ./scripts/legacy-nas-sha256.sh all           # scan + summary + vs-paperless
 #
 set -euo pipefail
 
 NAS_ROOT="${LEGACY_NAS_FINANZEN:-/mnt/nas-legacy/Eltern/Finanzen}"
 STATE_DIR="${LEGACY_MIGRATE_STATE_DIR:-/mnt/paperless-data/legacy-migrate}"
+CONSUME_ROOT="${LEGACY_CONSUME_ROOT:-/mnt/paperless-data/consume/legacy}"
 ENV_FILE="${PAPERLESS_ENV:-/opt/paperless/.env}"
 INVENTORY="${LEGACY_NAS_SHA256_TSV:-$STATE_DIR/nas-sha256.tsv}"
 DUPES_TSV="${LEGACY_NAS_DUPES_TSV:-$STATE_DIR/nas-duplicates.tsv}"
+MISSING_TSV="${LEGACY_NAS_MISSING_TSV:-$STATE_DIR/nas-missing-import.tsv}"
 SUMMARY_FILE="${LEGACY_NAS_SHA256_SUMMARY:-$STATE_DIR/nas-sha256-summary.txt}"
 # Standard: Moni 2015/2016 aus Migration-Plan ausschliessen (| als Trenner)
 PL_CACHE="${LEGACY_PL_CHECKSUM_CACHE:-$STATE_DIR/paperless-checksums.tsv}"
@@ -25,12 +29,15 @@ shift || true
 usage() {
   sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
   echo ""
-  echo "Befehle: scan | summary | duplicates | vs-paperless | fetch-paperless | all"
+  echo "Befehle: scan | summary | duplicates | vs-paperless | fetch-paperless | missing | copy-missing | all"
   echo "Optionen (scan): --refresh   alle Hashes neu berechnen"
   echo "Optionen (vs-paperless|fetch-paperless): --refresh-paperless  Checksums neu von API"
   echo "Optionen (duplicates): --min N   nur Gruppen mit >= N Dateien (default 2)"
+  echo "Optionen (copy-missing): --batch NAME  consume/legacy/NAME/ (default: queue)"
+  echo "                         --chunk N     nur erste N fehlende PDFs"
+  echo "                         --dry-run"
   echo ""
-  echo "Ausgabe: $INVENTORY"
+  echo "Ausgabe: $INVENTORY | missing: $MISSING_TSV"
 }
 
 path_excluded() {
@@ -131,6 +138,7 @@ summary_file = os.environ.get("SUMMARY_FILE", "")
 nas_root = os.environ.get("NAS_ROOT", "")
 env_file = os.environ.get("ENV_FILE", "/opt/paperless/.env")
 pl_cache = os.environ.get("PL_CACHE", "")
+missing_tsv = os.environ.get("MISSING_TSV", "")
 refresh_pl = os.environ.get("REFRESH_PL", "0") == "1"
 min_group = int(os.environ.get("MIN_GROUP", "2"))
 
@@ -364,6 +372,69 @@ def nas_compare_hash(rel, sha256, algo):
     return sha256
 
 
+def build_nas_by_compare(rows, algo):
+    nas_by_compare = defaultdict(list)
+    if algo == "md5":
+        print("Berechne MD5 für NAS-Dateien (Paperless-Format) …", file=sys.stderr)
+    for i, (rel, _size, _mtime, sha) in enumerate(rows):
+        if algo == "md5" and i > 0 and i % 200 == 0:
+            print(f"  … {i}/{len(rows)}", file=sys.stderr)
+        ch = nas_compare_hash(rel, sha, algo)
+        nas_by_compare[ch].append(rel)
+    return nas_by_compare
+
+
+def cmd_missing(rows):
+    if not pl_cache or not os.path.isfile(pl_cache):
+        print("FEHLER: kein Paperless-Cache — zuerst: fetch-paperless", file=sys.stderr)
+        sys.exit(1)
+
+    pl_checksums, api_total = fetch_paperless_checksums()
+    algo = detect_checksum_algo(pl_checksums)
+    if not pl_checksums:
+        print("FEHLER: keine Paperless-Checksums", file=sys.stderr)
+        sys.exit(1)
+
+    nas_by_compare = build_nas_by_compare(rows, algo)
+    pl_hashes = set(pl_checksums)
+    new_hashes = sorted(set(nas_by_compare) - pl_hashes)
+
+    entries = []
+    skipped_copies = 0
+    for ch in new_hashes:
+        paths = sorted(nas_by_compare[ch])
+        canonical = paths[0]
+        skipped_copies += len(paths) - 1
+        sha = ""
+        for rel, _s, _m, sha256 in rows:
+            if rel == canonical:
+                sha = sha256
+                break
+        entries.append((canonical, ch, len(paths), sha))
+
+    if not missing_tsv:
+        print("FEHLER: MISSING_TSV nicht gesetzt", file=sys.stderr)
+        sys.exit(1)
+
+    with open(missing_tsv, "w", encoding="utf-8") as f:
+        f.write("relpath\tchecksum\tnas_copies\tsha256\n")
+        for rel, ch, copies, sha in entries:
+            f.write(f"{rel}\t{ch}\t{copies}\t{sha}\n")
+
+    print("=== NAS fehlt in Paperless (Import-Queue) ===")
+    print(f"Paperless Docs:           {api_total}")
+    print(f"Einzigartige fehlende:    {len(entries)}  (= neue Docs wenn importiert)")
+    print(f"NAS-Kopien übersprungen:  {skipped_copies}  (pro Hash nur 1 Pfad)")
+    print(f"Liste:                    {missing_tsv}")
+    print("")
+    print("Top-Ordner:")
+    by_folder = defaultdict(int)
+    for rel, _ch, _c, _sha in entries:
+        by_folder[top_folder(rel)] += 1
+    for folder, n in sorted(by_folder.items(), key=lambda x: -x[1])[:12]:
+        print(f"  {folder}: {n}")
+
+
 def vs_paperless(rows):
     by_hash, _, total, unique, dup_files, dup_groups, _extra = analyze(rows)
     pl_checksums, api_total = fetch_paperless_checksums()
@@ -377,14 +448,7 @@ def vs_paperless(rows):
             file=sys.stderr,
         )
 
-    # NAS-Hashes im Paperless-Format (MD5 bei älteren Installationen)
-    nas_by_compare = defaultdict(list)
-    if algo == "md5":
-        print("Paperless-Checksums: MD5 (32 Zeichen) — berechne MD5 für NAS-Dateien …", file=sys.stderr)
-    for rel, _size, _mtime, sha in rows:
-        ch = nas_compare_hash(rel, sha, algo)
-        nas_by_compare[ch].append(rel)
-
+    nas_by_compare = build_nas_by_compare(rows, algo)
     pl_hashes = set(pl_checksums)
     overlap_hashes = set(nas_by_compare) & pl_hashes
     new_hashes = set(nas_by_compare) - pl_hashes
@@ -440,6 +504,12 @@ elif cmd == "vs-paperless":
     vs_paperless(rows)
 elif cmd == "fetch-paperless":
     cmd_fetch_paperless()
+elif cmd == "missing":
+    rows = load_inventory(inventory)
+    if not rows:
+        print(f"FEHLER: leeres Inventar — zuerst: scan", file=sys.stderr)
+        sys.exit(1)
+    cmd_missing(rows)
 else:
     print(f"unbekannter python cmd: {cmd}", file=sys.stderr)
     sys.exit(1)
@@ -494,6 +564,67 @@ cmd_fetch_paperless() {
     run_python fetch-paperless
 }
 
+cmd_copy_missing() {
+  local batch="queue" chunk=0 dry=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --batch) batch="${2:?}"; shift 2 ;;
+      --chunk) chunk="${2:?}"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  [[ -f "$MISSING_TSV" ]] || {
+    echo "FEHLER: $MISSING_TSV fehlt — zuerst: $0 missing" >&2
+    exit 1
+  }
+
+  local dest="$CONSUME_ROOT/$batch"
+  local n=0 copied=0
+  local rel src dest_file dest_dir
+
+  while IFS=$'\t' read -r rel _chk _copies _sha; do
+    [[ "$rel" == "relpath" || -z "$rel" ]] && continue
+    n=$((n + 1))
+    [[ "$chunk" -gt 0 && "$copied" -ge "$chunk" ]] && break
+
+    src="$NAS_ROOT/$rel"
+    dest_file="$dest/$rel"
+    dest_dir=$(dirname "$dest_file")
+
+    if [[ ! -f "$src" ]]; then
+      echo "WARN: fehlt auf NAS: $src" >&2
+      continue
+    fi
+    if [[ -f "$dest_file" ]]; then
+      echo "übersprungen (schon in consume): $rel"
+      continue
+    fi
+
+    if [[ "$dry" -eq 1 ]]; then
+      echo "→ $rel"
+    else
+      mkdir -p "$dest_dir"
+      rsync -a "$src" "$dest_file"
+      echo "→ $rel"
+    fi
+    copied=$((copied + 1))
+  done <"$MISSING_TSV"
+
+  echo ""
+  echo "copy-missing: $copied PDFs nach $dest/ ($n in Liste, chunk=${chunk:-all}, dry=$dry)"
+}
+
+cmd_missing() {
+  [[ -f "$INVENTORY" ]] || { echo "FEHLER: kein Inventar — zuerst: $0 scan" >&2; exit 1; }
+  [[ -f "$PL_CACHE" ]] || { echo "FEHLER: kein Paperless-Cache — zuerst: $0 fetch-paperless" >&2; exit 1; }
+  INVENTORY="$INVENTORY" MISSING_TSV="$MISSING_TSV" NAS_ROOT="$NAS_ROOT" ENV_FILE="$ENV_FILE" \
+    PL_CACHE="$PL_CACHE" REFRESH_PL=0 \
+    run_python missing
+}
+
 cmd_all() {
   scan_nas "$@"
   echo ""
@@ -507,6 +638,8 @@ case "$CMD" in
   duplicates) cmd_duplicates "$@" ;;
   vs-paperless) cmd_vs_paperless "$@" ;;
   fetch-paperless) cmd_fetch_paperless "$@" ;;
+  missing) cmd_missing ;;
+  copy-missing) cmd_copy_missing "$@" ;;
   all) cmd_all "$@" ;;
   -h|--help|help) usage ;;
   *)
