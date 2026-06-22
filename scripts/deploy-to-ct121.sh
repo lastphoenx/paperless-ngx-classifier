@@ -38,6 +38,7 @@ FILES=(
   scripts/legacy-one-batch.sh
   scripts/legacy-tasks-summary.sh
   scripts/legacy-duplicate-audit.sh
+  scripts/legacy-nas-sha256.sh
 )
 
 echo "==> Repo:   $REPO_DIR"
