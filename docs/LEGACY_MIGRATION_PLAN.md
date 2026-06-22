@@ -41,18 +41,27 @@ mv /root/legacy-migrate-resume.sh /root/legacy-migrate-resume.sh.DISABLED 2>/dev
 /opt/paperless-scripts/legacy-tasks-summary.sh
 /opt/paperless-scripts/legacy-duplicate-audit.sh   # Tasks vs. einzigartige Duplikat-Dateien
 /opt/paperless-scripts/legacy-nas-sha256.sh all      # NAS SHA256-Inventar + erwartete Dubletten
+```
+
+Zeigt dieselbe Zahl wie die UI: Fehlgeschlagen / Warteschlange / legacy-Tag / consume.
 
 ### Nur fehlende Inhalte importieren (empfohlen)
 
+Einmalig Delta bauen, dann **ein Befehl** in tmux:
+
 ```bash
-/opt/paperless-scripts/legacy-nas-sha256.sh missing          # nas-missing-import.tsv (~945 PDFs)
-/opt/paperless-scripts/legacy-nas-sha256.sh copy-missing --batch queue --chunk 20
-# Fortschritt: /mnt/paperless-data/legacy-migrate/nas-missing-done.lst
-# warten bis consume leer, gleichen Befehl nochmal → nächste 20
-```
+/opt/paperless-scripts/legacy-nas-sha256.sh missing   # einmalig (~945 Einträge)
+
+tmux new -s legacy
+/opt/paperless-scripts/legacy-nas-sha256.sh import-loop --batch queue --chunk 20
 ```
 
-Zeigt dieselben Zahlen wie die UI: Fehlgeschlagen / Warteschlange / legacy-Tag / consume.
+Pro Chunk automatisch:
+1. **Pop** N Zeilen aus `missing.tsv` → `in-flight.tsv` + kopieren
+2. Wartet bis `consume` leer
+3. **Reconcile** — nur was Paperless bestätigt ist raus; Rest zurück in `missing.tsv`
+
+Kein `done.lst`, kein „kopiert = erledigt“.
 
 ### Pro NAS-Ordner (in **tmux**)
 
