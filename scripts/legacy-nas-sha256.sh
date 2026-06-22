@@ -17,7 +17,7 @@ INVENTORY="${LEGACY_NAS_SHA256_TSV:-$STATE_DIR/nas-sha256.tsv}"
 DUPES_TSV="${LEGACY_NAS_DUPES_TSV:-$STATE_DIR/nas-duplicates.tsv}"
 SUMMARY_FILE="${LEGACY_NAS_SHA256_SUMMARY:-$STATE_DIR/nas-sha256-summary.txt}"
 # Standard: Moni 2015/2016 aus Migration-Plan ausschliessen (| als Trenner)
-EXCLUDE_REGEX="${LEGACY_NAS_EXCLUDE_REGEX:-Vorsorge/Moni/2015|Vorsorge/Moni/2016}"
+PL_CACHE="${LEGACY_PL_CHECKSUM_CACHE:-$STATE_DIR/paperless-checksums.tsv}"
 
 CMD="${1:-summary}"
 shift || true
@@ -25,8 +25,9 @@ shift || true
 usage() {
   sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
   echo ""
-  echo "Befehle: scan | summary | duplicates | vs-paperless | all"
+  echo "Befehle: scan | summary | duplicates | vs-paperless | fetch-paperless | all"
   echo "Optionen (scan): --refresh   alle Hashes neu berechnen"
+  echo "Optionen (vs-paperless|fetch-paperless): --refresh-paperless  Checksums neu von API"
   echo "Optionen (duplicates): --min N   nur Gruppen mit >= N Dateien (default 2)"
   echo ""
   echo "Ausgabe: $INVENTORY"
@@ -115,6 +116,7 @@ scan_nas() {
 }
 
 run_python() {
+  export PL_CACHE REFRESH_PL
   python3 - "$@" <<'PY'
 import json
 import os
@@ -128,7 +130,106 @@ dupes_tsv = os.environ.get("DUPES_TSV", "")
 summary_file = os.environ.get("SUMMARY_FILE", "")
 nas_root = os.environ.get("NAS_ROOT", "")
 env_file = os.environ.get("ENV_FILE", "/opt/paperless/.env")
+pl_cache = os.environ.get("PL_CACHE", "")
+refresh_pl = os.environ.get("REFRESH_PL", "0") == "1"
 min_group = int(os.environ.get("MIN_GROUP", "2"))
+
+
+def api_get(token, url):
+    req = urllib.request.Request(url, headers={"Authorization": f"Token {token}"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.load(resp)
+
+
+def read_token():
+    if not os.path.isfile(env_file):
+        return ""
+    for line in open(env_file, encoding="utf-8", errors="replace"):
+        if line.startswith("PAPERLESS_TOKEN="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def fetch_doc_ids(token):
+    ids = []
+    api_total = 0
+    url = "http://127.0.0.1:8000/api/documents/?page_size=100"
+    while url:
+        data = api_get(token, url)
+        if isinstance(data, list):
+            results = data
+            url = None
+        else:
+            results = data.get("results", [])
+            if api_total == 0:
+                api_total = int(data.get("count", 0) or 0)
+            url = data.get("next")
+        for doc in results:
+            doc_id = doc.get("id")
+            if doc_id is not None:
+                ids.append(int(doc_id))
+    if api_total == 0:
+        api_total = len(ids)
+    return ids, api_total
+
+
+def save_pl_cache(checksums_by_id):
+    if not pl_cache:
+        return
+    with open(pl_cache, "w", encoding="utf-8") as f:
+        f.write("doc_id\tchecksum\n")
+        for doc_id in sorted(checksums_by_id):
+            f.write(f"{doc_id}\t{checksums_by_id[doc_id]}\n")
+
+
+def fetch_paperless_checksums():
+    token = read_token()
+    if not token:
+        print("FEHLER: kein PAPERLESS_TOKEN in", env_file, file=sys.stderr)
+        sys.exit(1)
+
+    doc_ids, api_total = fetch_doc_ids(token)
+    if not doc_ids:
+        return {}, 0
+
+    # Checksum steht nicht in /api/documents/ — nur in /metadata/ oder DB (kein Custom Field!)
+    checksums_by_id = {}
+    source = "metadata"
+
+    if not refresh_pl and pl_cache and os.path.isfile(pl_cache):
+        cached = {}
+        with open(pl_cache, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("doc_id") or not line.strip():
+                    continue
+                parts = line.strip().split("\t")
+                if len(parts) >= 2 and parts[1]:
+                    cached[int(parts[0])] = parts[1].lower()
+        if len(cached) == len(doc_ids):
+            checksums_by_id = cached
+            source = "cache"
+
+    if not checksums_by_id:
+        print(
+            f"Lese original_checksum via /api/documents/{{id}}/metadata/ ({len(doc_ids)} Docs) …",
+            file=sys.stderr,
+        )
+        for i, doc_id in enumerate(doc_ids):
+            if i > 0 and i % 100 == 0:
+                print(f"  … {i}/{len(doc_ids)}", file=sys.stderr)
+            try:
+                meta = api_get(token, f"http://127.0.0.1:8000/api/documents/{doc_id}/metadata/")
+            except Exception as e:
+                print(f"WARN: metadata #{doc_id}: {e}", file=sys.stderr)
+                continue
+            cs = (meta.get("original_checksum") or meta.get("checksum") or "").strip().lower()
+            if cs:
+                checksums_by_id[doc_id] = cs
+        save_pl_cache(checksums_by_id)
+
+    checksums = {cs: doc_id for doc_id, cs in checksums_by_id.items()}
+    print(f"Paperless-Checksums: {len(checksums)} ({source})", file=sys.stderr)
+    return checksums, api_total
 
 
 def load_inventory(path):
@@ -238,41 +339,6 @@ def write_duplicates(rows):
         print(f"  {len(paths)}× {sha[:16]}…  z.B. {paths[0][0]}")
 
 
-def fetch_paperless_checksums():
-    token = ""
-    if os.path.isfile(env_file):
-        for line in open(env_file, encoding="utf-8", errors="replace"):
-            if line.startswith("PAPERLESS_TOKEN="):
-                token = line.split("=", 1)[1].strip()
-                break
-    if not token:
-        print("FEHLER: kein PAPERLESS_TOKEN in", env_file, file=sys.stderr)
-        sys.exit(1)
-
-    checksums = {}
-    api_total = 0
-    url = "http://127.0.0.1:8000/api/documents/?page_size=100"
-    while url:
-        req = urllib.request.Request(url, headers={"Authorization": f"Token {token}"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.load(resp)
-        if isinstance(data, list):
-            results = data
-            url = None
-        else:
-            results = data.get("results", [])
-            if api_total == 0:
-                api_total = int(data.get("count", 0) or 0)
-            url = data.get("next")
-        for doc in results:
-            cs = (doc.get("checksum") or "").strip().lower()
-            if cs:
-                checksums[cs] = doc.get("id")
-    if api_total == 0:
-        api_total = len(checksums)
-    return checksums, api_total
-
-
 def detect_checksum_algo(checksums):
     lengths = {len(c) for c in checksums}
     if 64 in lengths:
@@ -280,6 +346,13 @@ def detect_checksum_algo(checksums):
     if 32 in lengths:
         return "md5"
     return "unknown"
+
+
+def cmd_fetch_paperless():
+    checksums, api_total = fetch_paperless_checksums()
+    algo = detect_checksum_algo(checksums)
+    print(f"Gecacht: {pl_cache}")
+    print(f"Dokumente: {api_total}, Checksums: {len(checksums)}, Algorithmus: {algo}")
 
 
 def nas_compare_hash(rel, sha256, algo):
@@ -300,7 +373,7 @@ def vs_paperless(rows):
         print("WARN: Paperless API lieferte 0 Dokumente — Token/URL prüfen", file=sys.stderr)
     elif not pl_checksums:
         print(
-            f"WARN: {api_total} Docs in API, aber kein checksum-Feld — Abgleich nicht möglich",
+            f"WARN: {api_total} Docs, aber keine Checksums aus metadata — Pfade/Token prüfen",
             file=sys.stderr,
         )
 
@@ -324,7 +397,7 @@ def vs_paperless(rows):
         "",
         "=== NAS vs. Paperless (Checksum-Abgleich) ===",
         f"Dokumente in Paperless (API count): {api_total}",
-        f"Docs mit checksum in API:           {len(pl_checksums)}",
+        f"Docs mit original_checksum:        {len(pl_checksums)}",
         f"Paperless-Algorithmus:              {algo}",
         f"Einzigartige NAS-Inhalte (SHA256):  {unique}",
         f"Bereits in Paperless (Hash-Match):  {len(overlap_hashes)} Hashes → {files_already} NAS-Dateien",
@@ -338,7 +411,7 @@ def vs_paperless(rows):
         "",
         f"  Formel: eindeutige NAS ({unique}) − in Paperless ({len(overlap_hashes)}) ≈ {realistic_new}",
         "",
-        "Hinweis: ältere Paperless-Versionen speichern MD5, neuere SHA256.",
+        "Hinweis: Checksum ist intern (metadata-API), kein Custom Field nötig.",
     ]
     text = "\n".join(lines)
     print(text)
@@ -365,6 +438,8 @@ elif cmd == "vs-paperless":
         print(f"FEHLER: leeres Inventar — zuerst: scan", file=sys.stderr)
         sys.exit(1)
     vs_paperless(rows)
+elif cmd == "fetch-paperless":
+    cmd_fetch_paperless()
 else:
     print(f"unbekannter python cmd: {cmd}", file=sys.stderr)
     sys.exit(1)
@@ -392,9 +467,31 @@ cmd_duplicates() {
 }
 
 cmd_vs_paperless() {
+  local refresh=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --refresh-paperless) refresh=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
+    esac
+  done
   [[ -f "$INVENTORY" ]] || { echo "FEHLER: kein Inventar — zuerst: $0 scan" >&2; exit 1; }
   INVENTORY="$INVENTORY" SUMMARY_FILE="$SUMMARY_FILE" NAS_ROOT="$NAS_ROOT" ENV_FILE="$ENV_FILE" \
+    PL_CACHE="$PL_CACHE" REFRESH_PL="$refresh" \
     run_python vs-paperless
+}
+
+cmd_fetch_paperless() {
+  local refresh=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --refresh-paperless) refresh=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
+    esac
+  done
+  PL_CACHE="$PL_CACHE" REFRESH_PL="$refresh" ENV_FILE="$ENV_FILE" NAS_ROOT="$NAS_ROOT" \
+    run_python fetch-paperless
 }
 
 cmd_all() {
@@ -408,7 +505,8 @@ case "$CMD" in
   scan) scan_nas "$@" ;;
   summary) cmd_summary ;;
   duplicates) cmd_duplicates "$@" ;;
-  vs-paperless) cmd_vs_paperless ;;
+  vs-paperless) cmd_vs_paperless "$@" ;;
+  fetch-paperless) cmd_fetch_paperless "$@" ;;
   all) cmd_all "$@" ;;
   -h|--help|help) usage ;;
   *)
