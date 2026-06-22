@@ -6,9 +6,9 @@
 #   ./scripts/legacy-nas-sha256.sh summary       # Kurzstatistik
 #   ./scripts/legacy-nas-sha256.sh duplicates    # Dubletten-Gruppen (TSV)
 #   ./scripts/legacy-nas-sha256.sh vs-paperless  # erwartete Import-Dubletten
-#   ./scripts/legacy-nas-sha256.sh missing      # TSV: NAS-Pfade die in Paperless fehlen
-#   ./scripts/legacy-nas-sha256.sh copy-missing --batch queue --chunk 20
-#   ./scripts/legacy-nas-sha256.sh all           # scan + summary + vs-paperless
+#   ./scripts/legacy-nas-sha256.sh missing      # Delta-Liste neu (langsam, einmalig)
+#   ./scripts/legacy-nas-sha256.sh import-chunk --batch queue --chunk 20
+#   ./scripts/legacy-nas-sha256.sh import-loop --batch queue --chunk 20   # empfohlen (tmux)
 #
 set -euo pipefail
 
@@ -19,8 +19,9 @@ ENV_FILE="${PAPERLESS_ENV:-/opt/paperless/.env}"
 INVENTORY="${LEGACY_NAS_SHA256_TSV:-$STATE_DIR/nas-sha256.tsv}"
 DUPES_TSV="${LEGACY_NAS_DUPES_TSV:-$STATE_DIR/nas-duplicates.tsv}"
 MISSING_TSV="${LEGACY_NAS_MISSING_TSV:-$STATE_DIR/nas-missing-import.tsv}"
-MISSING_DONE="${LEGACY_NAS_MISSING_DONE:-$STATE_DIR/nas-missing-done.lst}"
+IN_FLIGHT_TSV="${LEGACY_NAS_IN_FLIGHT:-$STATE_DIR/nas-in-flight.tsv}"
 SUMMARY_FILE="${LEGACY_NAS_SHA256_SUMMARY:-$STATE_DIR/nas-sha256-summary.txt}"
+STALL_SLEEP="${LEGACY_STALL_SLEEP:-30}"
 # Standard: Moni 2015/2016 aus Migration-Plan ausschliessen (| als Trenner)
 PL_CACHE="${LEGACY_PL_CHECKSUM_CACHE:-$STATE_DIR/paperless-checksums.tsv}"
 
@@ -30,17 +31,13 @@ shift || true
 usage() {
   sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
   echo ""
-  echo "Befehle: scan | summary | duplicates | vs-paperless | fetch-paperless | missing | copy-missing | all"
-  echo "Optionen (scan): --refresh   alle Hashes neu berechnen"
-  echo "Optionen (vs-paperless|fetch-paperless): --refresh-paperless  Checksums neu von API"
-  echo "Optionen (duplicates): --min N   nur Gruppen mit >= N Dateien (default 2)"
-  echo "Optionen (copy-missing): --batch NAME  consume/legacy/NAME/ (default: queue)"
-  echo "                         --chunk N     nur erste N noch nicht kopierte PDFs"
-  echo "                         --dry-run"
-  echo "                         --reset-done  Fortschritt ($MISSING_DONE) leeren"
+  echo "Befehle: scan | summary | duplicates | vs-paperless | fetch-paperless | missing"
+  echo "         prune-missing | reconcile | copy-missing | import-chunk | import-loop | all"
   echo ""
-  echo "Fortschritt copy-missing: $MISSING_DONE (eine Zeile pro kopiertem relpath)"
-  echo "Ausgabe: $INVENTORY | missing: $MISSING_TSV"
+  echo "Import (empfohlen):  import-loop --batch queue --chunk 20"
+  echo "  Pro Chunk: pop aus Delta → consume → warten → reconcile (Paperless-Wahrheit)"
+  echo ""
+  echo "State: missing=$MISSING_TSV | in-flight=$IN_FLIGHT_TSV"
 }
 
 path_excluded() {
@@ -142,6 +139,9 @@ nas_root = os.environ.get("NAS_ROOT", "")
 env_file = os.environ.get("ENV_FILE", "/opt/paperless/.env")
 pl_cache = os.environ.get("PL_CACHE", "")
 missing_tsv = os.environ.get("MISSING_TSV", "")
+in_flight_tsv = os.environ.get("IN_FLIGHT_TSV", "")
+consume_dest = os.environ.get("CONSUME_DEST", "")
+pop_chunk = int(os.environ.get("POP_CHUNK", "0") or "0")
 refresh_pl = os.environ.get("REFRESH_PL", "0") == "1"
 min_group = int(os.environ.get("MIN_GROUP", "2"))
 
@@ -438,6 +438,138 @@ def cmd_missing(rows):
         print(f"  {folder}: {n}")
 
 
+def read_data_lines(path):
+    if not path or not os.path.isfile(path):
+        return []
+    lines = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line or line.startswith("relpath"):
+                continue
+            lines.append(line)
+    return lines
+
+
+def write_data_lines(path, lines):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("relpath\tchecksum\tnas_copies\tsha256\n")
+        for line in lines:
+            f.write(line + "\n")
+
+
+def append_data_lines(path, lines):
+    if not lines:
+        return
+    new_file = not os.path.isfile(path)
+    with open(path, "a", encoding="utf-8") as f:
+        if new_file:
+            f.write("relpath\tchecksum\tnas_copies\tsha256\n")
+        for line in lines:
+            f.write(line + "\n")
+
+
+def cmd_pop_missing():
+    """N Zeilen von missing → in-flight (nicht erst beim Import als done markieren)."""
+    if not missing_tsv or not os.path.isfile(missing_tsv):
+        print("FEHLER: keine missing.tsv", file=sys.stderr)
+        sys.exit(1)
+    if pop_chunk <= 0:
+        print("FEHLER: POP_CHUNK fehlt", file=sys.stderr)
+        sys.exit(1)
+
+    pending = read_data_lines(missing_tsv)
+    popped = []
+    kept = []
+    for line in pending:
+        if len(popped) >= pop_chunk:
+            kept.append(line)
+            continue
+        rel = line.split("\t", 1)[0]
+        if consume_dest and os.path.isfile(os.path.join(consume_dest, rel)):
+            kept.append(line)
+            continue
+        popped.append(line)
+
+    write_data_lines(missing_tsv, kept)
+    append_data_lines(in_flight_tsv, popped)
+    for line in popped:
+        print(line.split("\t", 1)[0])
+
+
+def cmd_reconcile():
+    """in-flight gegen Paperless prüfen; missing von importierten Checksums säubern."""
+    pl_checksums, api_total = fetch_paperless_checksums()
+    if not pl_checksums:
+        print("FEHLER: keine Paperless-Checksums", file=sys.stderr)
+        sys.exit(1)
+    pl_hashes = set(pl_checksums)
+
+    imported = 0
+    retry = []
+    for line in read_data_lines(in_flight_tsv):
+        parts = line.split("\t")
+        ch = parts[1].strip().lower() if len(parts) >= 2 else ""
+        if ch and ch in pl_hashes:
+            imported += 1
+        else:
+            retry.append(line)
+
+    missing_lines = read_data_lines(missing_tsv)
+    pruned_missing = []
+    pruned_dup = 0
+    for line in missing_lines:
+        parts = line.split("\t")
+        ch = parts[1].strip().lower() if len(parts) >= 2 else ""
+        if ch and ch in pl_hashes:
+            pruned_dup += 1
+        else:
+            pruned_missing.append(line)
+
+    # Fehlgeschlagene Imports zurück an den Anfang der Queue
+    write_data_lines(missing_tsv, retry + pruned_missing)
+    write_data_lines(in_flight_tsv, [])
+
+    remaining = len(retry) + len(pruned_missing)
+    print("=== Delta reconciled ===")
+    print(f"Paperless Docs:           {api_total}")
+    print(f"in-flight importiert:     {imported}")
+    print(f"in-flight zurück (retry): {len(retry)}")
+    print(f"missing bereinigt:        {pruned_dup}")
+    print(f"Verbleibend gesamt:       {remaining}")
+
+
+def cmd_prune_missing():
+    """Nur missing.tsv bereinigen (ohne in-flight) — für manuelle Nutzung."""
+    if not missing_tsv or not os.path.isfile(missing_tsv):
+        print("FEHLER: keine missing.tsv — zuerst: missing", file=sys.stderr)
+        sys.exit(1)
+
+    pl_checksums, api_total = fetch_paperless_checksums()
+    if not pl_checksums:
+        print("FEHLER: keine Paperless-Checksums", file=sys.stderr)
+        sys.exit(1)
+
+    pl_hashes = set(pl_checksums)
+    kept = []
+    removed = 0
+    for line in read_data_lines(missing_tsv):
+        parts = line.split("\t")
+        ch = parts[1].strip().lower() if len(parts) >= 2 else ""
+        if ch in pl_hashes:
+            removed += 1
+            continue
+        kept.append(line)
+
+    write_data_lines(missing_tsv, kept)
+
+    print("=== Delta aktualisiert (prune-missing) ===")
+    print(f"Paperless Docs:        {api_total}")
+    print(f"Entfernt (importiert): {removed}")
+    print(f"Verbleibend:           {len(kept)}")
+    print(f"Liste:                 {missing_tsv}")
+
+
 def vs_paperless(rows):
     by_hash, _, total, unique, dup_files, dup_groups, _extra = analyze(rows)
     pl_checksums, api_total = fetch_paperless_checksums()
@@ -513,6 +645,12 @@ elif cmd == "missing":
         print(f"FEHLER: leeres Inventar — zuerst: scan", file=sys.stderr)
         sys.exit(1)
     cmd_missing(rows)
+elif cmd == "prune-missing":
+    cmd_prune_missing()
+elif cmd == "pop-missing":
+    cmd_pop_missing()
+elif cmd == "reconcile":
+    cmd_reconcile()
 else:
     print(f"unbekannter python cmd: {cmd}", file=sys.stderr)
     sys.exit(1)
@@ -567,26 +705,76 @@ cmd_fetch_paperless() {
     run_python fetch-paperless
 }
 
-missing_already_done() {
-  local rel="$1"
-  [[ -f "$MISSING_DONE" ]] && grep -qxF "$rel" "$MISSING_DONE" 2>/dev/null
+cmd_reconcile() {
+  [[ -f "$MISSING_TSV" ]] || { echo "FEHLER: $MISSING_TSV fehlt" >&2; exit 1; }
+  MISSING_TSV="$MISSING_TSV" IN_FLIGHT_TSV="$IN_FLIGHT_TSV" ENV_FILE="$ENV_FILE" \
+    PL_CACHE="$PL_CACHE" REFRESH_PL=1 \
+    run_python reconcile
 }
 
-mark_missing_done() {
-  local rel="$1"
-  mkdir -p "$(dirname "$MISSING_DONE")"
-  touch "$MISSING_DONE"
-  grep -qxF "$rel" "$MISSING_DONE" 2>/dev/null || echo "$rel" >>"$MISSING_DONE"
+cmd_prune_missing() {
+  [[ -f "$MISSING_TSV" ]] || { echo "FEHLER: $MISSING_TSV fehlt" >&2; exit 1; }
+  MISSING_TSV="$MISSING_TSV" ENV_FILE="$ENV_FILE" PL_CACHE="$PL_CACHE" REFRESH_PL=1 \
+    run_python prune-missing
+}
+
+cmd_pop_missing() {
+  local chunk="$1" dest="$2"
+  MISSING_TSV="$MISSING_TSV" IN_FLIGHT_TSV="$IN_FLIGHT_TSV" CONSUME_DEST="$dest" POP_CHUNK="$chunk" \
+    run_python pop-missing
+}
+
+missing_count() {
+  local n=0 m=0
+  [[ -f "$MISSING_TSV" ]] && n=$(read_data_lines_count "$MISSING_TSV")
+  [[ -f "$IN_FLIGHT_TSV" ]] && m=$(read_data_lines_count "$IN_FLIGHT_TSV")
+  echo $((n + m))
+}
+
+read_data_lines_count() {
+  local f="$1"
+  [[ -f "$f" ]] || { echo 0; return; }
+  awk 'NR>1 && NF {c++} END{print c+0}' "$f"
+}
+
+pending_count() {
+  read_data_lines_count "$MISSING_TSV"
+}
+
+in_flight_count() {
+  read_data_lines_count "$IN_FLIGHT_TSV"
+}
+
+wait_consume_empty() {
+  local dest="$1"
+  local idle=0 last=-1 n=0
+  echo "Warte: consume leer in $dest …"
+  while true; do
+    n=$(find "$dest" -type f -iname '*.pdf' 2>/dev/null | wc -l | tr -d ' ')
+    [[ "$n" -eq 0 ]] && break
+    if [[ "$n" -eq "$last" ]]; then
+      idle=$((idle + 1))
+      [[ "$idle" -ge 20 ]] && {
+        echo "WARN: $n PDFs seit $((idle * STALL_SLEEP))s in consume — Paperless prüfen" >&2
+        break
+      }
+    else
+      idle=0
+      last=$n
+    fi
+    echo "  noch $n PDFs …"
+    sleep "$STALL_SLEEP"
+  done
+  echo "consume leer."
 }
 
 cmd_copy_missing() {
-  local batch="queue" chunk=0 dry=0 reset=0
+  local batch="queue" chunk=0 dry=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --batch) batch="${2:?}"; shift 2 ;;
       --chunk) chunk="${2:?}"; shift 2 ;;
       --dry-run) dry=1; shift ;;
-      --reset-done) reset=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
     esac
@@ -596,34 +784,30 @@ cmd_copy_missing() {
     echo "FEHLER: $MISSING_TSV fehlt — zuerst: $0 missing" >&2
     exit 1
   }
-
-  if [[ "$reset" -eq 1 ]]; then
-    rm -f "$MISSING_DONE"
-    echo "Fortschritt geleert: $MISSING_DONE"
-    exit 0
-  fi
+  [[ "$chunk" -gt 0 ]] || {
+    echo "FEHLER: --chunk N erforderlich" >&2
+    exit 1
+  }
 
   local dest="$CONSUME_ROOT/$batch"
-  local n=0 copied=0 skipped_done=0 skipped_consume=0
-  local rel src dest_file dest_dir
-  local total_missing total_done
+  local copied=0 rel src dest_file dest_dir
+  local pending inflight
+  pending=$(pending_count)
+  inflight=$(in_flight_count)
 
-  total_missing=$(($(wc -l <"$MISSING_TSV") - 1))
-  total_done=0
-  [[ -f "$MISSING_DONE" ]] && total_done=$(wc -l <"$MISSING_DONE" | tr -d ' ')
+  echo "Queue: $pending offen | $inflight in-flight | pop $chunk → consume"
 
-  echo "Queue: $total_missing in missing.tsv | $total_done bereits kopiert (done.lst)"
+  if [[ "$dry" -eq 1 ]]; then
+    head -n $((chunk + 1)) "$MISSING_TSV" | tail -n "$chunk" | while IFS=$'\t' read -r rel _; do
+      [[ "$rel" == "relpath" || -z "$rel" ]] && continue
+      echo "→ $rel"
+    done
+    echo "(dry-run — keine TSV-Änderung)"
+    return
+  fi
 
-  while IFS=$'\t' read -r rel _chk _copies _sha; do
-    [[ "$rel" == "relpath" || -z "$rel" ]] && continue
-    n=$((n + 1))
-    [[ "$chunk" -gt 0 && "$copied" -ge "$chunk" ]] && break
-
-    if missing_already_done "$rel"; then
-      skipped_done=$((skipped_done + 1))
-      continue
-    fi
-
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
     src="$NAS_ROOT/$rel"
     dest_file="$dest/$rel"
     dest_dir=$(dirname "$dest_file")
@@ -632,26 +816,64 @@ cmd_copy_missing() {
       echo "WARN: fehlt auf NAS: $src" >&2
       continue
     fi
-    if [[ -f "$dest_file" ]]; then
-      echo "übersprungen (noch in consume): $rel"
-      skipped_consume=$((skipped_consume + 1))
-      continue
-    fi
-
-    if [[ "$dry" -eq 1 ]]; then
-      echo "→ $rel"
-    else
-      mkdir -p "$dest_dir"
-      rsync -a "$src" "$dest_file"
-      mark_missing_done "$rel"
-      echo "→ $rel"
-    fi
+    mkdir -p "$dest_dir"
+    rsync -a "$src" "$dest_file"
+    echo "→ $rel"
     copied=$((copied + 1))
-  done <"$MISSING_TSV"
+  done < <(cmd_pop_missing "$chunk" "$dest")
 
   echo ""
-  echo "copy-missing: $copied neu kopiert | $skipped_done schon in done.lst | $skipped_consume noch in consume"
-  echo "  Ziel: $dest/ | chunk=${chunk:-all} | dry=$dry | Fortschritt: $MISSING_DONE"
+  echo "copy-missing: $copied nach in-flight + consume | $(pending_count) offen | $(in_flight_count) in-flight"
+}
+
+cmd_import_chunk() {
+  local batch="queue" chunk=20 dry=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --batch) batch="${2:?}"; shift 2 ;;
+      --chunk) chunk="${2:?}"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  local before after dest="$CONSUME_ROOT/$batch"
+  before=$(missing_count)
+  [[ "$before" -gt 0 ]] || { echo "Fertig — Delta leer."; exit 0; }
+
+  echo "=== import-chunk ($before fehlend, chunk=$chunk) ==="
+
+  if [[ "$dry" -eq 1 ]]; then
+    cmd_copy_missing --batch "$batch" --chunk "$chunk" --dry-run
+    echo "(dry-run — kein warten/prune)"
+    exit 0
+  fi
+
+  cmd_copy_missing --batch "$batch" --chunk "$chunk"
+  wait_consume_empty "$dest"
+
+  echo "Paperless-Checksums + in-flight reconcilen …"
+  cmd_reconcile
+
+  after=$(missing_count)
+  echo ""
+  echo "Chunk fertig: $before → $after fehlend ($(($before - after)) importiert)"
+}
+
+cmd_import_loop() {
+  local n=0
+  while true; do
+    local left
+    left=$(missing_count)
+    [[ "$left" -le 0 ]] && break
+    n=$((n + 1))
+    echo ""
+    echo "########## Chunk-Lauf #$n ($left fehlend) ##########"
+    cmd_import_chunk "$@" || exit 1
+  done
+  echo ""
+  echo "=== import-loop fertig ($n Chunks) ==="
 }
 
 cmd_missing() {
@@ -676,7 +898,11 @@ case "$CMD" in
   vs-paperless) cmd_vs_paperless "$@" ;;
   fetch-paperless) cmd_fetch_paperless "$@" ;;
   missing) cmd_missing ;;
+  prune-missing) REFRESH_PL=1 cmd_prune_missing ;;
+  reconcile) cmd_reconcile ;;
   copy-missing) cmd_copy_missing "$@" ;;
+  import-chunk) cmd_import_chunk "$@" ;;
+  import-loop) cmd_import_loop "$@" ;;
   all) cmd_all "$@" ;;
   -h|--help|help) usage ;;
   *)
