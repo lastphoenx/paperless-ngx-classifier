@@ -47,7 +47,8 @@ mv /root/legacy-migrate-resume.sh /root/legacy-migrate-resume.sh.DISABLED 2>/dev
 ```bash
 /opt/paperless-scripts/legacy-nas-sha256.sh missing          # nas-missing-import.tsv (~945 PDFs)
 /opt/paperless-scripts/legacy-nas-sha256.sh copy-missing --batch queue --chunk 20
-# warten bis consume leer, nächster Chunk …
+# Fortschritt: /mnt/paperless-data/legacy-migrate/nas-missing-done.lst
+# warten bis consume leer, gleichen Befehl nochmal → nächste 20
 ```
 ```
 
