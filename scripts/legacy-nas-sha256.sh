@@ -134,7 +134,7 @@ min_group = int(os.environ.get("MIN_GROUP", "2"))
 def load_inventory(path):
     rows = []
     with open(path, encoding="utf-8", errors="replace") as f:
-        header = f.readline()
+        f.readline()  # header
         for line in f:
             line = line.rstrip("\n")
             if not line:
@@ -143,8 +143,21 @@ def load_inventory(path):
             if len(parts) < 4:
                 continue
             rel, size, mtime, sha = parts[0], parts[1], parts[2], parts[3]
-            rows.append((rel, int(size), int(mtime), sha))
+            rows.append((rel, int(size), int(mtime), sha.lower()))
     return rows
+
+
+def md5_file(path):
+    import hashlib
+
+    h = hashlib.md5()
+    with open(path, "rb") as fp:
+        while True:
+            chunk = fp.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def top_folder(rel):
@@ -237,47 +250,95 @@ def fetch_paperless_checksums():
         sys.exit(1)
 
     checksums = {}
-    url = "http://127.0.0.1:8000/api/documents/?page_size=100&fields=id,checksum,title"
+    api_total = 0
+    url = "http://127.0.0.1:8000/api/documents/?page_size=100"
     while url:
         req = urllib.request.Request(url, headers={"Authorization": f"Token {token}"})
         with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.load(resp)
-        for doc in data.get("results", []):
-            cs = doc.get("checksum") or ""
+        if isinstance(data, list):
+            results = data
+            url = None
+        else:
+            results = data.get("results", [])
+            if api_total == 0:
+                api_total = int(data.get("count", 0) or 0)
+            url = data.get("next")
+        for doc in results:
+            cs = (doc.get("checksum") or "").strip().lower()
             if cs:
                 checksums[cs] = doc.get("id")
-        url = data.get("next")
-    return checksums
+    if api_total == 0:
+        api_total = len(checksums)
+    return checksums, api_total
+
+
+def detect_checksum_algo(checksums):
+    lengths = {len(c) for c in checksums}
+    if 64 in lengths:
+        return "sha256"
+    if 32 in lengths:
+        return "md5"
+    return "unknown"
+
+
+def nas_compare_hash(rel, sha256, algo):
+    path = os.path.join(nas_root, rel)
+    if algo == "sha256":
+        return sha256
+    if algo == "md5":
+        return md5_file(path)
+    return sha256
 
 
 def vs_paperless(rows):
-    by_hash, _, total, unique, dup_files, dup_groups, extra = analyze(rows)
-    pl_checksums = fetch_paperless_checksums()
+    by_hash, _, total, unique, dup_files, dup_groups, _extra = analyze(rows)
+    pl_checksums, api_total = fetch_paperless_checksums()
+    algo = detect_checksum_algo(pl_checksums)
 
-    nas_hashes = set(by_hash)
+    if api_total == 0:
+        print("WARN: Paperless API lieferte 0 Dokumente — Token/URL prüfen", file=sys.stderr)
+    elif not pl_checksums:
+        print(
+            f"WARN: {api_total} Docs in API, aber kein checksum-Feld — Abgleich nicht möglich",
+            file=sys.stderr,
+        )
+
+    # NAS-Hashes im Paperless-Format (MD5 bei älteren Installationen)
+    nas_by_compare = defaultdict(list)
+    if algo == "md5":
+        print("Paperless-Checksums: MD5 (32 Zeichen) — berechne MD5 für NAS-Dateien …", file=sys.stderr)
+    for rel, _size, _mtime, sha in rows:
+        ch = nas_compare_hash(rel, sha, algo)
+        nas_by_compare[ch].append(rel)
+
     pl_hashes = set(pl_checksums)
+    overlap_hashes = set(nas_by_compare) & pl_hashes
+    new_hashes = set(nas_by_compare) - pl_hashes
 
-    overlap_hashes = nas_hashes & pl_hashes
-    new_hashes = nas_hashes - pl_hashes
-
-    files_already = sum(len(by_hash[h]) for h in overlap_hashes)
-    files_new_content = sum(len(by_hash[h]) for h in new_hashes)
+    files_already = sum(len(nas_by_compare[h]) for h in overlap_hashes)
+    files_new_content = sum(len(nas_by_compare[h]) for h in new_hashes)
+    realistic_new = max(0, unique - len(overlap_hashes))
 
     lines = [
         "",
         "=== NAS vs. Paperless (Checksum-Abgleich) ===",
-        f"Dokumente in Paperless (API):     {len(pl_checksums)}",
-        f"Einzigartige NAS-Inhalte (SHA256): {unique}",
-        f"Bereits in Paperless (Hash-Match): {len(overlap_hashes)} Hashes → {files_already} NAS-Dateien",
-        f"Nicht in Paperless:              {len(new_hashes)} Hashes → {files_new_content} NAS-Dateien",
+        f"Dokumente in Paperless (API count): {api_total}",
+        f"Docs mit checksum in API:           {len(pl_checksums)}",
+        f"Paperless-Algorithmus:              {algo}",
+        f"Einzigartige NAS-Inhalte (SHA256):  {unique}",
+        f"Bereits in Paperless (Hash-Match):  {len(overlap_hashes)} Hashes → {files_already} NAS-Dateien",
+        f"Nicht in Paperless:                 {len(new_hashes)} Hashes → {files_new_content} NAS-Dateien",
         "",
         "Erwartung beim Legacy-Import:",
         f"  ~{files_already} NAS-Dateien → Duplikat-Fehler (Inhalt schon in Paperless)",
-        f"  ~{files_new_content} NAS-Dateien → könnten neue Docs werden (wenn importiert)",
-        f"  Davon NAS-interne Kopien:        {dup_files} Dateien ({dup_groups} Gruppen)",
-        f"  Max. neue Docs realistisch:      {len(new_hashes)} (ein Doc pro neuem Hash)",
+        f"  ~{files_new_content} NAS-Dateien → versucht zu importieren",
+        f"  Davon NAS-interne Kopien:         {dup_files} Dateien ({dup_groups} Gruppen)",
+        f"  Max. neue Docs realistisch:       ~{realistic_new}",
         "",
-        "Hinweis: Paperless checksum = SHA256 des Originals (wie dieses Inventar).",
+        f"  Formel: eindeutige NAS ({unique}) − in Paperless ({len(overlap_hashes)}) ≈ {realistic_new}",
+        "",
+        "Hinweis: ältere Paperless-Versionen speichern MD5, neuere SHA256.",
     ]
     text = "\n".join(lines)
     print(text)
