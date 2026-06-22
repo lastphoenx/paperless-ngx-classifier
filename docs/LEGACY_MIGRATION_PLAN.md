@@ -41,6 +41,14 @@ mv /root/legacy-migrate-resume.sh /root/legacy-migrate-resume.sh.DISABLED 2>/dev
 /opt/paperless-scripts/legacy-tasks-summary.sh
 /opt/paperless-scripts/legacy-duplicate-audit.sh   # Tasks vs. einzigartige Duplikat-Dateien
 /opt/paperless-scripts/legacy-nas-sha256.sh all      # NAS SHA256-Inventar + erwartete Dubletten
+
+### Nur fehlende Inhalte importieren (empfohlen)
+
+```bash
+/opt/paperless-scripts/legacy-nas-sha256.sh missing          # nas-missing-import.tsv (~945 PDFs)
+/opt/paperless-scripts/legacy-nas-sha256.sh copy-missing --batch queue --chunk 20
+# warten bis consume leer, nächster Chunk …
+```
 ```
 
 Zeigt dieselben Zahlen wie die UI: Fehlgeschlagen / Warteschlange / legacy-Tag / consume.
