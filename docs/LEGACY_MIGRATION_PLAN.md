@@ -39,6 +39,7 @@ mv /root/legacy-migrate-resume.sh /root/legacy-migrate-resume.sh.DISABLED 2>/dev
 
 ```bash
 /opt/paperless-scripts/legacy-tasks-summary.sh
+/opt/paperless-scripts/legacy-duplicate-audit.sh   # Tasks vs. einzigartige Duplikat-Dateien
 ```
 
 Zeigt dieselben Zahlen wie die UI: Fehlgeschlagen / Warteschlange / legacy-Tag / consume.
