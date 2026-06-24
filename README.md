@@ -217,9 +217,10 @@ nano /opt/paperless/.env
 ```
 
 **Full installation guide** → [`INSTALL.md`](INSTALL.md)  
-**User handbook (paper.manager)** → [`docs/Benutzerhandbuch_paper_manager.md`](docs/Benutzerhandbuch_paper_manager.md)
+**User handbook (paper.manager)** → [`docs/Benutzerhandbuch_paper_manager.md`](docs/Benutzerhandbuch_paper_manager.md)  
+**Paperless v3 upgrade (when stable)** → [`docs/UPGRADE_V3.md`](docs/UPGRADE_V3.md) · Check version: `./scripts/paperless-version-check.sh`
 
-> **`docker-compose.yml`** included in this repo is a **template** for a full Paperless-NGX Docker stack (DB, broker, webserver). Use it only if Paperless is not yet installed. Adapt all paths, passwords, and volumes before use — see `.env.example` for all variables.
+> **`docker-compose.yml`** included in this repo is a **template** for a full Paperless-NGX Docker stack (DB, broker, webserver). **Image is pinned to `2.20.15`** — never use `:latest` in production. Adapt paths, passwords, and volumes before use — see `.env.example`.
 
 ---
 

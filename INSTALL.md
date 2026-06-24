@@ -7,7 +7,7 @@ Für Wiederherstellung nach Ausfall → siehe `paperless-restore-checkliste.md`.
 
 | Komponente | Mindestversion | Hinweis |
 |---|---|---|
-| Paperless-NGX | v2.x (aktuell **2.20.15** gepinnt) | Docker, API erreichbar; v3-Plan → [docs/UPGRADE_V3.md](docs/UPGRADE_V3.md) |
+| Paperless-NGX | **2.20.15** (gepinnt, Pfad zu v3) | Docker; Upgrade → [docs/UPGRADE_V3.md](docs/UPGRADE_V3.md) |
 | Ollama | aktuell | Separater Server empfohlen (GPU) |
 | Python | 3.11+ | Auf dem Paperless-Host |
 | Debian/Ubuntu | 12/24.04 | Andere Distros möglich, nicht getestet |
@@ -436,10 +436,54 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | Kennzeichen erkannt, Person falsch (Versicherung) | Beziehung/Empfänger vor Kennzeichen (bis 12.21) oder `family.json` falsch | pipe ≥ 12.22; Kennzeichen → Person in Familie prüfen |
 | Stufe 1 ohne Ref-Match trotzdem geroutet | Alte «einzelne Beziehung»-Logik (bis 12.21) | pipe ≥ 12.21; Ref-Nr in Beziehung pflegen |
 | Deploy zeigt alte Pipeline-Version (z. B. 12.19 statt 12.20) | `git pull` ohne neuen Commit auf `main` | Lokal committen/pushen, dann erneut `git pull && ./scripts/deploy-to-ct121.sh` |
+| Versehentlich v3 nach `docker compose pull` | Image `:latest` in compose | Pin auf `2.20.15`; siehe [UPGRADE_V3.md](docs/UPGRADE_V3.md) Phase 0 |
+| Paperless-Version unklar | — | `./scripts/paperless-version-check.sh` |
 | Permissions-Fehler auf Dokumenten | Gruppen-IDs falsch | PAPERLESS_VIEW_GROUP_IDS in .env |
 | Falscher Ordner trotz korrekter Vision | Paperless Classifier noch aktiv | Schritt 7b — alle 3 Objekttypen zurücksetzen |
 | Erster Scan mit unerwartetem Typ, danach korrekt | Typ neu für diesen Ordner → Manifest automatisch ergänzt (Self-healing) | Erwartet — kein Handlungsbedarf |
 | `Scan_` Titel / Dateien als `0000xxx.pdf` | post_consume.py Absturz (KRITISCH) | Fehler beheben, PDF re-konsumieren |
+
+---
+
+## Paperless-NGX Version (Produktion)
+
+Paperless-Image **immer pinnen** — nie `:latest` auf Produktion (sonst kann `docker compose pull` v3 ziehen).
+
+```yaml
+# /opt/paperless/docker-compose.yml
+image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
+```
+
+Version prüfen:
+
+```bash
+cd /opt/paperless-ngx-classifier && git pull
+./scripts/paperless-version-check.sh
+```
+
+Erwartung CT 121: App **2.20.15**, compose gepinnt. Container-Tag `:latest` bei gleichem Image-Layer ist unkritisch bis zum nächsten `pull` — optional:
+
+```bash
+docker tag ghcr.io/paperless-ngx/paperless-ngx:latest ghcr.io/paperless-ngx/paperless-ngx:2.20.15
+```
+
+---
+
+## Upgrade auf Paperless-NGX v3 (wenn 3.0.0 stable)
+
+**Nicht vor Legacy-Abschluss und stable Release.**
+
+Kurzablauf — vollständige Runbook: **[docs/UPGRADE_V3.md](docs/UPGRADE_V3.md)**
+
+1. Legacy-Import fertig ([LEGACY_MIGRATION_PLAN.md](docs/LEGACY_MIGRATION_PLAN.md))
+2. Vollbackup
+3. Classifier-Repo mit v3-Anpassungen deployen (`git pull && ./scripts/deploy-to-ct121.sh`)
+4. `/opt/paperless/.env`: OCR `skip`→`auto`, `CONSUMER_POLLING`→`CONSUMER_POLLING_INTERVAL`, ggf. `DELETE_DUPLICATES` explizit lassen
+5. `docker-compose.yml`: `image: …:3.0.0`, `PAPERLESS_DBENGINE=postgresql`
+6. `docker compose pull webserver && docker compose up -d --force-recreate webserver`
+7. Checkliste in UPGRADE_V3.md Phase 2.8
+
+`.env.example` enthält einen auskommentierten **v3-Block** als Vorlage.
 
 ---
 

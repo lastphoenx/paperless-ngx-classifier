@@ -4,6 +4,8 @@
 
 Quelle: `/mnt/nas-legacy/Eltern/Finanzen` · ~2561 PDFs (ohne `Vorsorge/Moni/2015` und `2016`)
 
+> **Paperless-Version:** Produktion läuft **2.20.15** (compose gepinnt). Legacy **vor** Upgrade auf v3 abschliessen — siehe [UPGRADE_V3.md](./UPGRADE_V3.md).
+
 ---
 
 ## Empfohlen: ein Batch, Vordergrund (`legacy-one-batch.sh`)

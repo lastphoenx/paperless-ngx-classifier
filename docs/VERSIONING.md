@@ -1,6 +1,8 @@
 # Versionierung (paper.manager + Pipeline)
 
-Drei unabhängige Versionsnummern — in der Sidebar und auf dem Home-Tab sichtbar (`/api/config` → `versions`).
+**Paperless-NGX** (Docker-Image) ist unabhängig: Produktion **2.20.15** gepinnt — siehe [UPGRADE_V3.md](./UPGRADE_V3.md) und `./scripts/paperless-version-check.sh`.
+
+Drei Classifier-Versionsnummern — in der Sidebar und auf dem Home-Tab sichtbar (`/api/config` → `versions`).
 
 | Komponente | Konstante | Datei(en) |
 |---|---|---|

@@ -220,9 +220,10 @@ nano /opt/paperless/.env
 ```
 
 **Vollständige Installationsanleitung** → [`INSTALL.md`](INSTALL.md)  
-**Benutzerhandbuch (paper.manager)** → [`docs/Benutzerhandbuch_paper_manager.md`](docs/Benutzerhandbuch_paper_manager.md)
+**Benutzerhandbuch (paper.manager)** → [`docs/Benutzerhandbuch_paper_manager.md`](docs/Benutzerhandbuch_paper_manager.md)  
+**Paperless v3 Upgrade (wenn stable)** → [`docs/UPGRADE_V3.md`](docs/UPGRADE_V3.md) · Version prüfen: `./scripts/paperless-version-check.sh`
 
-> **`docker-compose.yml`** in diesem Repo ist eine **Vorlage** für einen vollständigen Paperless-NGX Docker-Stack (DB, Broker, Webserver). Nur verwenden, wenn Paperless noch nicht installiert ist. Alle Pfade, Passwörter und Volumes vor der Nutzung anpassen — alle Variablen in `.env.example`.
+> **`docker-compose.yml`** in diesem Repo ist eine **Vorlage** für einen vollständigen Paperless-NGX Docker-Stack (DB, Broker, Webserver). **Image ist auf `2.20.15` gepinnt** — nie `:latest` auf Produktion. Pfade, Passwörter und Volumes vor der Nutzung anpassen — siehe `.env.example`.
 
 ---
 

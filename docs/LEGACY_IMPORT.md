@@ -4,6 +4,8 @@ NAS-Ordner schrittweise in Paperless — **nur Indexierung**, ohne OCR/Vision/LL
 
 Vollständiger Batch-Plan: [LEGACY_MIGRATION_PLAN.md](./LEGACY_MIGRATION_PLAN.md)
 
+Paperless **2.20.15** (gepinnt). Legacy vor v3 abschliessen → [UPGRADE_V3.md](./UPGRADE_V3.md).
+
 NFS-Architektur (CT 121): [ct121-nfs-fix.md](../../../doku/pve2/vm/121-paperless/Doku/docs/ct121-nfs-fix.md)
 
 ## Voraussetzungen (einmalig)
