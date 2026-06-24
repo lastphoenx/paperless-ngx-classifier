@@ -6,13 +6,16 @@ set -euo pipefail
 COMPOSE_DIR="${PAPERLESS_COMPOSE_DIR:-/opt/paperless}"
 COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yml"
 TARGET_VERSION="${PAPERLESS_TARGET_VERSION:-2.20.15}"
+TARGET_IMAGE="ghcr.io/paperless-ngx/paperless-ngx:$TARGET_VERSION"
 
 echo "=== Paperless Version Check ==="
 echo ""
 
+compose_image=""
 if [[ -f "$COMPOSE_FILE" ]]; then
   echo "docker-compose.yml ($COMPOSE_FILE):"
-  grep -E '^\s*image:.*paperless-ngx' "$COMPOSE_FILE" || echo "  (kein paperless-ngx image gefunden)"
+  compose_image="$(grep -E '^\s*image:.*paperless-ngx' "$COMPOSE_FILE" | head -1 | awk '{print $2}' || true)"
+  echo "  $compose_image"
 else
   echo "WARN: $COMPOSE_FILE nicht gefunden"
 fi
@@ -26,49 +29,78 @@ fi
 
 image="$(docker inspect "$cid" --format '{{.Config.Image}}')"
 echo "Laufendes Image:  $image"
-echo "Ziel-Pin:         ghcr.io/paperless-ngx/paperless-ngx:$TARGET_VERSION"
+echo "Ziel-Pin:         $TARGET_IMAGE"
 echo ""
 
-# Version aus Container (mehrere Fallbacks)
-version=""
-for cmd in \
-  'cat /usr/src/paperless/src/paperless/version.py 2>/dev/null' \
-  'python3 -c "import paperless; print(getattr(paperless, \"__version__\", \"\"))" 2>/dev/null' \
-  'pip show paperless-ngx 2>/dev/null | grep -i ^Version'; do
-  version="$(docker exec "$cid" bash -lc "$cmd" 2>/dev/null | tr -d '\r' | head -1 || true)"
-  [[ -n "$version" ]] && break
-done
+# App-Version aus version.py (__version__-Tuple)
+app_version="$(docker exec "$cid" python3 -c "
+from pathlib import Path
+p = Path('/usr/src/paperless/src/paperless/version.py')
+if not p.is_file():
+    raise SystemExit(1)
+ns = {}
+exec(p.read_text(), ns)
+v = ns.get('__version__')
+if v:
+    print('.'.join(map(str, v)))
+elif ns.get('__full_version_str__'):
+    print(ns['__full_version_str__'])
+" 2>/dev/null || true)"
 
-if [[ -n "$version" ]]; then
-  echo "App-Version im Container: $version"
+if [[ -n "$app_version" ]]; then
+  echo "App-Version im Container: $app_version"
 else
-  echo "App-Version: (nicht ermittelbar — API-Fallback unten)"
+  echo "App-Version im Container: (nicht ermittelbar)"
 fi
 
 token=""
 if [[ -f "$COMPOSE_DIR/.env" ]]; then
   token="$(grep -m1 '^PAPERLESS_TOKEN=' "$COMPOSE_DIR/.env" | cut -d= -f2- || true)"
 fi
+
+api_version=""
+api_api_version=""
 if [[ -n "$token" ]]; then
-  api_version="$(curl -sf --connect-timeout 5 --max-time 10 \
+  headers="$(curl -sI --connect-timeout 5 --max-time 10 \
     -H "Authorization: Token $token" \
-  http://127.0.0.1:8000/api/ 2>/dev/null | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('version', '?'))
-except Exception:
-    print('?')
-" 2>/dev/null || echo "?")"
-  echo "API /api/ version:      $api_version"
+    "http://127.0.0.1:8000/api/documents/?page_size=1" 2>/dev/null || true)"
+  api_version="$(printf '%s\n' "$headers" | grep -i '^x-version:' | head -1 | cut -d' ' -f2- | tr -d '\r' || true)"
+  api_api_version="$(printf '%s\n' "$headers" | grep -i '^x-api-version:' | head -1 | cut -d' ' -f2- | tr -d '\r' || true)"
+  echo "API x-version:          ${api_version:-?}"
+  echo "API x-api-version:      ${api_api_version:-?}"
+else
+  echo "API:                    (kein PAPERLESS_TOKEN in $COMPOSE_DIR/.env)"
 fi
 
 echo ""
-if [[ "$image" == *":latest" ]]; then
-  echo "⚠ RISIKO: Image ist :latest — bei pull/up kann v3 gezogen werden."
-  echo "  → Pin setzen: docs/UPGRADE_V3.md Phase 0"
-elif [[ "$image" == *":$TARGET_VERSION" ]]; then
-  echo "✓ Image ist auf $TARGET_VERSION gepinnt."
+echo "--- Bewertung ---"
+
+compose_ok=0
+if [[ "$compose_image" == *":$TARGET_VERSION" ]]; then
+  compose_ok=1
+  echo "✓ compose.yml gepinnt auf $TARGET_VERSION"
+elif [[ "$compose_image" == *":latest" ]]; then
+  echo "⚠ compose.yml noch :latest — Pin setzen (docs/UPGRADE_V3.md Phase 0)"
 else
-  echo "ℹ Image weicht vom Ziel-Pin $TARGET_VERSION ab: $image"
+  echo "ℹ compose.yml: $compose_image"
+fi
+
+if [[ "$image" == *":$TARGET_VERSION" ]]; then
+  echo "✓ laufender Container nutzt Image-Tag $TARGET_VERSION"
+elif [[ "$image" == *":latest" ]]; then
+  if [[ "$compose_ok" -eq 1 ]]; then
+    echo "ℹ Container noch :latest, compose aber gepinnt — ok bis zum nächsten pull/recreate."
+    echo "  Optional ohne Neustart: docker tag $image $TARGET_IMAGE"
+    echo "  Oder: cd $COMPOSE_DIR && docker compose up -d --force-recreate webserver"
+  else
+    echo "⚠ RISIKO: Container :latest — bei pull/up kann v3 gezogen werden."
+  fi
+else
+  echo "ℹ laufendes Image: $image"
+fi
+
+if [[ -n "$app_version" && "$app_version" != "$TARGET_VERSION" ]]; then
+  echo "⚠ App-Version $app_version weicht von Ziel-Pin $TARGET_VERSION ab"
+elif [[ -n "$app_version" && "$app_version" == "$TARGET_VERSION" ]]; then
+  echo "✓ App-Version entspricht Ziel-Pin $TARGET_VERSION"
 fi
