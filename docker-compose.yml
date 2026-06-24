@@ -63,6 +63,7 @@ services:
       PAPERLESS_REDIS: redis://broker:6379
       PAPERLESS_DBHOST: db
       PAPERLESS_DBPASS: "DEIN_DATENBANK_PASSWORT"
+      # v3: PAPERLESS_DBENGINE: postgresql  (ab 3.0.0 Pflicht — siehe docs/UPGRADE_V3.md)
 
 volumes:
   paperless-media:

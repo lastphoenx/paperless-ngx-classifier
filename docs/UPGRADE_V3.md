@@ -1,279 +1,278 @@
-# Paperless-NGX v3 — Upgrade-Plan (Stand: 24.06.2026)
+# Paperless-NGX v3 — Upgrade-Plan
 
-Dieses Dokument beschreibt den **sicheren Weg von 2.20.15 nach v3** für CT 121
-mit **paperless-ngx-classifier**, Legacy-Migration und paper.manager.
+Upgrade-Pfad für **CT 121** mit **paperless-ngx-classifier**, Legacy-Migration und paper.manager.
 
-**Empfehlung heute (24.06.2026):** v3 **nicht** auf Produktion fahren.
-Stable ist weiterhin 2.x; v3 läuft als Pre-Release (`3.0.0-beta.rc1`).
-Zuerst **2.20.15 pinnen**, **Legacy-Migration abschliessen**, dann v3 auf Testinstanz.
+**Stand Produktion (Juni 2026):**
 
----
+| Check | Status |
+|-------|--------|
+| App-Version | **2.20.15** |
+| `docker-compose.yml` | gepinnt auf `2.20.15` |
+| Laufender Container-Tag | noch `:latest` (gleicher Layer — harmlos bis `pull`) |
+| v3 stable | **noch nicht** — Beta `3.0.0-beta.rc1` |
+| Legacy-Import | **läuft noch** — vor v3 abschliessen |
 
-## Strategie in drei Phasen
+**Empfehlung:** Phase 0 erledigt. Legacy fertig migrieren. v3 erst bei **stable 3.0.0** auf Testinstanz, dann Produktion.
 
-| Phase | Was | Wann |
-|-------|-----|------|
-| **0** | Version prüfen, auf 2.20.15, Image pinnen | **Jetzt** |
-| **1** | Legacy-Altbestand fertig migrieren | **Vor v3** |
-| **2** | v3 vorbereiten / testen / umschalten | **Erst wenn v3 stable** |
-
-**Bewusst nicht jetzt:** v3-only Env-Variablen oder Classifier-Code für v3 deployen.
-Das Repo enthält nur den **Pin** und diese Doku — Produktion bleibt unverändert bis Phase 2.
+Offizieller Upstream-Guide: [migration-v3.md](https://github.com/paperless-ngx/paperless-ngx/blob/dev/docs/migration-v3.md) (nach Release ggf. `main`-Branch prüfen).
 
 ---
 
-## Phase 0 — Version prüfen und 2.20.15 pinnen
+## Übersicht — drei Phasen
 
-### 0.1 Version auf CT 121 prüfen
+| Phase | Inhalt | Status |
+|-------|--------|--------|
+| **0** | 2.20.15, Image pinnen, Version prüfen | ✓ erledigt |
+| **1** | Legacy-Altbestand fertig migrieren | **läuft** |
+| **2** | v3 stable: vorbereiten, testen, umschalten | wenn 3.0.0 stable |
+
+---
+
+## Phase 0 — Version prüfen und pinnen (erledigt)
+
+### Version prüfen
 
 ```bash
 cd /opt/paperless-ngx-classifier && git pull
 ./scripts/paperless-version-check.sh
 ```
 
-Alternativ manuell:
+Manuell (API liefert Version in Headern, nicht als JSON unter `/api/`):
 
 ```bash
-grep 'paperless-ngx' /opt/paperless/docker-compose.yml
-docker ps --format '{{.Image}}' --filter name=webserver
-curl -s -H "Authorization: Token $TOKEN" http://127.0.0.1:8000/api/ | python3 -m json.tool
+TOKEN=$(grep -m1 '^PAPERLESS_TOKEN=' /opt/paperless/.env | cut -d= -f2-)
+curl -sI -H "Authorization: Token $TOKEN" \
+  "http://127.0.0.1:8000/api/documents/?page_size=1" \
+  | grep -iE '^(HTTP|x-api-version|x-version)'
+
+docker exec "$(docker ps -qf name=webserver | head -1)" \
+  python3 -c "exec(open('/usr/src/paperless/src/paperless/version.py').read()); print('.'.join(map(str, __version__)))"
 ```
 
-### 0.2 Falls noch nicht 2.20.15 — Security-Update einspielen
-
-2.20.15 ist **Pflicht-Voraussetzung** für v3 (Security-Fix GHSA-8c6x-pfjq-9gr7).
-
-```bash
-cd /opt/paperless
-
-# Backup (Pflicht vor jedem Image-Wechsel)
-# → paperless-backup.sh oder DB + /mnt/paperless-media + /mnt/paperless-data
-
-# docker-compose.yml anpassen (oder aus Repo kopieren):
-#   image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
-
-docker compose pull webserver
-docker compose up -d --force-recreate webserver
-
-./scripts/paperless-version-check.sh   # aus Repo, siehe 0.1
-```
-
-**Wichtig:** `docker compose pull` ohne Pin zieht ggf. schon v3 — deshalb **zuerst** pinnen, **dann** pull.
-
-### 0.3 Image pinnen (dauerhaft)
-
-Im Repo (`docker-compose.yml`):
+### Pin in `/opt/paperless/docker-compose.yml`
 
 ```yaml
 image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
 ```
 
-Auf CT 121 dieselbe Zeile in `/opt/paperless/docker-compose.yml` setzen.
+**Niemals** `:latest` auf Produktion — bei `docker compose pull` kann sonst v3 gezogen werden.
 
-| Aktion | Sicher bei 2.20.15? |
-|--------|---------------------|
-| Image-Pin in compose | ✓ Ja |
-| `docker compose up -d` (ohne pull) | ✓ Ja — nutzt vorhandenes Image |
-| `docker compose pull` nach Pin | ✓ Ja — zieht nur 2.20.15 |
-| `:latest` belassen | ✗ **Nein** — Risiko v3 bei pull/up |
+### Optional: Container-Tag angleichen (ohne Neustart)
 
-### 0.4 Was in Phase 0 **nicht** geändert wird
+Wenn compose gepinnt ist, der laufende Container aber noch `:latest` heisst:
 
-- `/opt/paperless/.env` — OCR, Consumer, Duplikate bleiben wie sie sind
-- Classifier-Skripte — kein v3-spezifischer Code
-- `PAPERLESS_DBENGINE` — erst bei v3 nötig (2.20.15 inferiert Postgres aus `PAPERLESS_DBHOST`)
+```bash
+docker tag ghcr.io/paperless-ngx/paperless-ngx:latest \
+           ghcr.io/paperless-ngx/paperless-ngx:2.20.15
+```
+
+Oder mit Recreate (lädt `.env` neu):
+
+```bash
+cd /opt/paperless
+docker compose pull webserver
+docker compose up -d --force-recreate webserver
+./scripts/paperless-version-check.sh   # aus Repo
+```
+
+| Aktion | Sicher? |
+|--------|---------|
+| Pin in compose, kein `pull` | ✓ |
+| `pull` **nach** Pin | ✓ — nur 2.20.15 |
+| `:latest` + `pull` | ✗ — Risiko v3 |
 
 ---
 
-## Phase 1 — Legacy-Migration zuerst (empfohlen)
+## Phase 1 — Legacy-Migration (vor v3)
 
-### Warum Legacy **vor** v3?
+### Warum vor v3?
 
-1. **Duplikat-Verhalten:** v3 lehnt Duplikate standardmäßig **nicht** mehr ab.
-   Eure Legacy-Pipeline nutzt `PAPERLESS_CONSUMER_DELETE_DUPLICATES=true` und
-   `legacy-duplicate-audit.sh` — auf 2.20.15 ist das Verhalten bekannt und dokumentiert.
+- v3: Duplikate standardmäßig **erlaubt** (`DELETE_DUPLICATES` explizit nötig)
+- Consumer-, OCR- und Task-API ändern sich
+- Weniger Variablen = einfachere Fehlersuche
 
-2. **Consumer-Umbau in v3:** `CONSUMER_POLLING` → `CONSUMER_POLLING_INTERVAL`,
-   Stability-Delay, Regex-Ignore — während eines Gross-Imports mehr Variablen.
-
-3. **Task-API:** v3 paginiert Tasks, `task_name` → `task_type`.
-   `legacy-tasks-summary.sh` muss für v3 angepasst werden — auf 2.20.15 läuft es heute.
-
-4. **OCR-Mapping:** Legacy nutzt `PAPERLESS_OCR_MODE=skip` (v2-Semantik).
-   In v3 wird das zu `auto` + ggf. `ARCHIVE_FILE_GENERATION` — ein zusätzlicher
-   Umstellungs-Schritt mitten in der Migration.
-
-5. **Weniger Moving Parts:** Ein Gross-Import + ein Major-Upgrade gleichzeitig
-   erschwert Fehleranalyse.
-
-6. **Tantivy-Rebuild:** v3 baut den Suchindex neu — irrelevant für Import,
-   aber zusätzliche Last direkt nach Upgrade.
-
-**Fazit:** Legacy auf 2.20.15 fertigstellen, dann v3 als separaten, geplanten Schritt.
-
-### Legacy-Status und nächste Schritte
-
-Siehe [LEGACY_MIGRATION_PLAN.md](./LEGACY_MIGRATION_PLAN.md).
+Details: [LEGACY_MIGRATION_PLAN.md](./LEGACY_MIGRATION_PLAN.md)
 
 ```bash
 /opt/paperless-scripts/legacy-tasks-summary.sh
-/opt/paperless-scripts/legacy-nas-sha256.sh all
-/opt/paperless-scripts/legacy-nas-sha256.sh missing   # Delta
+/opt/paperless-scripts/legacy-nas-sha256.sh missing
 
 tmux new -s legacy
 /opt/paperless-scripts/legacy-nas-sha256.sh import-loop --batch queue --chunk 20
 ```
 
-Offene NAS-Ordner (Stand Plan): Fano, Bestellungen, BLKB, Ameritrade, Erb_Bern,
-Erbschaft_Gassacker, Steuern, Rechnungen, Vorsorge/…
+### Abschluss Phase 1
 
-### Abschluss-Kriterium Phase 1
-
-- [ ] `legacy-nas-sha256.sh missing` leer oder nur bewusst übersprungene Dateien
-- [ ] Kein aktiver `legacy-migrate-resume` / `legacy-migrate-all` im Hintergrund
-- [ ] `legacy-tasks-summary.sh`: consume/legacy leer, Fehlgeschlagene erklärbar
-- [ ] Vollbackup nach Abschluss
+- [ ] `legacy-nas-sha256.sh missing` leer (oder nur bewusst übersprungen)
+- [ ] Kein `legacy-migrate-resume` / `legacy-migrate-all` aktiv
+- [ ] `consume/legacy` leer
+- [ ] Vollbackup
 
 ---
 
-## Phase 2 — v3 vorbereiten, testen, umschalten
+## Phase 2 — Upgrade auf Paperless-NGX 3.0.0 stable
 
-**Erst starten wenn:** Legacy fertig, 2.20.15 gepinnt, v3 **stable** (nicht Beta),
-Testinstanz erfolgreich.
+**Voraussetzungen:** Phase 0 + 1 abgeschlossen, Release **3.0.0 stable** (kein Beta),
+Classifier-Repo mit v3-Anpassungen (siehe 2.3), Wartungsfenster eingeplant.
 
-### 2.1 Vollbackup
+### 2.1 Checkliste vor dem Upgrade
 
-- Postgres (`/mnt/paperless-data/postgres`)
-- `/mnt/paperless-data/data`
-- `/mnt/paperless-media`
-- `/opt/paperless/.env`
-- `/opt/paperless-scripts/training/`
+- [ ] Vollbackup (Postgres, `data`, `media`, `.env`, `training/`)
+- [ ] `./scripts/paperless-version-check.sh` → App **2.20.15**, compose gepinnt
+- [ ] Kein laufender Legacy-Import
+- [ ] Release Notes 3.0.0 gelesen
+- [ ] Testinstanz (optional aber empfohlen) mit Kopie erfolgreich upgraded
 
-### 2.2 Env-Änderungen für v3 (`/opt/paperless/.env`)
+### 2.2 Vollbackup
 
-| v2 (aktuell) | v3 |
-|--------------|-----|
-| `PAPERLESS_OCR_MODE=skip` | `PAPERLESS_OCR_MODE=auto` (Default) |
-| `PAPERLESS_OCR_MODE=skip_noarchive` | `auto` + `PAPERLESS_ARCHIVE_FILE_GENERATION=never` |
-| `PAPERLESS_OCR_SKIP_ARCHIVE_FILE=*` | entfernen → `PAPERLESS_ARCHIVE_FILE_GENERATION` |
-| `PAPERLESS_CONSUMER_POLLING=10` | `PAPERLESS_CONSUMER_POLLING_INTERVAL=10` |
-| `PAPERLESS_CONSUMER_DELETE_DUPLICATES` (optional) | **explizit** setzen wenn altes Verhalten gewünscht |
-| — | `PAPERLESS_DBENGINE=postgresql` (in compose oder .env) |
-| `PAPERLESS_SECRET_KEY` | muss gesetzt sein (bei euch bereits in `.env.example`) |
-
-In `docker-compose.yml` zusätzlich:
-
-```yaml
-environment:
-  PAPERLESS_DBENGINE: postgresql
-  PAPERLESS_DBHOST: db
+```bash
+# Beispiel — euer paperless-backup.sh oder manuell:
+# Postgres-Dump, /mnt/paperless-data/data, /mnt/paperless-media, /opt/paperless/.env
 ```
 
-### 2.3 Classifier-Anpassungen (bei v3-Switch deployen)
+### 2.3 Classifier-Repo aktualisieren
 
-Noch **nicht** auf Produktion — Liste für Phase 2:
+Vor dem Image-Wechsel (oder im selben Wartungsfenster) Repo mit v3-fähigem Stand deployen:
+
+```bash
+cd /opt/paperless-ngx-classifier && git pull
+./scripts/deploy-to-ct121.sh
+```
+
+**Geplante Code-Anpassungen** (im Repo umsetzen, sobald v3 stable naht):
 
 | Datei | Änderung |
 |-------|----------|
-| `post_consume.py` | `Accept: application/json; version=9` (oder 10) in `_headers()` |
-| `correspondent_manager_app.py` | Gleicher Accept-Header in `PAPERLESS_HEADERS` |
-| `scripts/legacy-tasks-summary.sh` | `task_name` → `task_type`, Pagination |
-| `scripts/legacy-duplicate-audit.sh` | `task_type`, Duplikat-Meldungen v3 beachten |
-| `post_consume.py` | `paperless_get_notes()`: Response als Liste oder `{results:[]}` |
-| `.env.example`, `INSTALL.md`, `LEGACY_MIGRATION_PLAN.md` | v3-OCR-/Consumer-Doku |
+| `post_consume.py` | `Accept: application/json; version=9` in `_headers()` |
+| `correspondent_manager_app.py` | Gleicher Accept-Header |
+| `scripts/legacy-tasks-summary.sh` | `task_type` statt `task_name`, Pagination |
+| `scripts/legacy-duplicate-audit.sh` | `task_type`, v3-Duplikat-Meldungen |
+| `post_consume.py` | `paperless_get_notes()`: Liste oder `{results:[]}` |
 
-**Nicht betroffen (bereits v3-tauglich):**
+**Bereits v3-tauglich:** Pre/Post-Consume per Env; Swiss-QR (`pre_consume_qr.py`);
+Custom Fields per ID; keine Positional-Args in Hooks.
 
-- `pre_consume.sh` / `post_consume.py` — nutzen Env-Variablen, keine `$1`…`$8`
-- `pre_consume_qr.py` — eigenes pyzbar, unabhängig vom Paperless-Barcode-Backend
-- Custom Fields per ID, `/api/`-Endpoints, bulk_edit
+### 2.4 `.env` für v3 anpassen (`/opt/paperless/.env`)
 
-### 2.4 Image auf v3 (wenn stable)
+| v2 (aktuell CT 121) | v3 |
+|---------------------|-----|
+| `PAPERLESS_OCR_MODE=skip` | `PAPERLESS_OCR_MODE=auto` |
+| `PAPERLESS_OCR_MODE=redo` | unverändert |
+| `PAPERLESS_OCR_SKIP_ARCHIVE_FILE=*` | **entfernen** |
+| — | `PAPERLESS_ARCHIVE_FILE_GENERATION=auto` (Default) |
+| `PAPERLESS_CONSUMER_POLLING=10` | `PAPERLESS_CONSUMER_POLLING_INTERVAL=10` |
+| `PAPERLESS_CONSUMER_DELETE_DUPLICATES=true` | **behalten** wenn Duplikate aus consume entfernt werden sollen |
+| — | `PAPERLESS_SECRET_KEY` muss gesetzt sein |
+| `CONSUMER_BARCODE_SCANNER` (falls gesetzt) | entfernen (nur zxing-cpp) |
+
+Mapping `skip` → `auto`: Pre-Consume (`ocrmypdf`) legt Textschicht an → Paperless überspringt OCR wie bisher.
+
+### 2.5 `docker-compose.yml` für v3
+
+```yaml
+  webserver:
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.0.0   # stable-Tag, nie :latest
+    environment:
+      PAPERLESS_REDIS: redis://broker:6379
+      PAPERLESS_DBENGINE: postgresql    # ab v3 Pflicht
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBPASS: "…"
+```
+
+Auch in Repo-`docker-compose.yml` anpassen und committen.
+
+### 2.6 Upgrade ausführen (Produktion)
 
 ```bash
 cd /opt/paperless
-# docker-compose.yml:
-#   image: ghcr.io/paperless-ngx/paperless-ngx:3.0.0   # stable-Tag, nicht :latest
+
+# 1. Backup verifiziert?
+# 2. .env + compose wie oben angepasst
 
 docker compose pull webserver
 docker compose up -d --force-recreate webserver
+
+# Logs beobachten (Tantivy-Index-Rebuild, Migrationen)
+docker compose logs -f webserver
 ```
 
-**Nach erstem Start:**
+### 2.7 Direkt nach dem ersten Start
 
-- Tantivy-Index wird neu aufgebaut (Zeit, CPU-Last)
-- Task-Historie ist leer
-- Sessions/Tokens ungültig wenn `PAPERLESS_SECRET_KEY` rotiert wurde
+Erwartetes Verhalten:
 
-### 2.5 Test-Checkliste nach v3
-
-- [ ] Normaler PDF-Consume → pre_consume → post_consume → Tags/CF/Storage
-- [ ] paper.manager Login (Authentik), Doc-Review, Proxy preview/thumb
-- [ ] Pipeline-Notiz wird geschrieben und ersetzt
-- [ ] `legacy-tasks-summary.sh` (nach Anpassung) funktioniert
-- [ ] Suche in Paperless UI (Tantivy-Syntax für Notizen: `notes.note:`)
-- [ ] Optional: `PAPERLESS_TRUSTED_PROXIES` wenn Login 403 hinter nginx
-
-### 2.6 Rollback
+- **Tantivy** baut Suchindex neu (Zeit + CPU)
+- **Task-Historie** leer
+- Sessions ungültig wenn `SECRET_KEY` rotiert
+- API-Default ohne Accept-Header: **v10**
 
 ```bash
-# compose auf 2.20.15 zurück, DB-Backup restore falls Migration fehlschlägt
-image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
+cd /opt/paperless-ngx-classifier
+./scripts/paperless-version-check.sh   # Ziel-Pin in Skript ggf. auf 3.0.0 anpassen
+
+TOKEN=$(grep -m1 '^PAPERLESS_TOKEN=' /opt/paperless/.env | cut -d= -f2-)
+curl -sI -H "Authorization: Token $TOKEN" \
+  "http://127.0.0.1:8000/api/documents/?page_size=1" \
+  | grep -iE 'x-version|x-api-version'
 ```
 
-v3-Migration ist destruktiv (frische DB-Migrations) — **Backup vorher ist Pflicht**.
+### 2.8 Funktionstest (Classifier)
+
+- [ ] PDF in `consume/` → pre_consume → post_consume → Tags, CF, Storage Path
+- [ ] paper.manager: Login (Authentik), Doc-Review, Proxy preview/thumb
+- [ ] Pipeline-Notiz (`🤖 pipe v…`) wird geschrieben/ersetzt
+- [ ] Suche: Notizen mit `notes.note:…` (Tantivy)
+- [ ] Bei Login 403 hinter nginx: `PAPERLESS_TRUSTED_PROXIES` / `PAPERLESS_ALLAUTH_TRUSTED_CLIENT_IP_HEADER`
+
+### 2.9 Rollback
+
+v3-DB-Migration ist nicht trivial rückgängig zu machen.
+
+```bash
+# Image zurück
+image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
+# + Postgres/data/media aus Backup restore
+```
+
+**Backup vor Upgrade ist Pflicht.**
 
 ---
 
-## Was wäre, wenn wir **heute** (24.06.2026) auf v3 gingen?
-
-| Aspekt | Bewertung |
-|--------|-----------|
-| v3 stable | ✗ Nur Beta (`3.0.0-beta.rc1`) |
-| Legacy offen | ✗ ~mehrere NAS-Ordner + missing-Queue |
-| `:latest`-Risiko | Hoch — könnte bei pull schon v3 ziehen |
-| Duplikat-/Task-Verhalten | Ungetestet mit euren Legacy-Skripten |
-| Paperless AI vs. Classifier | Strategische Überlappung, kein Blocker |
-| Aufwand | Hoch — Env, DBENGINE, OCR, API, Skripte, Re-Test alles |
-
-**Urteil:** Heute nur **Phase 0** (prüfen + pinnen). Legacy fertig, dann v3 stable abwarten.
-
----
-
-## Kurz-Referenz Breaking Changes (Classifier-relevant)
-
-Offizieller Guide: [migration-v3.md](https://github.com/paperless-ngx/paperless-ngx/blob/beta/docs/migration-v3.md)
+## Breaking Changes (Classifier-relevant)
 
 1. Upgrade nur von **2.20.15**
 2. `PAPERLESS_SECRET_KEY` Pflicht
-3. `PAPERLESS_DBENGINE` Pflicht (Postgres)
-4. OCR/Archiv entkoppelt (`skip` entfällt)
-5. Consumer-Settings umbenannt/vereinheitlicht
+3. `PAPERLESS_DBENGINE=postgresql` Pflicht
+4. OCR/Archiv entkoppelt (`skip` entfällt → `auto`)
+5. Consumer: `POLLING_INTERVAL`, `STABILITY_DELAY`, Regex-Ignore
 6. Duplikate standardmäßig erlaubt
-7. API v9/v10, Default v10 ohne Accept-Header
-8. Tasks paginiert, `task_type` statt `task_name`
-9. Whoosh → Tantivy (automatischer Rebuild)
-10. Dokument-Versionen (API kompatibel, `find_pdf` über `DOCUMENT_SOURCE_PATH` ok)
-11. Verschlüsselung entfernt (bei euch n/a)
-12. pyzbar in Paperless entfernt (euer `pre_consume_qr.py` unberührt)
+7. API v9/v10; Default v10
+8. Tasks: paginiert, `task_type`
+9. Whoosh → Tantivy (Auto-Rebuild)
+10. Dokument-Versionen (API: `content` = letzte Version)
+11. Verschlüsselung entfernt (bei uns n/a)
+12. Paperless-Barcode: nur zxing-cpp (`pre_consume_qr.py` unberührt)
 
 ---
 
-## Nächste konkrete Schritte (CT 121)
+## Warum **nicht** jetzt (vor stable 3.0.0)?
+
+| Aspekt | Stand |
+|--------|-------|
+| v3 stable | ✗ nur Beta |
+| Legacy | ✗ noch offen |
+| Classifier v3-Code | noch nicht im Repo |
+| Risiko | Hoch bei Beta + laufender Migration |
+
+---
+
+## Nächste Schritte
 
 ```bash
-# 1. Repo aktualisieren
-cd /opt/paperless-ngx-classifier && git pull
-
-# 2. Version prüfen
-./scripts/paperless-version-check.sh
-
-# 3. Falls nötig: Pin in /opt/paperless/docker-compose.yml setzen (2.20.15)
-#    dann: cd /opt/paperless && docker compose pull webserver && docker compose up -d --force-recreate webserver
-
-# 4. Legacy fortsetzen (Phase 1)
+# Jetzt: Legacy
 /opt/paperless-scripts/legacy-nas-sha256.sh missing
-# … import-loop oder legacy-one-batch.sh
+# import-loop …
 
-# 5. v3 erst wenn stable + Legacy fertig — diese Datei Phase 2
+# Bei stable 3.0.0: diese Datei Phase 2 + INSTALL.md Abschnitt «Upgrade v3»
 ```
+
+**Siehe auch:** [INSTALL.md](../INSTALL.md) (Erstinstallation + Upgrade-Verweis), [.env.example](../.env.example) (v3-Kommentarblock).
