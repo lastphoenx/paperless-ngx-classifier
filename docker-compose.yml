@@ -43,7 +43,9 @@ services:
       POSTGRES_PASSWORD: "DEIN_DATENBANK_PASSWORT"
 
   webserver:
-    image: ghcr.io/paperless-ngx/paperless-ngx:latest
+    # Gepinnt: v3-Upgrade nur von 2.20.15 — :latest würde bei pull/up v3 ziehen.
+    # Siehe docs/UPGRADE_V3.md
+    image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
     restart: unless-stopped
     depends_on:
       - db

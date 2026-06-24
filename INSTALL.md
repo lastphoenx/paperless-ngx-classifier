@@ -7,7 +7,7 @@ Für Wiederherstellung nach Ausfall → siehe `paperless-restore-checkliste.md`.
 
 | Komponente | Mindestversion | Hinweis |
 |---|---|---|
-| Paperless-NGX | v2.x | Läuft, Docker, API erreichbar |
+| Paperless-NGX | v2.x (aktuell **2.20.15** gepinnt) | Docker, API erreichbar; v3-Plan → [docs/UPGRADE_V3.md](docs/UPGRADE_V3.md) |
 | Ollama | aktuell | Separater Server empfohlen (GPU) |
 | Python | 3.11+ | Auf dem Paperless-Host |
 | Debian/Ubuntu | 12/24.04 | Andere Distros möglich, nicht getestet |
