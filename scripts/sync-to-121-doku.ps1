@@ -88,6 +88,20 @@ Write-Host "Skripte:" -ForegroundColor Yellow
 Sync-File (Join-Path $SrcRoot "scripts\deploy-to-ct121.sh") (Join-Path $DstScripts "deploy-to-ct121.sh")
 
 Write-Host ""
+Write-Host "Legacy-Skripte:" -ForegroundColor Yellow
+@(
+    "legacy-import-batch.sh",
+    "legacy-migrate-all.sh",
+    "legacy-one-batch.sh",
+    "legacy-tasks-summary.sh",
+    "legacy-duplicate-audit.sh",
+    "legacy-nas-sha256.sh",
+    "paperless-version-check.sh"
+) | ForEach-Object {
+    Sync-File (Join-Path $SrcRoot "scripts\$_") (Join-Path $DstScripts $_)
+}
+
+Write-Host ""
 Write-Host "Training-Beispiele:" -ForegroundColor Yellow
 @(
     "correspondents.example.json",
@@ -108,9 +122,23 @@ Write-Host "Doku:" -ForegroundColor Yellow
     @{ Src = "README.md";           Dst = "README.md" },
     @{ Src = "README.de.md";       Dst = "README.de.md" },
     @{ Src = "INSTALL.md";          Dst = "INSTALL.md" },
-    @{ Src = "docs\Benutzerhandbuch_paper_manager.md"; Dst = "Benutzerhandbuch_paper_manager.md" }
+    @{ Src = "docs\Benutzerhandbuch_paper_manager.md"; Dst = "Benutzerhandbuch_paper_manager.md" },
+    @{ Src = "docs\LEGACY_MIGRATION_PLAN.md"; Dst = "LEGACY_MIGRATION_PLAN.md" },
+    @{ Src = "docs\LEGACY_IMPORT.md";         Dst = "LEGACY_IMPORT.md" },
+    @{ Src = "docs\UPGRADE_V3.md";            Dst = "UPGRADE_V3.md" }
 ) | ForEach-Object {
     Sync-File (Join-Path $SrcRoot $_.Src) (Join-Path $DstDocs $_.Dst)
+}
+
+# Doku-Repo: relative Links (classifier zeigt oft auf doku-Pfad)
+$legacyImport = Join-Path $DstDocs "LEGACY_IMPORT.md"
+if (Test-Path $legacyImport) {
+    $content = Get-Content $legacyImport -Raw
+    $fixed = $content -replace '\[ct121-nfs-fix\.md\]\(\.\./\.\./\.\./doku/pve2/vm/121-paperless/Doku/docs/ct121-nfs-fix\.md\)', '[ct121-nfs-fix.md](./ct121-nfs-fix.md)'
+    if ($fixed -ne $content -and $PSCmdlet.ShouldProcess($legacyImport, "Links anpassen")) {
+        Set-Content -Path $legacyImport -Value $fixed -NoNewline
+        Write-Host "  ~> $legacyImport (Links)" -ForegroundColor Cyan
+    }
 }
 
 Write-Host ""
