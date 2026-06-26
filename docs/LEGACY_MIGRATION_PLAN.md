@@ -2,9 +2,42 @@
 
 **Ziel:** NAS-PDFs → Paperless mit Tag `legacy`, Speicherpfad `legacy/{title}`, OCR-Index (`PAPERLESS_OCR_MODE=skip`), **ohne** Vision/LLM-Pipeline.
 
-Quelle: `/mnt/nas-legacy/Eltern/Finanzen` · ~2561 PDFs (ohne `Vorsorge/Moni/2015` und `2016`)
+**Quelle:** Pfad auf CT 121 zum Ordner `Finanzen` — abhängig vom NFS-Mount (siehe [NAS_NFS_AND_IMPORT.md](./NAS_NFS_AND_IMPORT.md)). Typisch bei Export `:/mnt/ssd1/Eltern`: **`/mnt/<eltern-mount>/Finanzen`**, nicht zwingend `/mnt/nas-legacy/...`.
+
+**Stand Finanzen:** Migration abgeschlossen (`missing` = 0 einzigartige fehlende, ~2199 Docs in Paperless).
 
 > **Paperless-Version:** Produktion läuft **2.20.15** (compose gepinnt). Legacy **vor** Upgrade auf v3 abschliessen — siehe [UPGRADE_V3.md](./UPGRADE_V3.md).
+
+---
+
+## Finanzen importieren (Checksum-Delta) — Referenz
+
+**Ein Befehl** in tmux — nicht `copy-missing` manuell wiederholen:
+
+```bash
+export LEGACY_NAS_FINANZEN=/mnt/<eltern-mount>/Finanzen   # echten Pfad aus: findmnt | grep 141.140
+export LEGACY_MIGRATE_STATE_DIR=/mnt/paperless-data/legacy-migrate
+
+/opt/paperless-scripts/legacy-nas-sha256.sh scan
+/opt/paperless-scripts/legacy-nas-sha256.sh fetch-paperless --refresh-paperless
+/opt/paperless-scripts/legacy-nas-sha256.sh missing
+
+tmux new -s legacy
+/opt/paperless-scripts/legacy-nas-sha256.sh import-loop --batch queue --chunk 20
+```
+
+### State-Dateien (`$LEGACY_MIGRATE_STATE_DIR`)
+
+| Datei | Bedeutung |
+|-------|-----------|
+| `nas-sha256.tsv` | NAS-Inventar |
+| `paperless-checksums.tsv` | Paperless MD5-Cache |
+| `nas-missing-import.tsv` | Queue: fehlt noch in Paperless |
+| `nas-in-flight.tsv` | Pro Chunk unterwegs; reconcile bestätigt Import |
+
+Pro Chunk: pop → consume → warten → **reconcile** (live Delta). Kein `done.lst`.
+
+Details NFS + Thomas/Monika: [NAS_NFS_AND_IMPORT.md](./NAS_NFS_AND_IMPORT.md)
 
 ---
 
@@ -47,31 +80,17 @@ mv /root/legacy-migrate-resume.sh /root/legacy-migrate-resume.sh.DISABLED 2>/dev
 
 Zeigt dieselbe Zahl wie die UI: Fehlgeschlagen / Warteschlange / legacy-Tag / consume.
 
-### Nur fehlende Inhalte importieren (empfohlen)
+### Nur fehlende Inhalte importieren
 
-Einmalig Delta bauen, dann **ein Befehl** in tmux:
+Siehe Abschnitt **Finanzen importieren** oben. Veraltet: manuelles `copy-missing`, `nas-missing-done.lst`.
 
-```bash
-/opt/paperless-scripts/legacy-nas-sha256.sh missing   # einmalig (~945 Einträge)
+### Pro NAS-Ordner (Alternative: `legacy-one-batch.sh`)
 
-tmux new -s legacy
-/opt/paperless-scripts/legacy-nas-sha256.sh import-loop --batch queue --chunk 20
-```
-
-Pro Chunk automatisch:
-1. **Pop** N Zeilen aus `missing.tsv` → `in-flight.tsv` + kopieren
-2. Wartet bis `consume` leer
-3. **Reconcile** — nur was Paperless bestätigt ist raus; Rest zurück in `missing.tsv`
-
-Kein `done.lst`, kein „kopiert = erledigt“.
-
-### Pro NAS-Ordner (in **tmux**)
+Pfad `$NAS_SRC` = echter Mount + Unterordner (aus `findmnt` auf CT 121):
 
 ```bash
 tmux new -s legacy
-/opt/paperless-scripts/legacy-one-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Fano fano
-# nächster Ordner wenn fertig:
-/opt/paperless-scripts/legacy-one-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Bestellungen bestellungen
+/opt/paperless-scripts/legacy-one-batch.sh "$NAS_SRC/Fano" fano
 ```
 
 Chunk-Größe: `LEGACY_CHUNK_SIZE=20` (Standard). Script wartet zwischen Chunks, bis consume leer ist.

@@ -16,18 +16,20 @@ Admin → Tags → **legacy** → Zuweisungsregel: **Keine Zuweisung**.
 
 ### 2. NFS auf CT 121
 
-| Mount | Export (pi-nas) | Zweck |
-|-------|-----------------|--------|
-| `/mnt/paperless-media` | `:/mnt/ssd1/Paperless/media` rw | Paperless-Archiv (nur ssd1) |
-| `/mnt/nas-legacy` | `:/srv/nas` ro | Quelle `Eltern/Finanzen/...` |
+| Mount (Beispiel) | Export (pi-nas) | Zweck |
+|------------------|-----------------|--------|
+| `/mnt/paperless-media` | `:/mnt/ssd1/Paperless/media` rw | Paperless-Archiv |
+| *eltern-mount* (aus fstab) | `:/mnt/ssd1/Eltern` ro | `…/Finanzen` Legacy-Import |
+
+Vollständig: [NAS_NFS_AND_IMPORT.md](./NAS_NFS_AND_IMPORT.md)
 
 ```bash
-findmnt /mnt/paperless-media /mnt/nas-legacy
+grep 192.168.141.140 /etc/fstab
+findmnt -t nfs4,nfs
 touch /mnt/paperless-media/.write_test && rm /mnt/paperless-media/.write_test && echo OK
-ls /mnt/nas-legacy/Eltern/Finanzen | head
 ```
 
-Details und Export-Zeilen: `doku/.../ct121-nfs-fix.md`
+Details exports: `doku/.../ct121-nfs-fix.md`
 
 ### 3. `.env` (`/opt/paperless/.env`)
 
