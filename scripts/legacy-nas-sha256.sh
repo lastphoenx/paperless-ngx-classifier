@@ -22,7 +22,9 @@ MISSING_TSV="${LEGACY_NAS_MISSING_TSV:-$STATE_DIR/nas-missing-import.tsv}"
 IN_FLIGHT_TSV="${LEGACY_NAS_IN_FLIGHT:-$STATE_DIR/nas-in-flight.tsv}"
 SUMMARY_FILE="${LEGACY_NAS_SHA256_SUMMARY:-$STATE_DIR/nas-sha256-summary.txt}"
 STALL_SLEEP="${LEGACY_STALL_SLEEP:-30}"
-# Standard: Moni 2015/2016 aus Migration-Plan ausschliessen (| als Trenner)
+EXCLUDE_REGEX="${EXCLUDE_REGEX:-}"
+# Standard: Moni 2015/2016 aus Migration-Plan ausschliessen (| als Trenner), z.B.:
+# EXCLUDE_REGEX='Vorsorge/Moni/2015|Vorsorge/Moni/2016'
 PL_CACHE="${LEGACY_PL_CHECKSUM_CACHE:-$STATE_DIR/paperless-checksums.tsv}"
 
 CMD="${1:-summary}"
