@@ -186,13 +186,23 @@ def fetch_doc_ids(token):
     return ids, api_total
 
 
-def save_pl_cache(checksums_by_id):
+def save_pl_cache(checksums_by_id, filenames_by_id=None):
     if not pl_cache:
         return
+    filenames_by_id = filenames_by_id or {}
     with open(pl_cache, "w", encoding="utf-8") as f:
-        f.write("doc_id\tchecksum\n")
+        f.write("doc_id\tchecksum\toriginal_filename\n")
         for doc_id in sorted(checksums_by_id):
-            f.write(f"{doc_id}\t{checksums_by_id[doc_id]}\n")
+            fn = filenames_by_id.get(doc_id, "")
+            f.write(f"{doc_id}\t{checksums_by_id[doc_id]}\t{fn}\n")
+
+
+def paperless_basenames(filenames_by_id):
+    basenames = set()
+    for fn in filenames_by_id.values():
+        if fn:
+            basenames.add(os.path.basename(fn).lower())
+    return basenames
 
 
 def fetch_paperless_checksums():
@@ -203,23 +213,29 @@ def fetch_paperless_checksums():
 
     doc_ids, api_total = fetch_doc_ids(token)
     if not doc_ids:
-        return {}, 0
+        return {}, set(), 0
 
     # Checksum steht nicht in /api/documents/ — nur in /metadata/ oder DB (kein Custom Field!)
     checksums_by_id = {}
+    filenames_by_id = {}
     source = "metadata"
 
     if not refresh_pl and pl_cache and os.path.isfile(pl_cache):
         cached = {}
+        cached_names = {}
         with open(pl_cache, encoding="utf-8", errors="replace") as f:
             for line in f:
                 if line.startswith("doc_id") or not line.strip():
                     continue
                 parts = line.strip().split("\t")
                 if len(parts) >= 2 and parts[1]:
-                    cached[int(parts[0])] = parts[1].lower()
+                    doc_id = int(parts[0])
+                    cached[doc_id] = parts[1].lower()
+                    if len(parts) >= 3 and parts[2]:
+                        cached_names[doc_id] = parts[2]
         if len(cached) == len(doc_ids):
             checksums_by_id = cached
+            filenames_by_id = cached_names
             source = "cache"
 
     if not checksums_by_id:
@@ -238,11 +254,15 @@ def fetch_paperless_checksums():
             cs = (meta.get("original_checksum") or meta.get("checksum") or "").strip().lower()
             if cs:
                 checksums_by_id[doc_id] = cs
-        save_pl_cache(checksums_by_id)
+            fn = (meta.get("original_filename") or meta.get("original_file_name") or "").strip()
+            if fn:
+                filenames_by_id[doc_id] = fn
+        save_pl_cache(checksums_by_id, filenames_by_id)
 
     checksums = {cs: doc_id for doc_id, cs in checksums_by_id.items()}
+    basenames = paperless_basenames(filenames_by_id)
     print(f"Paperless-Checksums: {len(checksums)} ({source})", file=sys.stderr)
-    return checksums, api_total
+    return checksums, basenames, api_total
 
 
 def load_inventory(path):
@@ -362,7 +382,7 @@ def detect_checksum_algo(checksums):
 
 
 def cmd_fetch_paperless():
-    checksums, api_total = fetch_paperless_checksums()
+    checksums, _basenames, api_total = fetch_paperless_checksums()
     algo = detect_checksum_algo(checksums)
     print(f"Gecacht: {pl_cache}")
     print(f"Dokumente: {api_total}, Checksums: {len(checksums)}, Algorithmus: {algo}")
@@ -394,7 +414,7 @@ def cmd_missing(rows):
         print("FEHLER: kein Paperless-Cache — zuerst: fetch-paperless", file=sys.stderr)
         sys.exit(1)
 
-    pl_checksums, api_total = fetch_paperless_checksums()
+    pl_checksums, pl_basenames, api_total = fetch_paperless_checksums()
     algo = detect_checksum_algo(pl_checksums)
     if not pl_checksums:
         print("FEHLER: keine Paperless-Checksums", file=sys.stderr)
@@ -406,9 +426,14 @@ def cmd_missing(rows):
 
     entries = []
     skipped_copies = 0
+    skipped_basename = 0
     for ch in new_hashes:
         paths = sorted(nas_by_compare[ch])
         canonical = paths[0]
+        if os.path.basename(canonical).lower() in pl_basenames:
+            skipped_basename += 1
+            skipped_copies += len(paths) - 1
+            continue
         skipped_copies += len(paths) - 1
         sha = ""
         for rel, _s, _m, sha256 in rows:
@@ -429,6 +454,8 @@ def cmd_missing(rows):
     print("=== NAS fehlt in Paperless (Import-Queue) ===")
     print(f"Paperless Docs:           {api_total}")
     print(f"Einzigartige fehlende:    {len(entries)}  (= neue Docs wenn importiert)")
+    if skipped_basename:
+        print(f"Bereits per Dateiname:    {skipped_basename}  (OCR-Import, Checksum weicht ab)")
     print(f"NAS-Kopien übersprungen:  {skipped_copies}  (pro Hash nur 1 Pfad)")
     print(f"Liste:                    {missing_tsv}")
     print("")
@@ -499,32 +526,56 @@ def cmd_pop_missing():
         print(line.split("\t", 1)[0])
 
 
+def cmd_patch_inflight_checksum():
+    """Nach legacy-prepare-pdf: in-flight-Checksum = MD5 der consume-Datei (Paperless-Wahrheit)."""
+    rel = os.environ.get("PATCH_REL", "")
+    consume_md5 = os.environ.get("CONSUME_MD5", "").strip().lower()
+    if not rel or not consume_md5 or not in_flight_tsv:
+        return
+    lines = read_data_lines(in_flight_tsv)
+    out = []
+    for line in lines:
+        parts = line.split("\t")
+        if parts and parts[0] == rel and len(parts) >= 2:
+            parts[1] = consume_md5
+            line = "\t".join(parts)
+        out.append(line)
+    write_data_lines(in_flight_tsv, out)
+
+
 def cmd_reconcile():
     """in-flight gegen Paperless prüfen; missing von importierten Checksums säubern."""
-    pl_checksums, api_total = fetch_paperless_checksums()
+    pl_checksums, pl_basenames, api_total = fetch_paperless_checksums()
     if not pl_checksums:
         print("FEHLER: keine Paperless-Checksums", file=sys.stderr)
         sys.exit(1)
     pl_hashes = set(pl_checksums)
 
     imported = 0
+    imported_by_name = 0
     retry = []
     for line in read_data_lines(in_flight_tsv):
         parts = line.split("\t")
         ch = parts[1].strip().lower() if len(parts) >= 2 else ""
         if ch and ch in pl_hashes:
             imported += 1
+        elif parts and os.path.basename(parts[0]).lower() in pl_basenames:
+            imported += 1
+            imported_by_name += 1
         else:
             retry.append(line)
 
     missing_lines = read_data_lines(missing_tsv)
     pruned_missing = []
     pruned_dup = 0
+    pruned_by_name = 0
     for line in missing_lines:
         parts = line.split("\t")
         ch = parts[1].strip().lower() if len(parts) >= 2 else ""
         if ch and ch in pl_hashes:
             pruned_dup += 1
+        elif parts and os.path.basename(parts[0]).lower() in pl_basenames:
+            pruned_by_name += 1
         else:
             pruned_missing.append(line)
 
@@ -536,8 +587,10 @@ def cmd_reconcile():
     print("=== Delta reconciled ===")
     print(f"Paperless Docs:           {api_total}")
     print(f"in-flight importiert:     {imported}")
+    if imported_by_name:
+        print(f"  davon per Dateiname:    {imported_by_name}")
     print(f"in-flight zurück (retry): {len(retry)}")
-    print(f"missing bereinigt:        {pruned_dup}")
+    print(f"missing bereinigt:        {pruned_dup + pruned_by_name}")
     print(f"Verbleibend gesamt:       {remaining}")
 
 
@@ -547,7 +600,7 @@ def cmd_prune_missing():
         print("FEHLER: keine missing.tsv — zuerst: missing", file=sys.stderr)
         sys.exit(1)
 
-    pl_checksums, api_total = fetch_paperless_checksums()
+    pl_checksums, pl_basenames, api_total = fetch_paperless_checksums()
     if not pl_checksums:
         print("FEHLER: keine Paperless-Checksums", file=sys.stderr)
         sys.exit(1)
@@ -559,6 +612,9 @@ def cmd_prune_missing():
         parts = line.split("\t")
         ch = parts[1].strip().lower() if len(parts) >= 2 else ""
         if ch in pl_hashes:
+            removed += 1
+            continue
+        if parts and os.path.basename(parts[0]).lower() in pl_basenames:
             removed += 1
             continue
         kept.append(line)
@@ -574,7 +630,7 @@ def cmd_prune_missing():
 
 def vs_paperless(rows):
     by_hash, _, total, unique, dup_files, dup_groups, _extra = analyze(rows)
-    pl_checksums, api_total = fetch_paperless_checksums()
+    pl_checksums, _pl_basenames, api_total = fetch_paperless_checksums()
     algo = detect_checksum_algo(pl_checksums)
 
     if api_total == 0:
@@ -653,6 +709,8 @@ elif cmd == "pop-missing":
     cmd_pop_missing()
 elif cmd == "reconcile":
     cmd_reconcile()
+elif cmd == "patch-inflight-checksum":
+    cmd_patch_inflight_checksum()
 else:
     print(f"unbekannter python cmd: {cmd}", file=sys.stderr)
     sys.exit(1)
@@ -825,6 +883,9 @@ cmd_copy_missing() {
     else
       rsync -a "$src" "$dest_file"
     fi
+    _consume_md5=$(md5sum "$dest_file" | awk '{print $1}')
+    PATCH_REL="$rel" CONSUME_MD5="$_consume_md5" IN_FLIGHT_TSV="$IN_FLIGHT_TSV" \
+      run_python patch-inflight-checksum
     echo "→ $rel"
     copied=$((copied + 1))
   done < <(cmd_pop_missing "$chunk" "$dest")
