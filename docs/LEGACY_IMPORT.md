@@ -41,7 +41,10 @@ LEGACY_STORAGE_PATH_NAME=Legacy
 LEGACY_STORAGE_PATH_TEMPLATE=legacy/{title}
 PAPERLESS_CONSUMER_RECURSIVE=true
 PAPERLESS_OCR_MODE=skip
+PAPERLESS_OCR_SKIP_ARCHIVE_FILE=always
 PAPERLESS_TASK_WORKERS=1
+# Optional während Bulk (keine Barcodes in Altbestand):
+# PAPERLESS_CONSUMER_ENABLE_BARCODES=false
 # Optional manuell; legacy-migrate-all.sh setzt DELETE_DUPLICATES temporär auf true:
 # PAPERLESS_CONSUMER_DELETE_DUPLICATES=true
 ```
@@ -112,6 +115,7 @@ Logs: `Legacy-Import — Pipeline übersprungen` — kein Vision/Ollama.
 | `none/none/` statt `legacy/` | `.env` LEGACY_STORAGE_* + Pipe 12.32 + recreate webserver |
 | Migration hängt / Duplikate in consume | `legacy-migrate-all.sh --cleanup-consume`; Skip-Ordner nie unter `consume/` |
 | `duplicate of #NNN` | Inhalt schon in Paperless — kein Re-Import nötig; optional `legacy`-Tag am bestehenden Doc |
+| OCRmyPDF trotz `SKIP_ARCHIVE=always` | In 2.20 gilt das nur bei **>50 Zeichen** pdftotext; Bild-Scans brauchen OCR (pre_consume 1.3+ macht das vor Paperless) |
 | Wie viele Dubletten erwarten? | `legacy-nas-sha256.sh all` — SHA256-Inventar NAS + Abgleich Paperless-Checksums |
 | Permission denied auf NAS | Export `no_root_squash` für `/srv/nas` ro |
 
