@@ -819,7 +819,12 @@ cmd_copy_missing() {
       continue
     fi
     mkdir -p "$dest_dir"
-    rsync -a "$src" "$dest_file"
+    _prepare="${LEGACY_PREPARE_PDF:-/opt/paperless-scripts/legacy-prepare-pdf.sh}"
+    if [[ -x "$_prepare" ]]; then
+      "$_prepare" "$src" "$dest_file"
+    else
+      rsync -a "$src" "$dest_file"
+    fi
     echo "→ $rel"
     copied=$((copied + 1))
   done < <(cmd_pop_missing "$chunk" "$dest")

@@ -115,7 +115,8 @@ Logs: `Legacy-Import — Pipeline übersprungen` — kein Vision/Ollama.
 | `none/none/` statt `legacy/` | `.env` LEGACY_STORAGE_* + Pipe 12.32 + recreate webserver |
 | Migration hängt / Duplikate in consume | `legacy-migrate-all.sh --cleanup-consume`; Skip-Ordner nie unter `consume/` |
 | `duplicate of #NNN` | Inhalt schon in Paperless — kein Re-Import nötig; optional `legacy`-Tag am bestehenden Doc |
-| OCRmyPDF trotz `SKIP_ARCHIVE=always` | In 2.20 gilt das nur bei **>50 Zeichen** pdftotext; Bild-Scans brauchen OCR (pre_consume 1.3+ macht das vor Paperless) |
+| OCRmyPDF trotz `SKIP_ARCHIVE=always` | In 2.20 nur bei **>50 Zeichen** pdftotext; Scans: `legacy-prepare-pdf.sh` beim copy-missing (nicht in pre_consume — sonst inotify-Requeue) |
+| Datei in Warteschlange **und** Gestartet | PDF in `consume/` während Consume geändert → Consumer legt Task doppelt an; Fix: OCR vor copy (legacy-prepare-pdf) |
 | Wie viele Dubletten erwarten? | `legacy-nas-sha256.sh all` — SHA256-Inventar NAS + Abgleich Paperless-Checksums |
 | Permission denied auf NAS | Export `no_root_squash` für `/srv/nas` ro |
 
