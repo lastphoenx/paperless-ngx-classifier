@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pre-Consume Skript für Paperless-NGX
-# VERSION: 1.3 — Legacy: OCR nur bei Scans ohne Textschicht (Paperless 50-Zeichen-Grenze)
+# VERSION: 1.4 — Legacy: nur Marker (OCR vor consume via legacy-prepare-pdf.sh)
 # Schritt 1: PDF-Qualität via ocrmypdf verbessern
 # Schritt 2: Swiss QR Bill Daten extrahieren (Sidecar JSON)
 # Läuft auf CT 121
@@ -37,34 +37,9 @@ for _m in "${_markers[@]}"; do
         _marker_dir="/tmp/paperless_legacy_markers"
         mkdir -p "$_marker_dir"
         printf '%s' "$file" > "$_marker_dir/$(basename "$file")"
-
-        # Paperless 2.20: PAPERLESS_OCR_SKIP_ARCHIVE_FILE=always überspringt OCRmyPDF nur,
-        # wenn pdftotext >50 Zeichen liefert. Reine Bild-Scans → volles OCR inkl. PDF/A.
         _legacy_min="${LEGACY_MIN_TEXT_CHARS:-50}"
         _text="$(pdftotext "$file" - 2>/dev/null || true)"
-        if [[ ${#_text} -gt $_legacy_min ]]; then
-            echo "[pre_consume] Legacy-Import — Text vorhanden (${#_text} Zeichen), übersprungen ($file)"
-            exit 0
-        fi
-
-        echo "[pre_consume] Legacy-Import — Scan ohne Textschicht (<=${_legacy_min} Zeichen), OCR ($file)"
-        _tmp="${file%.pdf}_legacy_ocr_tmp.pdf"
-        set +e
-        timeout "$OCR_TIMEOUT" ocrmypdf \
-            -l deu+ita+eng+fra \
-            --output-type pdf \
-            "$file" "$_tmp"
-        _ocr_exit=$?
-        set -e
-        case $_ocr_exit in
-            0)   mv "$_tmp" "$file"
-                 echo "[pre_consume] Legacy-OCR abgeschlossen: $file" ;;
-            6)   rm -f "$_tmp"
-                 echo "[pre_consume] Legacy-OCR übersprungen (Exit 6), Original beibehalten" ;;
-            *)   rm -f "$_tmp"
-                 echo "[pre_consume] Legacy-OCR Fehler: Exit $_ocr_exit" >&2
-                 exit 1 ;;
-        esac
+        echo "[pre_consume] Legacy-Import — übersprungen (${#_text} Zeichen, OCR vor consume wenn <=${_legacy_min}) ($file)"
         exit 0
     fi
 done
