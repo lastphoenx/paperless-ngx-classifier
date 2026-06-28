@@ -147,27 +147,36 @@ Pro Chunk: pop → `consume/legacy/queue/` → warten → reconcile.
 
 ---
 
-## 3. Thomas / Monika (volle Pipeline, kein Legacy-Skip)
+## 3. Thomas / Monika (Legacy-Modus — wie Finanzen / Gemeinsam)
 
-Voraussetzung: NFS-Mount auf CT 121 existiert (Abschnitt 3).
+Voraussetzung: NFS-Mount auf CT 121 existiert (Abschnitt 2).
 
-**Kein** `LEGACY_CONSUME_MARKERS` — Dateien nach `consume/thomas-inbox/` o.ä., **ohne** `/legacy/` im Pfad → OCR + post_consume normal.
+**Wie Finanzen:** Pfad muss **`/legacy/`** enthalten → `pre_consume` überspringt OCR, `post_consume` **keine** Vision/LLM — nur Tag `legacy` + Speicherpfad `legacy/{title}`.
+
+`.env` auf CT 121 (wie Finanzen-Migration):
 
 ```bash
-export LEGACY_NAS_FINANZEN=/mnt/nas-thomas   # nach Export + mount -a
+LEGACY_CONSUME_MARKERS=/legacy/
+LEGACY_TAG=legacy
+LEGACY_STORAGE_PATH_TEMPLATE=legacy/{title}
+```
+
+Import-Ziel: **`/mnt/paperless-data/consume/legacy/thomas-inbox/`** (nicht `consume/thomas-inbox/` ohne `legacy`!).
+
+```bash
+export LEGACY_NAS_FINANZEN=/mnt/nas-thomas
 export LEGACY_MIGRATE_STATE_DIR=/mnt/paperless-data/migrate-thomas
 export LEGACY_PL_CHECKSUM_CACHE=/mnt/paperless-data/legacy-migrate/paperless-checksums.tsv
-export LEGACY_CONSUME_ROOT=/mnt/paperless-data/consume/thomas-inbox
+export LEGACY_CONSUME_ROOT=/mnt/paperless-data/consume/legacy
 
 /opt/paperless-scripts/legacy-nas-sha256.sh scan
 /opt/paperless-scripts/legacy-nas-sha256.sh vs-paperless
 /opt/paperless-scripts/legacy-nas-sha256.sh missing
 
-# wenn missing > 0:
 /opt/paperless-scripts/legacy-nas-sha256.sh import-loop --batch thomas-inbox --chunk 10
 ```
 
-Monika PDF analog mit `migrate-monika-pdf`, `consume/monika-inbox`, optional `EXCLUDE_REGEX` für Foto/Craft-Ordner.
+Monika PDF analog: `migrate-monika`, `consume/legacy/monika-inbox`, optional `EXCLUDE_REGEX`.
 
 Grössen (pi-nas, mergerfs): Thomas ~81 eindeutige PDFs; Monika ~94 eindeutige PDFs (+ Fotos separat entscheiden).
 
