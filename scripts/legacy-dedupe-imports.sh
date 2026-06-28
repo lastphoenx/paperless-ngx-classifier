@@ -6,6 +6,7 @@
 #   ./legacy-dedupe-imports.sh audit
 #   ./legacy-dedupe-imports.sh delete --dry-run
 #   ./legacy-dedupe-imports.sh delete --apply
+#   ./legacy-dedupe-imports.sh audit --added-date 2026-06-28
 #
 set -euo pipefail
 
@@ -13,6 +14,7 @@ ENV_FILE="${PAPERLESS_ENV:-/opt/paperless/.env}"
 API_BASE="${PAPERLESS_API:-http://127.0.0.1:8000}"
 LEGACY_TAG="${LEGACY_DEDUPE_TAG:-legacy}"
 MIN_COPIES="${LEGACY_DEDUPE_MIN:-2}"
+ADDED_DATE=""
 APPLY=0
 CMD="${1:-audit}"
 shift || true
@@ -23,9 +25,13 @@ while [[ $# -gt 0 ]]; do
     --dry-run) APPLY=0; shift ;;
     --tag) LEGACY_TAG="${2:?}"; shift 2 ;;
     --min) MIN_COPIES="${2:?}"; shift 2 ;;
+    --added-date) ADDED_DATE="${2:?}"; shift 2 ;;
     --all-tags) LEGACY_TAG=""; shift ;;
     -h|--help)
-      sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+      echo ""
+      echo "Optionen: --added-date YYYY-MM-DD  nur Docs mit Hinzugefügt-am (Paperless added)"
+      echo "          --min N  --tag NAME  --all-tags  --apply  --dry-run"
       exit 0
       ;;
     *) echo "Unbekannte Option: $1" >&2; exit 1 ;;
@@ -35,7 +41,7 @@ done
 TOKEN=$(grep -m1 '^PAPERLESS_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
 [[ -n "$TOKEN" ]] || { echo "FEHLER: kein PAPERLESS_TOKEN in $ENV_FILE" >&2; exit 1; }
 
-export PAPERLESS_TOKEN="$TOKEN" API_BASE LEGACY_TAG MIN_COPIES APPLY CMD
+export PAPERLESS_TOKEN="$TOKEN" API_BASE LEGACY_TAG MIN_COPIES ADDED_DATE APPLY CMD
 
 python3 <<'PY'
 import json
@@ -49,6 +55,7 @@ token = os.environ["PAPERLESS_TOKEN"]
 api_base = os.environ.get("API_BASE", "http://127.0.0.1:8000").rstrip("/")
 legacy_tag = os.environ.get("LEGACY_TAG", "legacy")
 min_copies = int(os.environ.get("MIN_COPIES", "2") or "2")
+added_date = os.environ.get("ADDED_DATE", "").strip()
 apply = os.environ.get("APPLY", "0") == "1"
 cmd = os.environ.get("CMD", "audit")
 
@@ -91,6 +98,8 @@ def fetch_all_docs():
         url = f"/api/documents/?tags__name__iexact={legacy_tag}&page_size=100&ordering=id"
     else:
         url = "/api/documents/?page_size=100&ordering=id"
+    if added_date:
+        url += f"&added__date={added_date}"
     while url:
         if url.startswith("http"):
             path = url.replace(api_base, "", 1)
@@ -109,6 +118,11 @@ def fetch_all_docs():
     return docs
 
 
+def added_ymd(doc):
+    added = (doc.get("added") or doc.get("created") or "").strip()
+    return added[:10] if len(added) >= 10 else ""
+
+
 def group_key(doc):
     fn = (doc.get("original_file_name") or doc.get("title") or "").strip()
     return os.path.basename(fn).lower() if fn else f"__id_{doc.get('id')}"
@@ -116,12 +130,17 @@ def group_key(doc):
 
 print("Lade Dokumente …", file=sys.stderr)
 docs = fetch_all_docs()
-print(f"Geladen: {len(docs)} Docs" + (f" (Tag: {legacy_tag})" if legacy_tag else ""), file=sys.stderr)
+if added_date:
+    docs = [d for d in docs if added_ymd(d) == added_date]
+label = f" (Tag: {legacy_tag})" if legacy_tag else ""
+when = f", Hinzugefügt: {added_date}" if added_date else ""
+print(f"Geladen: {len(docs)} Docs{label}{when}", file=sys.stderr)
 
 by_name = defaultdict(list)
 for doc in docs:
     by_name[group_key(doc)].append(doc)
 
+unique_names = len(by_name)
 dup_groups = []
 for name, group in sorted(by_name.items(), key=lambda x: (-len(x[1]), x[0])):
     if len(group) < min_copies:
@@ -131,20 +150,32 @@ for name, group in sorted(by_name.items(), key=lambda x: (-len(x[1]), x[0])):
     delete = group[1:]
     dup_groups.append((name, keep, delete))
 
+title = "=== Legacy Dedupe ==="
+if added_date:
+    title = f"=== Legacy Dedupe (hinzugefügt {added_date}) ==="
+
 if not dup_groups:
+    print(title)
+    print(f"Docs gesamt:           {len(docs)}")
+    print(f"Einzigartige Namen:    {unique_names}")
     print("Keine Duplikat-Gruppen gefunden.")
     sys.exit(0)
 
 total_delete = sum(len(g[2]) for g in dup_groups)
-print("=== Legacy Dedupe ===")
+print(title)
+print(f"Docs gesamt:                      {len(docs)}")
+print(f"Einzigartige Dateinamen:          {unique_names}")
 print(f"Duplikat-Gruppen (≥{min_copies}×): {len(dup_groups)}")
 print(f"Docs behalten:                    {len(dup_groups)}")
 print(f"Docs löschen:                     {total_delete}")
 print()
 
 for name, keep, delete in dup_groups[:50]:
+    all_ids = [keep] + delete
+    ids_all = ", ".join(f"#{d['id']}" for d in all_ids)
     ids_del = ", ".join(f"#{d['id']}" for d in delete)
-    print(f"  {name}: {1 + len(delete)}× → behalten #{keep['id']}, löschen {ids_del}")
+    print(f"  {name}: {len(all_ids)}× [{ids_all}]")
+    print(f"    → behalten #{keep['id']}, löschen {ids_del}")
 if len(dup_groups) > 50:
     print(f"  … +{len(dup_groups) - 50} weitere Gruppen")
 
