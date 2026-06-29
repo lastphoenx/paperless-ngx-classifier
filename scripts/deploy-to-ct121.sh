@@ -39,6 +39,7 @@ FILES=(
   scripts/legacy-tasks-summary.sh
   scripts/legacy-duplicate-audit.sh
   scripts/legacy-dedupe-imports.sh
+  scripts/legacy-originals-audit.sh
   scripts/legacy-nas-sha256.sh
   scripts/legacy-prepare-pdf.sh
 )
