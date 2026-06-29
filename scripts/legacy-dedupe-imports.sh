@@ -4,6 +4,7 @@
 #
 # Auf CT121:
 #   ./legacy-dedupe-imports.sh audit
+#   ./legacy-dedupe-imports.sh analyze    # Dubletten: Hash, Speicherpfad, Disk-Pfad
 #   ./legacy-dedupe-imports.sh delete --dry-run
 #   ./legacy-dedupe-imports.sh delete --apply
 #   ./legacy-dedupe-imports.sh audit --added-date 2026-06-28
@@ -30,6 +31,8 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
       echo ""
+      echo "Befehle: audit | analyze | delete"
+      echo ""
       echo "Optionen: --added-date YYYY-MM-DD  nur Docs mit Hinzugefügt-am (Paperless added)"
       echo "          --min N  --tag NAME  --all-tags  --apply  --dry-run"
       exit 0
@@ -42,6 +45,7 @@ TOKEN=$(grep -m1 '^PAPERLESS_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || t
 [[ -n "$TOKEN" ]] || { echo "FEHLER: kein PAPERLESS_TOKEN in $ENV_FILE" >&2; exit 1; }
 
 export PAPERLESS_TOKEN="$TOKEN" API_BASE LEGACY_TAG MIN_COPIES ADDED_DATE APPLY CMD
+export PAPERLESS_MEDIA_ROOT="${PAPERLESS_MEDIA_ROOT:-/mnt/paperless-media}"
 
 python3 <<'PY'
 import json
@@ -123,9 +127,86 @@ def added_ymd(doc):
     return added[:10] if len(added) >= 10 else ""
 
 
+def added_short(doc):
+    added = (doc.get("added") or doc.get("created") or "").strip()
+    return added[:19].replace("T", " ") if added else "?"
+
+
 def group_key(doc):
     fn = (doc.get("original_file_name") or doc.get("title") or "").strip()
     return os.path.basename(fn).lower() if fn else f"__id_{doc.get('id')}"
+
+
+media_root = os.environ.get("PAPERLESS_MEDIA_ROOT", "/mnt/paperless-media")
+orig_root = os.path.join(media_root, "documents", "originals")
+_sp_cache = {}
+_md5_disk_cache = None
+
+
+def storage_paths():
+    global _sp_cache
+    if _sp_cache:
+        return _sp_cache
+    url = "/api/storage_paths/?page_size=200"
+    while url:
+        data = api_request("GET", url if url.startswith("/") else url.replace(api_base, "", 1))
+        for sp in data.get("results", []):
+            _sp_cache[sp["id"]] = sp
+        url = data.get("next")
+    return _sp_cache
+
+
+def doc_metadata(doc_id):
+    return api_request("GET", f"/api/documents/{doc_id}/metadata/")
+
+
+def disk_md5_index():
+    global _md5_disk_cache
+    if _md5_disk_cache is not None:
+        return _md5_disk_cache
+    import hashlib
+    idx = defaultdict(list)
+    if not os.path.isdir(orig_root):
+        _md5_disk_cache = idx
+        return idx
+    for dirpath, _dirs, files in os.walk(orig_root):
+        for fn in files:
+            if not fn.lower().endswith(".pdf"):
+                continue
+            p = os.path.join(dirpath, fn)
+            try:
+                h = hashlib.md5()
+                with open(p, "rb") as f:
+                    while b := f.read(1 << 20):
+                        h.update(b)
+                ch = h.hexdigest()
+            except OSError:
+                continue
+            rel = p.replace(orig_root + os.sep, "").replace("\\", "/")
+            idx[ch].append(rel)
+    _md5_disk_cache = idx
+    return idx
+
+
+def sp_label(doc):
+    sp_id = doc.get("storage_path")
+    if not sp_id:
+        return "—", "none/"
+    sp = storage_paths().get(sp_id, {})
+    name = sp.get("name") or "?"
+    path = sp.get("path") or name
+    return name, path
+
+
+def disk_paths_for_doc(doc):
+    doc_id = doc.get("id")
+    try:
+        meta = doc_metadata(doc_id)
+        ch = (meta.get("original_checksum") or "").lower()
+    except Exception:
+        ch = ""
+    paths = disk_md5_index().get(ch, []) if ch else []
+    return ch, paths
 
 
 print("Lade Dokumente …", file=sys.stderr)
@@ -175,15 +256,59 @@ for name, keep, delete in dup_groups[:50]:
     ids_all = ", ".join(f"#{d['id']}" for d in all_ids)
     ids_del = ", ".join(f"#{d['id']}" for d in delete)
     print(f"  {name}: {len(all_ids)}× [{ids_all}]")
-    print(f"    → behalten #{keep['id']}, löschen {ids_del}")
+    print(f"    → behalten #{keep['id']} ({added_ymd(keep)}), löschen {ids_del}")
+    for doc in all_ids:
+        tag = "BEHALTEN" if doc is keep else "löschen"
+        print(f"       #{doc['id']:>5}  hinzugefügt {added_short(doc)}  [{tag}]")
 if len(dup_groups) > 50:
     print(f"  … +{len(dup_groups) - 50} weitere Gruppen")
 
 if cmd == "audit":
     print()
-    print("Nur Auflistung. Löschen:")
+    print("Detailanalyse:  legacy-dedupe-imports.sh analyze")
+    print("Löschen:")
     print("  legacy-dedupe-imports.sh delete --dry-run")
     print("  legacy-dedupe-imports.sh delete --apply")
+    sys.exit(0)
+
+if cmd == "analyze":
+    print("=== Dubletten-Analyse (Hash + Pfade) ===")
+    print(f"Media: {orig_root}")
+    print()
+    same_hash_groups = 0
+    diff_hash_groups = 0
+    for name, keep, delete in dup_groups:
+        all_docs = [keep] + delete
+        checksums = {}
+        for doc in all_docs:
+            ch, paths = disk_paths_for_doc(doc)
+            checksums[doc["id"]] = ch
+        unique_ch = {c for c in checksums.values() if c}
+        same = len(unique_ch) <= 1 and len(unique_ch) > 0
+        if same:
+            same_hash_groups += 1
+        else:
+            diff_hash_groups += 1
+        flag = "GLEICHER Hash" if same else "VERSCHIEDENE Hashes"
+        print(f"── {name}  ({flag})")
+        for doc in all_docs:
+            role = "BEHALTEN" if doc is keep else "LÖSCHEN"
+            sp_name, sp_path = sp_label(doc)
+            ch, paths = disk_paths_for_doc(doc)
+            chs = ch[:16] + "…" if ch else "—"
+            print(f"   #{doc['id']:<5}  {added_short(doc)}  [{role}]")
+            print(f"           SP: {sp_name}  ({sp_path})")
+            print(f"           MD5: {chs}")
+            if paths:
+                for p in paths[:3]:
+                    print(f"           Disk: {p}")
+                if len(paths) > 3:
+                    print(f"           … +{len(paths) - 3} weitere Pfade")
+            else:
+                print("           Disk: (nicht gefunden unter originals/)")
+        print()
+    print(f"Zusammenfassung: {len(dup_groups)} Gruppen — {same_hash_groups} gleicher Hash, {diff_hash_groups} unterschiedliche Hashes")
+    print("Bei unterschiedlichen Hashes: OCR/Prepare-Unterschied — trotzdem gleicher Dateiname.")
     sys.exit(0)
 
 if cmd != "delete":
