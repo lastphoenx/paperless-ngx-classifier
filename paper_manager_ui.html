@@ -753,7 +753,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.30';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.31';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -3528,6 +3528,27 @@ async function loadFamilyConfig() {
   } catch(e) { showToast('Fehler beim Laden: ' + e.message, 'error'); }
 }
 
+function parseGeburtsdatum(geb) {
+  geb = (geb || '').trim();
+  if (!geb) return null;
+  let m = geb.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const y = +m[1], mo = +m[2], d = +m[3];
+    if (d >= 1 && d <= 31 && mo >= 1 && mo <= 12) return { d, mo, y };
+    return null;
+  }
+  m = geb.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+  if (m) {
+    let d = +m[1], mo = +m[2], y = +m[3];
+    if (y < 100) y = y < 30 ? 2000 + y : 1900 + y;
+    if (d >= 1 && d <= 31 && mo >= 1 && mo <= 12) return { d, mo, y };
+  }
+  return null;
+}
+function formatGeburtsdatumCh({d, mo, y}) {
+  return `${d}.${mo}.${y}`;
+}
+
 function renderFamilyPersonen(d) {
   const pContainer = document.getElementById('family-personen');
   if (!pContainer) return;
@@ -3538,6 +3559,9 @@ function renderFamilyPersonen(d) {
   }
   pContainer.innerHTML = list.map((p, i) => {
     const varianten = (p.namen_varianten || []).join(', ');
+    const gebParsed = parseGeburtsdatum(p.geburtsdatum || '');
+    const gebDisplay = gebParsed ? formatGeburtsdatumCh(gebParsed) : (p.geburtsdatum || '');
+    if (gebParsed) p.geburtsdatum = gebDisplay;
     return `
     <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)">
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
@@ -3553,8 +3577,8 @@ function renderFamilyPersonen(d) {
         <input type="text" placeholder="756.1234.5678.90" value="${p.ahv_nummer||''}"
           title="AHV-Nr. für direkte Person-Zuweisung"
           oninput="_familyData.personen[${i}].ahv_nummer=this.value">
-        <input type="text" placeholder="1980-05-15" value="${p.geburtsdatum||''}"
-          title="Geburtsdatum YYYY-MM-DD oder DD.MM.YYYY"
+        <input type="text" placeholder="15.5.1980" value="${gebDisplay}"
+          title="Geburtsdatum z.B. 15.5.1980, 15.05.1980 oder 15.5.80"
           oninput="_familyData.personen[${i}].geburtsdatum=this.value">
         <input type="text" placeholder="Namensvarianten, kommagetrennt" value="${varianten}"
           title="Zusätzliche Namen für OCR-Matching"
@@ -3714,8 +3738,12 @@ async function saveFamilyPersonen() {
       p.ahv_nummer = `${digits.slice(0,3)}.${digits.slice(3,7)}.${digits.slice(7,11)}.${digits.slice(11,13)}`;
     }
     const geb = (p.geburtsdatum || '').trim();
-    if (geb && !/^(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4})$/.test(geb)) {
-      _showFamilyError('family-personen-error', `Geburtsdatum «${geb}» ungültig — YYYY-MM-DD oder DD.MM.YYYY`); return;
+    if (geb) {
+      const parsed = parseGeburtsdatum(geb);
+      if (!parsed) {
+        _showFamilyError('family-personen-error', `Geburtsdatum «${geb}» ungültig — z.B. 15.5.1980 oder 15.5.80`); return;
+      }
+      p.geburtsdatum = formatGeburtsdatumCh(parsed);
     }
     if (!p.namen_varianten) p.namen_varianten = [];
   }
