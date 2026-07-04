@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.38.py — Paperless-NGX Post-Consume Pipeline v12.38
+post_consume_v12.39.py — Paperless-NGX Post-Consume Pipeline v12.39
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.38"  # 12.38: Brillenpass-Queue (Fielmann-Parser + Review)
+POST_CONSUME_VERSION = "12.39"  # 12.39: Ausstellungsdatum generisch + Geburtsdatum-Filter
 import re
 import sys
 import json
@@ -47,6 +47,12 @@ from brillenpass_parser import (
     looks_like_optiker_rechnung,
     merge_brillenpass,
     parse_fielmann_brillenpass,
+)
+from document_date import (
+    DATUM_PROMPT_HINT,
+    birth_dates_from_family,
+    extract_document_issue_date,
+    validate_issue_date,
 )
 
 # ─── Konfiguration ────────────────────────────────────────────────────────────
@@ -1580,7 +1586,7 @@ def vision_analyze(image_b64: Optional[str], ocr_text: str) -> dict:
         f"{haushalt_kontext}\n"
         f'{{"absender": "Firmenname oder Behörde nicht Empfänger", '
         f'"empfaenger": "Name des Empfängers", '
-        f'"datum": "Datum des Dokuments als JJJJ-MM-TT oder null", '
+        f'"datum": "{DATUM_PROMPT_HINT}", '
         f'"betrag": "Zahlungsbetrag CHF XX.XX oder null — NICHT die Rechnungsnummer", '
         f'"rechnungsnummer": "Rechnungs-/Fakturanummer z.B. 50.699.251.081 oder null", '
         f'"kennzeichen": "Fahrzeugkennzeichen z.B. AG 239878 oder null", '
@@ -2083,6 +2089,7 @@ def build_llm_prompt(
         f"{_prio_base + 4}. Steueramt → Person/Steuern\n"
         + (f"\nKORREKTUREN:\n{recent_corrections}" if recent_corrections else "") +
         f"{beziehung_vorschlag_block}"
+        f"\nAUSSTELLUNGSDATUM: {DATUM_PROMPT_HINT}\n"
         '\n{"ordner":"...","tags":[...],"korrespondent":"...","titel":"...","datum":"YYYY-MM-DD",'
         '"betrag":"CHF XX.XX","dokumenttyp_semantisch":"...","confidence":"hoch|mittel|tief",'
         '"begruendung":"1 Satz"}'
@@ -3773,40 +3780,42 @@ def main():
         log.info("Korrespondent-Default-DokTyp vorhanden: '%s' (LLM hat '%s' gesetzt — behalten)",
                  corr_default_dt, decision.get("dokumenttyp_semantisch"))
 
-    # Datum — Vision hat Vorrang, LLM nur Fallback
-    # Dateinamen-Datum (DOCUMENT_FILE_NAME beginnt oft mit Datum) nie verwenden
-    vision_datum = vision_meta.get("datum")
-    llm_datum = decision.get("datum")
-    # Datum-Validierung:
-    # 1. Jahr muss plausibel sein (2000-2099)
-    # 2. Datum darf nicht mehr als 2 Jahre vor dem Scan-Datum liegen
-    #    → sonst wahrscheinlich falsches Datum (z.B. Eintrittsdatum statt Dokumentdatum)
+    # Ausstellungsdatum (Paperless-Feld «created»)
+    # Priorität: OCR-Signale (Ort und Datum, Erstellt am, …) → Vision → LLM
     import datetime as _dt
     _scan_year = _dt.date.today().year
+    _birth_exclude = birth_dates_from_family(_load_family().get("personen", []))
+
+    ocr_datum, ocr_src = extract_document_issue_date(ocr_text, _birth_exclude)
+    vision_datum = vision_meta.get("datum")
+    llm_datum = decision.get("datum")
+
     datum = None
     _datum_suspicious = False
-    for candidate in [llm_datum, vision_datum]:  # LLM zuerst — hat mehr Kontext
-        if not candidate or str(candidate).lower() in ("null", "none", ""):
-            continue
-        try:
-            year = int(str(candidate)[:4])
-            if not (2000 <= year <= 2099):
-                continue
-            datum = candidate
-            # Plausibilitätsprüfung: mehr als 2 Jahre alt?
-            if (_scan_year - year) > 2:
-                _datum_suspicious = True
-                log.warning("Datum-Verdacht: '%s' ist >2 Jahre vor Scan (%d) — "
-                            "möglicherweise falsches Datum (Eintrittsdatum?)", candidate, _scan_year)
+    _datum_quelle = ""
+    for candidate, quelle in [
+        (ocr_datum, ocr_src or "ocr_signal"),
+        (vision_datum, "vision"),
+        (llm_datum, "llm"),
+    ]:
+        validated, suspicious = validate_issue_date(candidate, _scan_year, _birth_exclude)
+        if validated:
+            datum = validated
+            _datum_suspicious = suspicious
+            _datum_quelle = quelle
             break
-        except (ValueError, TypeError):
-            continue
 
     if datum:
         patch["created"] = datum
+        log.info("Ausstellungsdatum: %s (Quelle: %s)", datum, _datum_quelle)
         if _datum_suspicious and decision.get("confidence") == "hoch":
             decision["confidence"] = "mittel"
             log.warning("Confidence auf 'mittel' reduziert wegen verdächtigem Datum '%s'", datum)
+    elif ocr_datum or vision_datum or llm_datum:
+        log.warning(
+            "Ausstellungsdatum verworfen (Kandidaten ocr=%s vision=%s llm=%s)",
+            ocr_datum, vision_datum, llm_datum,
+        )
 
     # Tags — aus LLM-Entscheidung (bereits durch Validation-Layer gefiltert)
     tag_ids = []
