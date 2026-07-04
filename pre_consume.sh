@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pre-Consume Skript für Paperless-NGX
-# VERSION: 1.4 — Legacy: nur Marker (OCR vor consume via legacy-prepare-pdf.sh)
+# VERSION: 1.5 — Tagged PDF: --skip-text / --force-ocr Fallback, Exit 2 nicht fatal
 # Schritt 1: PDF-Qualität via ocrmypdf verbessern
 # Schritt 2: Swiss QR Bill Daten extrahieren (Sidecar JSON)
 # Läuft auf CT 121
@@ -87,8 +87,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ocrmypdf Exit-Codes: 0=OK, 2=TaggedPDF (digital/exportiert), 6=PriorOcrFound (bereits optimal)
+_ocr_finish_case() {
+    case $OCR_EXIT in
+        0)
+            echo "[pre_consume] OCR abgeschlossen (exit 0)"
+            ;;
+        2)
+            _OCR_OK=1
+            echo "[pre_consume] Tagged PDF — digital exportiert, Standard-OCR abgebrochen (exit 2)"
+            echo "[pre_consume] → Textschicht vorhanden oder kein Scan — Original wird verwendet"
+            rm -f "$tmp_file"
+            trap - EXIT
+            ;;
+        6)
+            _OCR_OK=1
+            echo "[pre_consume] PDF bereits optimal (exit 6) — OCR übersprungen, Original beibehalten"
+            rm -f "$tmp_file"
+            trap - EXIT
+            ;;
+        *)
+            echo "[pre_consume] OCR Fehler: Exit $OCR_EXIT" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 if pdftotext "$file" - 2>/dev/null | grep -q "[a-zA-Z]"; then
-    echo "[pre_consume] PDF enthält bereits OCR — führe --redo-ocr durch"
+    echo "[pre_consume] PDF enthält bereits Text — führe --redo-ocr durch"
     set +e
     timeout "$OCR_TIMEOUT" ocrmypdf \
         --redo-ocr \
@@ -96,42 +123,48 @@ if pdftotext "$file" - 2>/dev/null | grep -q "[a-zA-Z]"; then
         "$file" "$tmp_file"
     OCR_EXIT=$?
     set -e
-    case $OCR_EXIT in
-        0)   echo "[pre_consume] OCR --redo-ocr abgeschlossen" ;;
-        6)   _OCR_OK=1
-             echo "[pre_consume] PDF bereits optimal (PriorOcrFoundError) — OCR übersprungen, Original beibehalten"
-             rm -f "$tmp_file"
-             trap - EXIT
-             ;;
-        *)   echo "[pre_consume] OCR Fehler: Exit $OCR_EXIT" >&2
-             exit 1
-             ;;
-    esac
+    if [ "$OCR_EXIT" -eq 2 ]; then
+        echo "[pre_consume] Tagged PDF bei --redo-ocr — Retry mit --skip-text (nur Optimierung)"
+        set +e
+        timeout "$OCR_TIMEOUT" ocrmypdf \
+            --skip-text \
+            --optimize 2 \
+            --deskew \
+            "$file" "$tmp_file"
+        OCR_EXIT=$?
+        set -e
+    fi
+    _ocr_finish_case || exit 1
 else
-    echo "[pre_consume] PDF ohne OCR — führe Bildoptimierung + OCR durch"
+    echo "[pre_consume] Kein Text in pdftotext — digitale PDF oder Scan"
+    # Zuerst --skip-text: Tagged PDFs aus Word/LibreOffice (Textschicht, kein OCR nötig)
     set +e
     timeout "$OCR_TIMEOUT" ocrmypdf \
-        -l deu+ita+eng+fra \
+        --skip-text \
         --optimize 2 \
         --deskew \
-        --clean \
-        --rotate-pages \
-        --rotate-pages-threshold 7 \
         --output-type pdf \
         "$file" "$tmp_file"
     OCR_EXIT=$?
     set -e
-    case $OCR_EXIT in
-        0)   echo "[pre_consume] OCR abgeschlossen" ;;
-        6)   _OCR_OK=1
-             echo "[pre_consume] PDF bereits optimal (Exit 6) — OCR übersprungen, Original beibehalten"
-             rm -f "$tmp_file"
-             trap - EXIT
-             ;;
-        *)   echo "[pre_consume] OCR Fehler: Exit $OCR_EXIT" >&2
-             exit 1
-             ;;
-    esac
+    if [ "$OCR_EXIT" -ne 0 ] || [ ! -f "$tmp_file" ]; then
+        rm -f "$tmp_file"
+        echo "[pre_consume] --skip-text nicht möglich — Voll-OCR (--force-ocr) für Scan/Tagged PDF"
+        set +e
+        timeout "$OCR_TIMEOUT" ocrmypdf \
+            --force-ocr \
+            -l deu+ita+eng+fra \
+            --optimize 2 \
+            --deskew \
+            --clean \
+            --rotate-pages \
+            --rotate-pages-threshold 7 \
+            --output-type pdf \
+            "$file" "$tmp_file"
+        OCR_EXIT=$?
+        set -e
+    fi
+    _ocr_finish_case || exit 1
 fi
 
 if [ -f "$tmp_file" ]; then
