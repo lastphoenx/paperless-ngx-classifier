@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.16"  # 2.16: Doc Review — Tags bei Freigeben, CF immer speichern
-UI_VERSION = "2.29"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.17"  # 2.17: Person-ID-Felder, Review-Merge, request-aware Paperless-URL
+UI_VERSION = "2.30"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -84,6 +84,21 @@ logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="paper.manager", version="2.0.0")
 
 
+def _effective_paperless_url(request: Request | None = None) -> str:
+    """Request-host-aware Paperless-URL für Links und Login-Redirect."""
+    canonical = os.environ.get("PAPERLESS_URL", "http://localhost:8000")
+    if request is None:
+        return canonical
+    host = request.headers.get("host", "localhost:8100")
+    proto = request.headers.get("x-forwarded-proto", "http")
+    host_without_port = host.split(":")[0]
+    if host_without_port.replace(".", "").isdigit():
+        return f"http://{host_without_port}:8000"
+    if host_without_port in ("localhost", "127.0.0.1"):
+        return canonical
+    return f"{proto}://{host_without_port}"
+
+
 @app.middleware("http")
 async def require_paperless_session(request: Request, call_next):
     """Prüft ob eine gültige Paperless-Session vorhanden ist.
@@ -93,6 +108,7 @@ async def require_paperless_session(request: Request, call_next):
     """
     path = request.url.path
     paperless_url = os.environ.get("PAPERLESS_URL", "http://localhost:8000")
+    paperless_login_base = _effective_paperless_url(request)
     # Für Browser-Login immer die INTERNE URL verwenden —
     # PAPERLESS_INTERNAL_URL zeigt direkt auf den Container ohne nginx/Authentik.
     # Wer lokal (IP) zugreift, soll beim lokalen Paperless-Login landen.
@@ -147,22 +163,8 @@ async def require_paperless_session(request: Request, call_next):
         except Exception:
             pass
 
-    # Login-Redirect: gleiche IP/Domain wie Request-Host, aber Port 8000 (Paperless)
-    # Beispiel: Request kommt von 192.168.131.31:8100 → Login auf 192.168.131.31:8000
-    # Beispiel: Request kommt von paperless.santinel.li → Login auf paperless.santinel.li (Authentik)
+    # Login-Redirect: gleiche IP/Domain wie Request-Host (siehe _effective_paperless_url)
     host = request.headers.get("host", "localhost:8100")
-    proto = request.headers.get("x-forwarded-proto", "http")
-    host_without_port = host.split(":")[0]
-
-    # Paperless-Port: intern 8000, extern via nginx (kein Port)
-    is_ip = host_without_port.replace(".", "").isdigit()
-    if is_ip:
-        # Direkte IP-Eingabe → Paperless auf selber IP Port 8000
-        paperless_login_base = f"http://{host_without_port}:8000"
-    else:
-        # Domain → externe URL (Authentik davor)
-        paperless_login_base = f"{proto}://{host_without_port}"
-
     next_url = f"http://{host}/"
     login_url = f"{paperless_login_base}/accounts/login/?next={next_url}"
     return RedirectResponse(url=login_url)
@@ -1318,6 +1320,19 @@ def api_review_merge(request: Request, body: dict = Body(...)):
         entries[orig_a]["llm_raw"] = entry_b.get("llm_raw", entry_a.get("llm_raw"))
         entries[orig_a]["llm_confidence"] = conf_b
 
+    # Bei unterschiedlichen Namen: anderen Namen als Variante vorschlagen
+    va = entries[orig_a].get("vorgeschlagener_eintrag") or {}
+    vb = entry_b.get("vorgeschlagener_eintrag") or {}
+    name_a = (va.get("name") or "").strip()
+    name_b = (vb.get("name") or "").strip()
+    if name_b and name_b.lower() != name_a.lower():
+        varianten = list(va.get("varianten") or [])
+        for extra in [name_b] + (vb.get("varianten") or []):
+            if extra and extra.lower() not in {v.lower() for v in varianten} and extra.lower() != name_a.lower():
+                varianten.append(extra)
+        va["varianten"] = varianten
+        entries[orig_a]["vorgeschlagener_eintrag"] = va
+
     # Eintrag B auf merged setzen
     entries[orig_b]["status"] = "merged"
     entries[orig_b]["merged_into"] = orig_a
@@ -1609,7 +1624,7 @@ def _set_pending_mode(mode: str) -> None:
 
 
 @app.get("/api/config", response_class=JSONResponse)
-def api_config():
+def api_config(request: Request):
     """Konfiguration + Versionen für Frontend — einziger Init-Call."""
     def _rv(path: str, marker: str) -> str:
         try:
@@ -1623,8 +1638,10 @@ def api_config():
             pass
         return "?"
     base = "/opt/paperless-scripts"
+    canonical = os.environ.get("PAPERLESS_URL", "http://localhost:8000")
     return {
-        "paperless_url": os.environ.get("PAPERLESS_URL", "http://localhost:8000"),
+        "paperless_url": _effective_paperless_url(request),
+        "paperless_url_config": canonical,
         "pending_mode":  _get_pending_mode(),
         "versions": {
             "ui":             UI_VERSION,
@@ -2363,6 +2380,26 @@ def api_patch_family(body: dict = Body(...)):
 
     if "fahrzeug_kategorien" in body and not data["fahrzeug_kategorien"]:
         raise HTTPException(400, "Mindestens eine Kategorie erforderlich")
+
+    # Validierung: Personen (AHV, Geburtsdatum)
+    if "personen" in body:
+        import re as _re
+        _ahv_re = _re.compile(r"^756\.\d{4}\.\d{4}\.\d{2}$")
+        for p in data.get("personen", []):
+            ahv = (p.get("ahv_nummer") or "").strip()
+            if ahv:
+                digits = _re.sub(r"\D", "", ahv)
+                if len(digits) != 13 or not digits.startswith("756"):
+                    raise HTTPException(400, f"AHV «{ahv}» ungültig — Format: 756.XXXX.XXXX.XX")
+                p["ahv_nummer"] = f"{digits[0:3]}.{digits[3:7]}.{digits[7:11]}.{digits[11:13]}"
+            geb = (p.get("geburtsdatum") or "").strip()
+            if geb and not _re.match(r"^(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4})$", geb):
+                raise HTTPException(400, f"Geburtsdatum «{geb}» ungültig — YYYY-MM-DD oder DD.MM.YYYY")
+            nv = p.get("namen_varianten")
+            if nv is not None:
+                if not isinstance(nv, list):
+                    raise HTTPException(400, "namen_varianten muss eine Liste sein")
+                p["namen_varianten"] = [str(v).strip() for v in nv if str(v).strip()]
 
     # Validierung: Kennzeichen müssen unique sein
     if "fahrzeuge" in body:

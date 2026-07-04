@@ -602,6 +602,7 @@
         <strong>Personen</strong> definieren den Ordner-Namensraum: der <em>Ordner-Prefix</em> ist der erste Teil aller Ablage-Pfade
         (z.B. «Vorname» → <code>Vorname/Auto</code>, <code>Vorname/Steuern</code>).
         Die <em>ID</em> ist ein interner Schlüssel — Kleinbuchstaben, keine Leerzeichen, eindeutig.
+        Optional: <strong>AHV-Nr.</strong>, <strong>Geburtsdatum</strong> und <strong>Namensvarianten</strong> für direkte Person-Zuweisung ohne Korrespondent/Fahrzeug.
         <strong>Personen zuerst speichern</strong> bevor Referenzen erfasst werden.
       </p>
 
@@ -621,9 +622,9 @@
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ID <span style="font-weight:normal">(intern, eindeutig, z.B. person1)</span></div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ANZEIGENAME <span style="font-weight:normal">(z.B. Anna)</span></div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ORDNER-PREFIX <span style="font-weight:normal">(z.B. Anna</span></div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ID <span style="font-weight:normal">(intern, eindeutig)</span></div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ANZEIGENAME</div>
+        <div style="font-size:10px;color:var(--muted);padding:0 4px">ORDNER-PREFIX</div>
         <div></div>
       </div>
       <div id="family-personen"></div>
@@ -722,7 +723,37 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
-const UI_VERSION = '2.29';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+
+/** Paperless-Basis-URL — IP-Zugriff → :8000, Domain → gleicher Host (wie Login-Redirect). */
+function effectivePaperlessBase() {
+  const host = window.location.hostname;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return `http://${host}:8000`;
+  }
+  const proto = window.location.protocol.replace(':', '');
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return window.PAPERLESS_URL_CONFIG || window.PAPERLESS_URL || `${proto}://${host}:8000`;
+  }
+  return `${proto}://${host}`;
+}
+function paperlessDocUrl(docId) {
+  return `${effectivePaperlessBase()}/documents/${docId}`;
+}
+function paperlessCorrUrl(plId) {
+  return `${effectivePaperlessBase()}/correspondents/?id=${plId}`;
+}
+function applyPaperlessLinks(url) {
+  const base = url || effectivePaperlessBase();
+  window.PAPERLESS_URL = base;
+  const sl = document.getElementById('nav-paperless-link');
+  if (sl) sl.href = base;
+  document.querySelectorAll('.paperless-open-btn').forEach(btn => {
+    btn.href = base;
+    btn.style.display = 'inline-flex';
+    btn.title = base;
+  });
+}
+const UI_VERSION = '2.30';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -818,18 +849,16 @@ window.addEventListener('popstate', () => {
 document.addEventListener('DOMContentLoaded', () => { init(); });
 
 async function init() {
-  // Sidebar Paperless-Link sofort beim Start befüllen
+  // Sidebar Paperless-Link — request-aware via /api/config
   fetch(`${API_BASE}/config`).then(r=>r.json()).then(cfg => {
-    const url = cfg.paperless_url || '';
-    if (url) {
-      const sl = document.getElementById('nav-paperless-link');
-      if (sl) sl.href = url;
-    }
+    window.PAPERLESS_URL_CONFIG = cfg.paperless_url_config || '';
+    applyPaperlessLinks(cfg.paperless_url || effectivePaperlessBase());
   }).catch(()=>{});
   // Config zuerst laden — pending_mode direkt in DOM schreiben
   try {
     const cfg = await (await fetch(`${API_BASE}/config`)).json();
-    window.PAPERLESS_URL = cfg.paperless_url || '';
+    window.PAPERLESS_URL_CONFIG = cfg.paperless_url_config || '';
+    applyPaperlessLinks(cfg.paperless_url || effectivePaperlessBase());
     if (cfg.versions) {
       const v = cfg.versions;
       const uiVer = v.ui || UI_VERSION;
@@ -851,7 +880,7 @@ async function init() {
         if (sub) sub.textContent = _qsModeActive ? 'Alle Dokumente → Review' : 'LLM-Fehler → Review';
       }
     }
-  } catch(e) { window.PAPERLESS_URL = ''; }
+  } catch(e) { applyPaperlessLinks(effectivePaperlessBase()); }
   await loadPending();
   await loadPlCorrespondents();
   await loadCorrMap();
@@ -897,33 +926,11 @@ function showView(name) {
   document.getElementById('view-' + name).style.display = '';
   document.getElementById('nav-' + name).classList.add('active');
   if (name === 'home') {
-    // Paperless-URL für Absprung-Button laden
     fetch(`${API_BASE}/config`).then(r=>r.json()).then(cfg => {
-      let url = cfg.paperless_url || '';
-      // Falls Backend localhost/127.0.0.1 meldet aber Browser von aussen kommt:
-      // hostname aus Browser übernehmen, nur Port aus paperless_url
-      if (url) {
-        try {
-          const parsed = new URL(url);
-          const isLocal = ['localhost','127.0.0.1','::1'].includes(parsed.hostname);
-          const browserHost = window.location.hostname;
-          const browserIsLocal = ['localhost','127.0.0.1'].includes(browserHost);
-          if (isLocal && !browserIsLocal) {
-            // Externer Zugriff: paperless_url Port beibehalten falls nicht 80/443,
-            // aber Hostname aus Browser nehmen — Fallback: cfg.paperless_url direkt
-            url = cfg.paperless_url; // bleibt wie konfiguriert — Nutzer muss PAPERLESS_URL korrekt setzen
-          }
-        } catch(e) {}
-        document.querySelectorAll('.paperless-open-btn').forEach(btn => {
-          btn.href = url;
-          btn.style.display = 'inline-flex';
-          btn.title = url;
-        });
-        // Sidebar-Link ebenfalls setzen
-        const sidebarLink = document.getElementById('nav-paperless-link');
-        if (sidebarLink) sidebarLink.href = url;
+      window.PAPERLESS_URL_CONFIG = cfg.paperless_url_config || '';
+      if (cfg.paperless_url || window.PAPERLESS_URL_CONFIG) {
+        applyPaperlessLinks(cfg.paperless_url || effectivePaperlessBase());
       } else {
-        // Kein paperless_url konfiguriert — Hinweis anzeigen
         document.querySelectorAll('.paperless-open-btn').forEach(btn => {
           btn.style.display = 'inline-flex';
           btn.href = '#';
@@ -932,7 +939,6 @@ function showView(name) {
         });
       }
     }).catch(()=>{
-      // Config nicht erreichbar — Button trotzdem zeigen mit Warnung
       document.querySelectorAll('.paperless-open-btn').forEach(btn => {
         btn.style.display = 'inline-flex';
         btn.href = '#';
@@ -1060,12 +1066,13 @@ function renderPendingList() {
       'merge_into': '<span class="badge badge-merge">MERGE</span>',
     }[e.aktion] || '';
     const docCount = (e.source_document_ids || []).length;
-    // Merge-Button wenn gleicher Name bei anderem Index vorhanden
+    // Merge-Button: gleicher Name → Schnell-Merge, sonst Auswahl-Dialog
     const dupes = nameCount[name.toLowerCase()] || [];
     const mergePartner = dupes.find(j => j !== i);
-    const mergeBtn = mergePartner !== undefined
+    const mergeBtn = pendingEntries.length > 1
       ? `<button class="btn btn-ghost" style="padding:2px 8px;font-size:10px;margin-left:auto"
-           onclick="event.stopPropagation();mergePending(${i},${mergePartner})">⇔ Merge</button>`
+           onclick="event.stopPropagation();${mergePartner !== undefined ? `mergePending(${i},${mergePartner})` : `promptMergePending(${i})`}"
+           title="${mergePartner !== undefined ? 'Gleicher Name — direkt zusammenführen' : 'Mit anderem Pending-Eintrag zusammenführen'}">⇔ Merge</button>`
       : '';
     return `
       <div class="pending-item ${selectedIndex === i ? 'selected' : ''}" onclick="selectEntry(${i})">
@@ -1086,11 +1093,15 @@ function renderPendingList() {
 }
 
 async function mergePending(indexA, indexB) {
-  const nameA = pendingEntries[indexA]?.vorgeschlagener_eintrag?.name || '?';
-  const nameB = pendingEntries[indexB]?.vorgeschlagener_eintrag?.name || '?';
+  if (indexB === undefined || indexB === null || indexB === '') {
+    promptMergePending(indexA);
+    return;
+  }
+  const nameA = pendingEntries[indexA]?.vorgeschlagener_eintrag?.name || pendingEntries[indexA]?.ziel_name || '?';
+  const nameB = pendingEntries[indexB]?.vorgeschlagener_eintrag?.name || pendingEntries[indexB]?.ziel_name || '?';
   const idsA = pendingEntries[indexA]?.source_document_ids || [];
   const idsB = pendingEntries[indexB]?.source_document_ids || [];
-  if (!confirm(`"${nameA}" (Dok ${idsA.join(',')}) mit "${nameB}" (Dok ${idsB.join(',')}) zusammenführen?`)) return;
+  if (!confirm(`«${nameA}» (Dok ${idsA.join(',')}) mit «${nameB}» (Dok ${idsB.join(',')}) in der Warteschlange zusammenführen?\n\nDie Dokumente werden einem Review-Eintrag zugeordnet — noch kein Korrespondent in Paperless.`)) return;
   const r = await fetch(`${API_BASE}/review/merge`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -1098,17 +1109,57 @@ async function mergePending(indexA, indexB) {
   });
   if (r.ok) {
     const d = await r.json();
-    showToast(`Merged — ${d.count} Dokumente zusammengeführt`, 'success');
+    showToast(`Zusammengeführt — ${d.count} Dokument(e) in einem Eintrag`, 'success');
     await loadPending();
     renderStats();
     renderPendingList();
-    selectedIndex = null;
-    document.getElementById('review-panel-wrapper').innerHTML =
-      '<div class="empty"><div class="icon">👈</div><div>Eintrag links auswählen</div></div>';
+    if (selectedIndex === indexB) selectedIndex = indexA;
+    else if (selectedIndex > indexB) selectedIndex--;
+    if (selectedIndex !== null) selectEntry(selectedIndex);
   } else {
-    const err = await r.json().catch(() => ({}));
-    showToast('Fehler: ' + (err.detail || 'Unbekannt'), 'error');
+    const err = await r.json().catch(()=>({}));
+    showToast(err.detail || 'Merge fehlgeschlagen', 'error');
   }
+}
+
+function _pendingEntryLabel(e) {
+  const name = e.aktion === 'ergaenzung' ? e.ziel_name : (e.vorgeschlagener_eintrag?.name || '?');
+  const docs = (e.source_document_ids || []).length;
+  return `${name} (${docs} Dok.)`;
+}
+
+function renderMergePendingPicker(index) {
+  const others = pendingEntries.map((e, j) => ({e, j})).filter(x => x.j !== index);
+  if (!others.length) return '';
+  const opts = others.map(({e, j}) =>
+    `<option value="${j}">${_pendingEntryLabel(e)}</option>`
+  ).join('');
+  return `
+    <div class="field-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <label>Mit anderem Pending-Eintrag zusammenführen
+        <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px">
+          z.B. FHNW-Varianten — Dokumente werden gebündelt, Name bleibt editierbar
+        </span>
+      </label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="f-merge-target" style="flex:1;min-width:200px">
+          <option value="">— Ziel-Eintrag wählen —</option>
+          ${opts}
+        </select>
+        <button class="btn btn-ghost" onclick="mergePending(${index}, parseInt(document.getElementById('f-merge-target').value, 10))">⇔ Zusammenführen</button>
+      </div>
+    </div>`;
+}
+
+function promptMergePending(index) {
+  const others = pendingEntries.map((e, j) => ({e, j})).filter(x => x.j !== index);
+  if (!others.length) { showToast('Kein anderer Pending-Eintrag', 'warn'); return; }
+  const lines = others.map(({e, j}, n) => `${n + 1}. ${_pendingEntryLabel(e)}`).join('\n');
+  const pick = prompt(`Mit welchem Eintrag zusammenführen?\n\n${lines}\n\nNummer eingeben (1–${others.length}):`);
+  if (!pick) return;
+  const n = parseInt(pick, 10);
+  if (n < 1 || n > others.length) { showToast('Ungültige Auswahl', 'error'); return; }
+  mergePending(index, others[n - 1].j);
 }
 
 
@@ -1155,7 +1206,7 @@ async function selectEntry(i) {
 // ──────────────────────────────────────────────
 function docPreview(content, docIds) {
   const links = docIds.map(id =>
-    `<a href="${window.PAPERLESS_URL || ''}/documents/${id}" target="_blank" style="color:var(--accent)">Dok #${id}</a>`
+    `<a href="${paperlessDocUrl(id)}" target="_blank" style="color:var(--accent)">Dok #${id}</a>`
   ).join(' ');
   return `
     <div class="field-group">
@@ -1244,6 +1295,7 @@ function renderPanelNeu(entry, i, docContent, docIds) {
         <label>Notiz</label>
         <textarea id="f-notiz">${e.notiz || ''}</textarea>
       </div>
+      ${renderMergePendingPicker(i)}
       <div class="btn-row">
         <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Freigeben & in Paperless anlegen</button>
         <button class="btn btn-danger"  onclick="submitReview(${i},'reject')">✗ Ablehnen</button>
@@ -1274,7 +1326,7 @@ function renderPanelErgaenzung(entry, i, docContent, docIds) {
           ⚠ Korrespondent «${entry.ziel_name}» nicht in correspondents.json gefunden — Ergänzung kann fehlschlagen.
         </div>`;
         const plId = existing._paperless?.id;
-        const plLink = plId ? `<a href="${window.PAPERLESS_URL||''}/correspondents/?id=${plId}" target="_blank"
+        const plLink = plId ? `<a href="${paperlessCorrUrl(plId)}" target="_blank"
           style="color:var(--accent);text-decoration:none;font-size:11px">Paperless #${plId} ↗</a>` : '<span style="color:var(--muted);font-size:11px">Noch nicht in Paperless</span>';
         const matchStr = (existing.match||[]).join(' | ') || '—';
         const ordner = (existing.typische_ordner||[]).join(', ') || '—';
@@ -1311,6 +1363,7 @@ function renderPanelErgaenzung(entry, i, docContent, docIds) {
           <input type="text" placeholder="match string..." onkeydown="addTag(event,'tags-match')">
         </div>
       </div>
+      ${renderMergePendingPicker(i)}
       <div class="btn-row">
         <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Ergänzung übernehmen</button>
         <button class="btn btn-danger"  onclick="submitReview(${i},'reject')">✗ Ablehnen</button>
@@ -1367,6 +1420,7 @@ function renderPanelMerge(entry, i, docContent, docIds) {
         <label>Begründung LLM</label>
         <div style="color:var(--muted);font-size:12px;padding:8px">${entry.merge_begruendung || '—'}</div>
       </div>
+      ${renderMergePendingPicker(i)}
       <div class="btn-row">
         <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Merge durchführen</button>
         <button class="btn btn-ghost"   onclick="switchMergeToNeu(${i})">Als NEU anlegen statt Merge</button>
@@ -3211,7 +3265,7 @@ async function selectDocReview(i) {
   // Thumbnail via paper.manager Proxy (funktioniert auch per IP ohne Authentik)
   const thumbUrl = `${API_BASE}/proxy/document/${entry.document_id}/thumb/`;
   const previewUrl = `${API_BASE}/proxy/document/${entry.document_id}/preview/`;
-  const paperlessUrl = `${window.PAPERLESS_URL||''}/documents/${entry.document_id}`;
+  const paperlessUrl = paperlessDocUrl(entry.document_id);
 
   // Select Options — Vorauswahl basierend auf aktuellem Dokument-Zustand
   const spOptions = allStoragePaths.map(sp =>
@@ -3482,16 +3536,32 @@ function renderFamilyPersonen(d) {
     pContainer.innerHTML = '<div style="color:var(--muted);font-size:12px;font-style:italic;padding:8px 0">Noch keine Personen erfasst.</div>';
     return;
   }
-  pContainer.innerHTML = list.map((p, i) => `
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
-      <input type="text" placeholder="z.B. person1" value="${p.id||''}"
-        style="font-family:monospace" oninput="_familyData.personen[${i}].id=this.value.toLowerCase().replace(/\\s/g,'')">
-      <input type="text" placeholder="z.B. Anna" value="${p.anzeigename||''}"
-        oninput="_familyData.personen[${i}].anzeigename=this.value">
-      <input type="text" placeholder="z.B. Anna" value="${p.ordner_prefix||''}"
-        oninput="_familyData.personen[${i}].ordner_prefix=this.value">
-      <button class="btn btn-ghost" style="padding:3px 8px;color:#f87171" onclick="removeFamilyPerson(${i})">×</button>
-    </div>`).join('');
+  pContainer.innerHTML = list.map((p, i) => {
+    const varianten = (p.namen_varianten || []).join(', ');
+    return `
+    <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
+        <input type="text" placeholder="person1" value="${p.id||''}"
+          style="font-family:monospace" oninput="_familyData.personen[${i}].id=this.value.toLowerCase().replace(/\\s/g,'')">
+        <input type="text" placeholder="Anna" value="${p.anzeigename||''}"
+          oninput="_familyData.personen[${i}].anzeigename=this.value">
+        <input type="text" placeholder="Anna" value="${p.ordner_prefix||''}"
+          oninput="_familyData.personen[${i}].ordner_prefix=this.value">
+        <button class="btn btn-ghost" style="padding:3px 8px;color:#f87171" onclick="removeFamilyPerson(${i})">×</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:6px">
+        <input type="text" placeholder="756.1234.5678.90" value="${p.ahv_nummer||''}"
+          title="AHV-Nr. für direkte Person-Zuweisung"
+          oninput="_familyData.personen[${i}].ahv_nummer=this.value">
+        <input type="text" placeholder="1980-05-15" value="${p.geburtsdatum||''}"
+          title="Geburtsdatum YYYY-MM-DD oder DD.MM.YYYY"
+          oninput="_familyData.personen[${i}].geburtsdatum=this.value">
+        <input type="text" placeholder="Namensvarianten, kommagetrennt" value="${varianten}"
+          title="Zusätzliche Namen für OCR-Matching"
+          oninput="_familyData.personen[${i}].namen_varianten=this.value.split(',').map(s=>s.trim()).filter(Boolean)">
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function normalizeFahrzeug(fz) {
@@ -3574,7 +3644,7 @@ function _showFamilyError(elId, msg) {
 function addFamilyPerson() {
   if (!_familyData) return;
   _familyData.personen = _familyData.personen || [];
-  _familyData.personen.push({id: '', anzeigename: '', ordner_prefix: ''});
+  _familyData.personen.push({id: '', anzeigename: '', ordner_prefix: '', ahv_nummer: '', geburtsdatum: '', namen_varianten: []});
   renderFamilyPersonen(_familyData);
 }
 function addFamilyFahrzeug() {
@@ -3635,6 +3705,19 @@ async function saveFamilyPersonen() {
     if (!p.anzeigename.trim()) { _showFamilyError('family-personen-error', `Anzeigename fehlt bei ID «${p.id}».`); return; }
     if (!p.ordner_prefix.trim()) { _showFamilyError('family-personen-error', `Ordner-Prefix fehlt bei «${p.anzeigename}».`); return; }
     if (/\s/.test(p.id)) { _showFamilyError('family-personen-error', `ID «${p.id}» darf keine Leerzeichen enthalten.`); return; }
+    const ahv = (p.ahv_nummer || '').trim();
+    if (ahv && !/^756\.\d{4}\.\d{4}\.\d{2}$/.test(ahv.replace(/\s/g,''))) {
+      const digits = ahv.replace(/\D/g,'');
+      if (digits.length !== 13 || !digits.startsWith('756')) {
+        _showFamilyError('family-personen-error', `AHV «${ahv}» ungültig — Format: 756.XXXX.XXXX.XX`); return;
+      }
+      p.ahv_nummer = `${digits.slice(0,3)}.${digits.slice(3,7)}.${digits.slice(7,11)}.${digits.slice(11,13)}`;
+    }
+    const geb = (p.geburtsdatum || '').trim();
+    if (geb && !/^(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4})$/.test(geb)) {
+      _showFamilyError('family-personen-error', `Geburtsdatum «${geb}» ungültig — YYYY-MM-DD oder DD.MM.YYYY`); return;
+    }
+    if (!p.namen_varianten) p.namen_varianten = [];
   }
 
   const r = await fetch(`${API_BASE}/family`, {
