@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.32.py — Paperless-NGX Post-Consume Pipeline v12.32
+post_consume_v12.33.py — Paperless-NGX Post-Consume Pipeline v12.33
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.32"  # 12.32: Legacy nur Tag legacy + Storage Path legacy/{title}
+POST_CONSUME_VERSION = "12.33"  # 12.33: Direkte Person-Zuweisung via AHV/Geb.datum/Name
 import sys
 import json
 import logging
@@ -132,6 +132,112 @@ def _resolve_person_anzeigename(person_ref: str) -> str:
         if name and name.lower() == ref:
             return name
     return ""
+
+
+_AHV_OCR_RE = re.compile(r"756[\s.]?\d{4}[\s.]?\d{4}[\s.]?\d{2}")
+
+
+def _norm_ahv_digits(ahv: str) -> str:
+    digits = re.sub(r"\D", "", (ahv or "").strip())
+    return digits if len(digits) == 13 and digits.startswith("756") else ""
+
+
+def _extract_ahvs_from_text(text: str) -> set[str]:
+    found: set[str] = set()
+    for m in _AHV_OCR_RE.finditer(text or ""):
+        digits = re.sub(r"\D", "", m.group())
+        if len(digits) == 13 and digits.startswith("756"):
+            found.add(digits)
+    return found
+
+
+def _geburtsdatum_search_patterns(geb: str) -> list[str]:
+    """Suchmuster für Geburtsdatum im OCR-Text."""
+    geb = (geb or "").strip()
+    if not geb:
+        return []
+    patterns = [geb]
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", geb)
+    if m:
+        y, mo, d = m.groups()
+        patterns.extend([f"{int(d):02d}.{int(mo):02d}.{y}", f"{d}.{mo}.{y}", f"{d}.{mo}.{y[2:]}"])
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$", geb)
+    if m:
+        d, mo, y = m.groups()
+        patterns.extend([f"{int(d):02d}.{int(mo):02d}.{y}", f"{d}.{mo}.{y}"])
+    return list(dict.fromkeys(patterns))
+
+
+def _person_name_candidates(p: dict) -> list[str]:
+    """Anzeigename + Varianten für Textsuche (min. 4 Zeichen)."""
+    names = []
+    for key in ("anzeigename",):
+        v = (p.get(key) or "").strip()
+        if len(v) >= 4:
+            names.append(v)
+    for v in p.get("namen_varianten") or []:
+        v = str(v).strip()
+        if len(v) >= 4:
+            names.append(v)
+    return names
+
+
+def _match_person_direct(ocr_text: str, vision_meta: dict | None = None) -> tuple[str, str]:
+    """Direkte Person-Zuweisung ohne Korrespondent/Fahrzeug — AHV > Geb.datum > Name."""
+    if not CF_PERSON:
+        return "", ""
+    personen = _load_family().get("personen", [])
+    if not personen:
+        return "", ""
+
+    parts = [ocr_text or ""]
+    if vision_meta:
+        for key in ("empfaenger", "text", "inhalt", "adressat"):
+            val = vision_meta.get(key)
+            if val:
+                parts.append(str(val))
+    text = "\n".join(parts)
+
+    # 1. AHV — eindeutig
+    found_ahvs = _extract_ahvs_from_text(text)
+    if found_ahvs:
+        ahv_hits = []
+        for p in personen:
+            norm = _norm_ahv_digits(p.get("ahv_nummer", ""))
+            if norm and norm in found_ahvs:
+                ahv_hits.append(p)
+        if len(ahv_hits) == 1:
+            name = (ahv_hits[0].get("anzeigename") or "").strip()
+            if name:
+                return name, "AHV"
+
+    # 2. Geburtsdatum — nur bei eindeutigem Treffer
+    geb_hits = []
+    for p in personen:
+        geb = (p.get("geburtsdatum") or "").strip()
+        if not geb:
+            continue
+        if any(pat in text for pat in _geburtsdatum_search_patterns(geb)):
+            geb_hits.append(p)
+    if len(geb_hits) == 1:
+        name = (geb_hits[0].get("anzeigename") or "").strip()
+        if name:
+            return name, "Geburtsdatum"
+
+    # 3. Name/Varianten — nur bei eindeutigem Treffer (Wortgrenze, ≥4 Zeichen)
+    name_hits = []
+    for p in personen:
+        for cand in _person_name_candidates(p):
+            pattern = re.compile(r"(?<!\w)" + re.escape(cand) + r"(?!\w)", re.IGNORECASE)
+            if pattern.search(text):
+                name_hits.append(p)
+                break
+    if len(name_hits) == 1:
+        name = (name_hits[0].get("anzeigename") or "").strip()
+        if name:
+            return name, "Name"
+
+    return "", ""
 
 
 def _get_haushalt_personen_namen() -> list[str]:
@@ -3360,6 +3466,12 @@ def main():
         )
         if _bez_match:
             person_name = _resolve_person_anzeigename(_bez_match.get("person", ""))
+
+    if not person_name:
+        _direct_name, _direct_reason = _match_person_direct(ocr_text, vision_meta)
+        if _direct_name:
+            person_name = _direct_name
+            log.info("Person direkt (%s): %s", _direct_reason, person_name)
     _will_pending_review = PENDING_MODE in ("always", "uncertain") and _llm_unsicher
     _will_pending_qs = PENDING_MODE == "always" and not _llm_unsicher and not pending_review_needed
     auto_stp = bool(
