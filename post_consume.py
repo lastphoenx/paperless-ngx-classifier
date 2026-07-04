@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.34"  # 12.34: Geburtsdatum CH-Formate (15.5.1980, 15.5.80)
+POST_CONSUME_VERSION = "12.35"  # 12.35: Doc-Review-Queue Dedupe (Grund mergen, Duplikate)
 import re
 import sys
 import json
@@ -3916,23 +3916,78 @@ def enqueue_document_review(document_id: int, pfad: str, confidence: str,
                         except json.JSONDecodeError:
                             pass
 
-        # Dedupe: bestehenden pending-Eintrag für diese doc_id aktualisieren
-        updated = False
+        def _merge_grund(existing_g, new_g):
+            return list(dict.fromkeys([*(existing_g or []), *(new_g or [])]))
+
+        # Fall 1: doppelte pending-Zeilen pro doc_id zusammenführen
+        pending_by_doc: dict[int, dict] = {}
+        other_entries: list[dict] = []
         for e in existing:
-            if e.get("document_id") == document_id and e.get("status") == "pending":
-                e["pfad"]        = pfad
-                e["confidence"]  = confidence
-                e["grund"]       = grund
-                e["title"]       = title
-                e["begruendung"] = begruendung
-                e["timestamp"]   = time.strftime("%Y-%m-%dT%H:%M:%S")
+            if e.get("status") != "pending":
+                other_entries.append(e)
+                continue
+            try:
+                did = int(e.get("document_id"))
+            except (TypeError, ValueError):
+                other_entries.append(e)
+                continue
+            if did not in pending_by_doc:
+                pending_by_doc[did] = dict(e)
+                pending_by_doc[did]["document_id"] = did
+            else:
+                base = pending_by_doc[did]
+                base["grund"] = _merge_grund(base.get("grund"), e.get("grund"))
+                if not base.get("pfad"):
+                    base["pfad"] = e.get("pfad", "")
+                if not base.get("title"):
+                    base["title"] = e.get("title", "")
+        existing = other_entries + list(pending_by_doc.values())
+
+        try:
+            doc_id_int = int(document_id)
+        except (TypeError, ValueError):
+            doc_id_int = document_id
+
+        # Dedupe: pending oder approved→pending reaktivieren
+        updated = False
+        now_ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        for e in existing:
+            try:
+                eid = int(e.get("document_id"))
+            except (TypeError, ValueError):
+                continue
+            if eid != doc_id_int:
+                continue
+            if e.get("status") == "pending":
+                e["pfad"] = pfad or e.get("pfad", "")
+                e["confidence"] = confidence or e.get("confidence", "mittel")
+                e["grund"] = _merge_grund(e.get("grund"), grund)
+                e["title"] = title or e.get("title", "")
+                if begruendung:
+                    old = (e.get("begruendung") or "").strip()
+                    e["begruendung"] = begruendung if not old else (
+                        begruendung if begruendung in old else f"{old}\n{begruendung}".strip()
+                    )
+                e["timestamp"] = now_ts
                 updated = True
                 log.info("Document Review Queue: ID=%s aktualisiert (Dedupe)", document_id)
+                break
+            if e.get("status") == "approved":
+                e["status"] = "pending"
+                e.pop("reviewed_at", None)
+                e["pfad"] = pfad or e.get("pfad", "")
+                e["confidence"] = confidence or e.get("confidence", "mittel")
+                e["grund"] = _merge_grund(e.get("grund"), grund)
+                e["title"] = title or e.get("title", "")
+                e["begruendung"] = begruendung or e.get("begruendung", "")
+                e["timestamp"] = now_ts
+                updated = True
+                log.info("Document Review Queue: ID=%s reaktiviert (approved→pending)", document_id)
                 break
 
         if not updated:
             existing.append({
-                "document_id":  document_id,
+                "document_id":  doc_id_int,
                 "pfad":         pfad,
                 "confidence":   confidence,
                 "grund":        grund,

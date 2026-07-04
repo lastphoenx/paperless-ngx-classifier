@@ -19,7 +19,7 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.21"  # 2.21: Korrespondent manuell anlegen (POST /api/correspondents)
+__version__ = "2.22"  # 2.22: Doc-Review Dedupe + kein Re-Queue nach Endverarbeitung
 UI_VERSION = "2.34"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
@@ -1111,7 +1111,65 @@ DOCUMENT_REVIEW_QUEUE = Path(os.environ.get(
 ))
 
 
-def load_document_review_queue() -> list[dict]:
+def _norm_doc_id(doc_id) -> int | None:
+    try:
+        return int(doc_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_doc_review_grund(existing: list | None, new: list | None) -> list:
+    return list(dict.fromkeys([*(existing or []), *(new or [])]))
+
+
+def _compact_document_review_queue(entries: list[dict]) -> tuple[list[dict], bool]:
+    """Fall 1: höchstens ein pending-Eintrag pro document_id."""
+    pending_by_doc: dict[int, dict] = {}
+    other: list[dict] = []
+    changed = False
+    for e in entries:
+        if e.get("status") != "pending":
+            other.append(e)
+            continue
+        did = _norm_doc_id(e.get("document_id"))
+        if did is None:
+            other.append(e)
+            continue
+        if did not in pending_by_doc:
+            merged = dict(e)
+            merged["document_id"] = did
+            pending_by_doc[did] = merged
+        else:
+            changed = True
+            base = pending_by_doc[did]
+            base["grund"] = _merge_doc_review_grund(base.get("grund"), e.get("grund"))
+            if not base.get("pfad"):
+                base["pfad"] = e.get("pfad", "")
+            if not base.get("title"):
+                base["title"] = e.get("title", "")
+            b1 = (base.get("begruendung") or "").strip()
+            b2 = (e.get("begruendung") or "").strip()
+            if b2 and b2 not in b1:
+                base["begruendung"] = f"{b1}\n{b2}".strip() if b1 else b2
+            if (e.get("timestamp") or "") > (base.get("timestamp") or ""):
+                base["timestamp"] = e["timestamp"]
+    return other + list(pending_by_doc.values()), changed
+
+
+@contextmanager
+def _document_review_queue_lock():
+    lock_path = DOCUMENT_REVIEW_QUEUE.parent / ".document_review_queue.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def load_document_review_queue(compact: bool = True) -> list[dict]:
     if not DOCUMENT_REVIEW_QUEUE.exists():
         return []
     entries = []
@@ -1123,6 +1181,11 @@ def load_document_review_queue() -> list[dict]:
                     entries.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
+    if compact and entries:
+        compacted, changed = _compact_document_review_queue(entries)
+        if changed:
+            save_document_review_queue(compacted)
+            return compacted
     return entries
 
 
@@ -1133,6 +1196,48 @@ def save_document_review_queue(entries: list[dict]) -> None:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
 
+def _doc_has_correspondent(doc_id: int) -> bool:
+    try:
+        doc = pl_get(f"/documents/{doc_id}/")
+        return bool(doc.get("correspondent"))
+    except Exception as e:
+        log.debug("Korrespondent-Check Dok #%s fehlgeschlagen: %s", doc_id, e)
+        return False
+
+
+def _corr_escalation_needs_doc_review(doc_id: int) -> bool:
+    """Fall 2: Korrespondent bereits gesetzt → kein erneutes Doc-Review."""
+    if _doc_has_correspondent(doc_id):
+        log.info(
+            "Doc-Review übersprungen — Dok #%s hat bereits Korrespondenten (Endverarbeitung)",
+            doc_id,
+        )
+        return False
+    return True
+
+
+def _apply_doc_review_enqueue_update(
+    e: dict,
+    *,
+    pfad: str,
+    confidence: str,
+    grund: list[str],
+    title: str,
+    begruendung: str,
+    now: str,
+) -> None:
+    e["grund"] = _merge_doc_review_grund(e.get("grund"), grund)
+    e["pfad"] = pfad or e.get("pfad", "")
+    e["confidence"] = confidence or e.get("confidence", "mittel")
+    e["title"] = title or e.get("title", "")
+    if begruendung:
+        old = (e.get("begruendung") or "").strip()
+        e["begruendung"] = begruendung if not old else (
+            begruendung if begruendung in old else f"{old}\n{begruendung}".strip()
+        )
+    e["timestamp"] = now
+
+
 def enqueue_document_review_entry(
     doc_id: int,
     *,
@@ -1141,35 +1246,59 @@ def enqueue_document_review_entry(
     grund: list[str] | None = None,
     title: str = "",
     begruendung: str = "",
+    requeue_after_approve: bool = True,
 ) -> None:
     """Dokument in Document-Review-Queue einreihen (Dedupe per doc_id)."""
     grund = grund or []
+    did = _norm_doc_id(doc_id)
+    if did is None:
+        return
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    entries = load_document_review_queue()
-    for e in entries:
-        if e.get("document_id") == doc_id and e.get("status") == "pending":
-            merged_grund = list(dict.fromkeys((e.get("grund") or []) + grund))
-            e["grund"] = merged_grund
-            e["pfad"] = pfad or e.get("pfad", "")
-            e["confidence"] = confidence or e.get("confidence", "mittel")
-            e["title"] = title or e.get("title", "")
-            e["begruendung"] = begruendung or e.get("begruendung", "")
-            e["timestamp"] = now
-            save_document_review_queue(entries)
-            log.info("Document Review Queue: ID=%s aktualisiert (Dedupe), Grund=%s", doc_id, merged_grund)
-            return
-    entries.append({
-        "document_id": doc_id,
-        "pfad": pfad,
-        "confidence": confidence,
-        "grund": grund,
-        "title": title,
-        "begruendung": begruendung,
-        "status": "pending",
-        "timestamp": now,
-    })
-    save_document_review_queue(entries)
-    log.info("Document Review Queue: ID=%s neu eingereiht, Grund=%s", doc_id, grund)
+
+    with _document_review_queue_lock():
+        entries = load_document_review_queue(compact=False)
+        entries, _ = _compact_document_review_queue(entries)
+
+        for e in entries:
+            if _norm_doc_id(e.get("document_id")) != did:
+                continue
+            if e.get("status") == "pending":
+                _apply_doc_review_enqueue_update(
+                    e, pfad=pfad, confidence=confidence, grund=grund,
+                    title=title, begruendung=begruendung, now=now,
+                )
+                save_document_review_queue(entries)
+                log.info("Document Review Queue: ID=%s aktualisiert (Dedupe), Grund=%s", did, e["grund"])
+                return
+            if e.get("status") == "approved" and requeue_after_approve:
+                _apply_doc_review_enqueue_update(
+                    e, pfad=pfad, confidence=confidence, grund=grund,
+                    title=title, begruendung=begruendung, now=now,
+                )
+                e["status"] = "pending"
+                e.pop("reviewed_at", None)
+                save_document_review_queue(entries)
+                log.info(
+                    "Document Review Queue: ID=%s reaktiviert (approved→pending), Grund=%s",
+                    did, e["grund"],
+                )
+                return
+            if e.get("status") == "approved":
+                log.info("Document Review Queue: ID=%s bereits approved — kein neuer Eintrag", did)
+                return
+
+        entries.append({
+            "document_id": did,
+            "pfad": pfad,
+            "confidence": confidence,
+            "grund": grund,
+            "title": title,
+            "begruendung": begruendung,
+            "status": "pending",
+            "timestamp": now,
+        })
+        save_document_review_queue(entries)
+        log.info("Document Review Queue: ID=%s neu eingereiht, Grund=%s", did, grund)
 
 
 def _escalate_corr_reject_to_doc_review(entry: dict) -> None:
@@ -1178,9 +1307,15 @@ def _escalate_corr_reject_to_doc_review(entry: dict) -> None:
     if not doc_ids:
         return
     remove_tag_from_documents(doc_ids, PENDING_NEW_CORR_TAG)
-    add_tag_to_documents(doc_ids, PENDING_REVIEW_TAG)
     raw_name = entry.get("llm_raw") or entry.get("vorgeschlagener_eintrag", {}).get("name", "")
+    docs_for_review: list[int] = []
     for doc_id in doc_ids:
+        did = _norm_doc_id(doc_id)
+        if did is not None and _corr_escalation_needs_doc_review(did):
+            docs_for_review.append(did)
+    if docs_for_review:
+        add_tag_to_documents(docs_for_review, PENDING_REVIEW_TAG)
+    for doc_id in docs_for_review:
         title, pfad, conf = "", "", "mittel"
         try:
             doc = pl_get(f"/documents/{doc_id}/")
@@ -1197,6 +1332,7 @@ def _escalate_corr_reject_to_doc_review(entry: dict) -> None:
             grund=["Korrespondent-Review abgelehnt", "Korrespondent offen"],
             title=title,
             begruendung=f"Korrespondent '{raw_name}' nicht freigegeben — bitte Korrespondent zuweisen",
+            requeue_after_approve=True,
         )
 
 
