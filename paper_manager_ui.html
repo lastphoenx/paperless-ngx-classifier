@@ -189,6 +189,15 @@
     min-height: 200px;
     height: 200px;
   }
+  .bp-grid { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
+  @media (max-width: 900px) { .bp-grid { grid-template-columns: 1fr; } }
+  .bp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; cursor: pointer; }
+  .bp-card:hover { border-color: var(--accent); }
+  .bp-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .bp-diff-new { color: #4ade80; }
+  .bp-diff-old { color: var(--muted); text-decoration: line-through; font-size: 11px; }
+  .bp-eye-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 700px) { .bp-eye-grid { grid-template-columns: 1fr; } }
 
   /* Doc preview */
   .doc-preview { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
@@ -288,6 +297,10 @@
   </div>
   <div class="nav-item" onclick="showView('family')" id="nav-family">
     <span>👪</span> Familie
+  </div>
+  <div class="nav-item" onclick="showView('brillenpass')" id="nav-brillenpass">
+    <span>👓</span> Brillenpass
+    <span class="nav-badge" id="brillenpass-count">0</span>
   </div>
   <div style="flex:1"></div>
   <a id="nav-paperless-link" href="#" target="_blank" rel="noopener"
@@ -713,6 +726,26 @@
     </div>
   </div>
 
+  <!-- BRILLENPASS VIEW -->
+  <div id="view-brillenpass" style="display:none">
+    <h2>Brillenpass</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
+      Optiker-Rechnungen werden bei Freigabe-Korrespondenten mit <code>brillenpass.aktiv</code> automatisch geparst
+      und zur Review eingereiht. Nach Freigabe landet die Version in <code>brillenpaesse.json</code>.
+    </p>
+    <div class="bp-grid">
+      <div>
+        <h3 style="font-size:13px;margin-bottom:10px">Übersicht</h3>
+        <div id="bp-overview-list"></div>
+      </div>
+      <div>
+        <h3 style="font-size:13px;margin-bottom:10px">Review-Queue</h3>
+        <div id="bp-review-list"></div>
+        <div id="bp-review-panel" style="display:none;margin-top:12px"></div>
+      </div>
+    </div>
+  </div>
+
 </main>
 </div>
 
@@ -757,8 +790,8 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.36';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
-const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
+const UI_VERSION = '2.37';
+const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
   return WORKFLOW_TAGS.has(name);
@@ -821,7 +854,7 @@ function updatePendingModeUI(mode) {
 }
 
 // ── URL-Hash Navigation ──────────────────────────────────────────
-const VALID_VIEWS = ['home','pending','correspondents','docreview','doctypes','tags','manifest','family'];
+const VALID_VIEWS = ['home','pending','correspondents','docreview','doctypes','tags','manifest','family','brillenpass'];
 
 function getViewFromHash() {
   const hash = window.location.hash.replace('#','');
@@ -895,6 +928,7 @@ async function init() {
     const dr = await (await fetch(`${API_BASE}/document-review`)).json();
     document.getElementById('docreview-count').textContent = dr.count;
   } catch(e) {}
+  await loadBrillenpassBadge();
   renderStats();
   renderPendingList();
   // Nach dem Laden: korrekte View aus Hash wiederherstellen
@@ -988,7 +1022,6 @@ function showView(name) {
     }
   }
   if (name === 'family') {
-    // Sicherstellen dass DocTypes + StoragePaths für Beziehungen-Render verfügbar sind
     const loaders = [];
     if (!window._allDocTypes || !window._allDocTypes.length) {
       loaders.push(
@@ -1008,6 +1041,7 @@ function showView(name) {
     }
     Promise.all(loaders).then(() => loadFamilyConfig());
   }
+  if (name === 'brillenpass') loadBrillenpassView();
 }
 
 // ──────────────────────────────────────────────
@@ -4582,6 +4616,216 @@ async function saveFamilyBeziehungen() {
   } else {
     showToast('Beziehungen gespeichert', 'success');
     await loadFamilyConfig();
+  }
+}
+
+// ──────────────────────────────────────────────
+// BRILLENPASS
+// ──────────────────────────────────────────────
+let _bpOverview = [];
+let _bpReview = [];
+let _bpSelectedReview = null;
+
+async function loadBrillenpassBadge() {
+  try {
+    const r = await fetch(`${API_BASE}/brillenpass-review`);
+    const d = await r.json();
+    const el = document.getElementById('brillenpass-count');
+    if (el) el.textContent = d.count || 0;
+  } catch (e) {}
+}
+
+function _bpFmtEye(eye) {
+  if (!eye || !eye.sph) return '—';
+  const parts = [eye.sph, eye.cyl, eye.achse].filter(Boolean);
+  return parts.join(' / ');
+}
+
+function _bpRenderOverview() {
+  const el = document.getElementById('bp-overview-list');
+  if (!el) return;
+  if (!_bpOverview.length) {
+    el.innerHTML = '<p style="color:var(--muted);font-size:12px">Noch keine freigegebenen Brillenpässe.</p>';
+    return;
+  }
+  el.innerHTML = _bpOverview.map(e => {
+    const c = e.current || {};
+    const naehe = c.naehe || {};
+    const glas = c.glas || {};
+    const badge = e.pending_review ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
+    const docLink = c.document_id
+      ? `<a href="${paperlessDocUrl(c.document_id)}" target="_blank" class="paperless-open-btn" style="font-size:11px">Dok #${c.document_id}</a>`
+      : '';
+    return `<div class="bp-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <strong>${e.anzeigename || e.person_id}</strong>${badge}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">
+        Stand: ${e.aktuell || '—'} · ${c.korrespondent || '—'}<br>
+        Nähe R: ${_bpFmtEye(naehe.rechts)} · L: ${_bpFmtEye(naehe.links)}<br>
+        Glas: ${glas.index || '—'} ${glas.durchmesser ? 'Ø'+glas.durchmesser : ''}
+      </div>
+      <div style="margin-top:6px">${docLink}</div>
+    </div>`;
+  }).join('');
+}
+
+function _bpEyeFields(prefix, eye) {
+  eye = eye || {};
+  const f = (k, label) => `
+    <div class="field-group">
+      <label>${label}</label>
+      <input type="text" id="${prefix}-${k}" value="${eye[k] || ''}" style="font-size:12px">
+    </div>`;
+  return f('sph','Sph') + f('cyl','Cyl') + f('achse','Achse') + f('prisma','Prisma') + f('basis','Basis') + f('add','Add');
+}
+
+function _bpCollectEye(prefix) {
+  const g = id => (document.getElementById(id)?.value || '').trim() || null;
+  const eye = {
+    sph: g(`${prefix}-sph`), cyl: g(`${prefix}-cyl`), achse: g(`${prefix}-achse`),
+    prisma: g(`${prefix}-prisma`), basis: g(`${prefix}-basis`), add: g(`${prefix}-add`),
+  };
+  return eye.sph ? eye : null;
+}
+
+function _bpDiffHtml(diff) {
+  if (!diff || !Object.keys(diff).length) return '<p style="color:var(--muted);font-size:11px">Keine Änderung zur letzten Version.</p>';
+  return Object.entries(diff).map(([k, v]) =>
+    `<div style="font-size:11px;margin-bottom:4px"><code>${k}</code>:
+      <span class="bp-diff-old">${v.alt ?? '—'}</span> → <span class="bp-diff-new">${v.neu ?? '—'}</span></div>`
+  ).join('');
+}
+
+function renderBrillenpassReviewPanel(entry) {
+  const panel = document.getElementById('bp-review-panel');
+  if (!panel || !entry) { if (panel) panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const v = JSON.parse(JSON.stringify(entry.vorschlag || {}));
+  const docId = entry.document_id;
+  const thumb = docId ? `${API_BASE}/proxy/document/${docId}/thumb/` : '';
+  const prev = entry.letzte_version || null;
+
+  panel.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">${entry.anzeigename} — ${entry.korrespondent}</span>
+        <a href="${paperlessDocUrl(docId)}" target="_blank" class="btn" style="font-size:11px">Dok #${docId}</a>
+      </div>
+      <div style="display:grid;grid-template-columns:200px 1fr;gap:12px;margin-top:10px">
+        ${thumb ? `<img src="${thumb}" alt="Vorschau" style="width:100%;border-radius:6px;border:1px solid var(--border)">` : ''}
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Diff zur letzten Version (Vorschau beim Freigeben berechnet)</div>
+          <div id="bp-diff-preview">${prev ? '<p style="font-size:11px;color:var(--muted)">Letzte Version: '+ (prev.gueltig_ab||'') +'</p>' : '<p style="font-size:11px;color:var(--muted)">Erste Version für diese Person.</p>'}</div>
+        </div>
+      </div>
+      <div class="field-group" style="margin-top:12px">
+        <label>Gültig ab</label>
+        <input type="date" id="bp-gueltig-ab" value="${v.gueltig_ab || ''}">
+      </div>
+      <div class="bp-eye-grid" style="margin-top:12px">
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Rechts</div>${_bpEyeFields('bp-nr', (v.naehe||{}).rechts)}</div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Links</div>${_bpEyeFields('bp-nl', (v.naehe||{}).links)}</div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Rechts</div>${_bpEyeFields('bp-fr', (v.fern||{}).rechts)}</div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Links</div>${_bpEyeFields('bp-fl', (v.fern||{}).links)}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px">
+        <div class="field-group"><label>Glas Index</label><input id="bp-glas-index" value="${(v.glas||{}).index || ''}"></div>
+        <div class="field-group"><label>Durchmesser</label><input id="bp-glas-dm" type="number" value="${(v.glas||{}).durchmesser || ''}"></div>
+        <div class="field-group"><label>Auftrag</label><input id="bp-auftrag" value="${v.auftrag || ''}"></div>
+      </div>
+      <div class="field-group" style="margin-top:8px">
+        <label>Glas Beschreibung</label>
+        <input id="bp-glas-desc" value="${(v.glas||{}).beschreibung || ''}">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn btn-success" onclick="approveBrillenpassReview(${entry.index})">✓ Freigeben</button>
+        <button class="btn btn-danger" onclick="rejectBrillenpassReview(${entry.index})">✗ Ablehnen</button>
+      </div>
+    </div>`;
+  _bpSelectedReview = entry;
+}
+
+function _bpRenderReviewList() {
+  const el = document.getElementById('bp-review-list');
+  if (!el) return;
+  if (!_bpReview.length) {
+    el.innerHTML = '<p style="color:var(--muted);font-size:12px">Keine offenen Brillenpass-Reviews.</p>';
+    document.getElementById('bp-review-panel').style.display = 'none';
+    return;
+  }
+  el.innerHTML = _bpReview.map(e => `
+    <div class="bp-card" onclick="selectBrillenpassReview(${e.index})">
+      <strong>${e.anzeigename}</strong>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">
+        ${e.korrespondent} · Dok #${e.document_id} · ${e.timestamp || ''}
+      </div>
+    </div>`).join('');
+}
+
+function selectBrillenpassReview(idx) {
+  const entry = _bpReview.find(e => e.index === idx);
+  renderBrillenpassReviewPanel(entry);
+}
+
+function _bpCollectVorschlag(entry) {
+  const v = entry.vorschlag || {};
+  const dm = document.getElementById('bp-glas-dm')?.value;
+  return {
+    ...v,
+    gueltig_ab: document.getElementById('bp-gueltig-ab')?.value || v.gueltig_ab,
+    auftrag: document.getElementById('bp-auftrag')?.value || v.auftrag,
+    fern: { rechts: _bpCollectEye('bp-fr'), links: _bpCollectEye('bp-fl') },
+    naehe: { rechts: _bpCollectEye('bp-nr'), links: _bpCollectEye('bp-nl') },
+    glas: {
+      ...(v.glas || {}),
+      index: document.getElementById('bp-glas-index')?.value || null,
+      durchmesser: dm ? parseInt(dm, 10) : null,
+      beschreibung: document.getElementById('bp-glas-desc')?.value || '',
+    },
+  };
+}
+
+async function approveBrillenpassReview(index) {
+  if (!_bpSelectedReview) return;
+  const vorschlag = _bpCollectVorschlag(_bpSelectedReview);
+  const r = await fetch(`${API_BASE}/brillenpass-review/${index}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ action: 'approve', vorschlag }),
+  });
+  const d = await r.json();
+  if (!r.ok) { showToast(d.detail || 'Fehler', 'error'); return; }
+  showToast('Brillenpass freigegeben', 'success');
+  await loadBrillenpassView();
+}
+
+async function rejectBrillenpassReview(index) {
+  const r = await fetch(`${API_BASE}/brillenpass-review/${index}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ action: 'reject' }),
+  });
+  if (!r.ok) { showToast('Ablehnen fehlgeschlagen', 'error'); return; }
+  showToast('Abgelehnt', 'success');
+  await loadBrillenpassView();
+}
+
+async function loadBrillenpassView() {
+  try {
+    const [ov, rv] = await Promise.all([
+      fetch(`${API_BASE}/brillenpass`).then(r => r.json()),
+      fetch(`${API_BASE}/brillenpass-review`).then(r => r.json()),
+    ]);
+    _bpOverview = ov.eintraege || [];
+    _bpReview = rv.entries || [];
+    const badge = document.getElementById('brillenpass-count');
+    if (badge) badge.textContent = rv.count || 0;
+    _bpRenderOverview();
+    _bpRenderReviewList();
+    if (_bpReview.length) selectBrillenpassReview(_bpReview[0].index);
+  } catch (e) {
+    showToast('Brillenpass laden fehlgeschlagen', 'error');
   }
 }
 

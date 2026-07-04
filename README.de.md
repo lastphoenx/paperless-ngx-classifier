@@ -152,6 +152,9 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
 - **Familie** — Personen, Fahrzeuge, Haushaltsname (keine Hardcodierung im Code); Beziehungsübersicht über alle Korrespondenten
+- **Brillenpass** — Optiker-Rechnungen (z. B. Fielmann) werden geparst, zur Review eingereiht und nach Freigabe in `brillenpaesse.json` versioniert (Nähe/Fern, Glas, Diff zur Vorversion)
+
+**Brillenpass-Workflow:** Korrespondent mit `brillenpass.aktiv` (Parser z. B. `fielmann`) + eindeutige Person (`family.json`) + Rechnung mit Glaswerten → Pipeline schreibt `pending_brillenpass.jsonl` und setzt Tag `pending_brillenpass` → Tab **Brillenpass** → Freigeben speichert Version in `brillenpaesse.json` (mit `diff_zu_vorher`).
 - **Kürzel** — 2–6 Zeichen langes Kürzel pro Korrespondent (z. B. `UBS`, `ZV`); als Badge angezeigt, durchsuchbar, Live-Eindeutigkeitsprüfung
 - **Paperless-Link** — direkter «Paperless-NGX öffnen ↗»-Button in der Seitenleiste und auf dem Home-Tab; URL aus `PAPERLESS_URL` in `.env`
 - **Versionsanzeige** — zeigt aktive Versionen aller Komponenten in der Seitenleiste
@@ -209,6 +212,7 @@ cp /tmp/classifier/paper_manager_ui.html  /opt/paperless-scripts/
 # Trainingsdateien initialisieren
 mkdir -p /opt/paperless-scripts/training
 cp /tmp/classifier/training/family.example.json         /opt/paperless-scripts/training/family.json
+cp /tmp/classifier/training/brillenpaesse.example.json  /opt/paperless-scripts/training/brillenpaesse.json
 cp /tmp/classifier/training/document_types.example.json /opt/paperless-scripts/training/document_types.json
 cp /tmp/classifier/training/manifest.example.json       /opt/paperless-scripts/training/manifest.json
 cp /tmp/classifier/training/correspondents.example.json /opt/paperless-scripts/training/correspondents.json
@@ -232,7 +236,8 @@ nano /opt/paperless/.env
 | Datei | Funktion |
 |---|---|
 | `family.json` | Haushalt: Personen und Fahrzeuge — Kennzeichen → CF/Person; optionales Ordner-Routing (`routing_ordner`) |
-| `correspondents.json` | Bekannte Absender: Fuzzy-Match-Regeln, Extraktionsmuster, Beziehungen (`beziehungen[]`), `fix_tags[]`, `verbotene_doctypen`, `verbotene_ordner`, `verbotene_tags` |
+| `brillenpaesse.json` | Brillenpass pro Person — versionierte Glaswerte aus Optiker-Rechnungen (Review vor Speichern) |
+| `correspondents.json` | Bekannte Absender: Fuzzy-Match-Regeln, Extraktionsmuster, Beziehungen (`beziehungen[]`), `brillenpass` (Optiker), `fix_tags[]`, `verbotene_doctypen`, `verbotene_ordner`, `verbotene_tags` |
 | `document_types.json` | Dokumenttypen mit Synonymen und Ausschluss-Keywords |
 | `manifest.json` | Speicherordner-Struktur mit erlaubten Tags und Dokumenttypen |
 | `tags.json` | Tags mit Ausschluss-Keywords |
@@ -249,6 +254,9 @@ nano /opt/paperless/.env
 | `CF_GESCANNT_AM_ID` | — | Paperless Custom-Field-ID für «Eingescannt am» |
 | `CF_VERARBEITUNG_ID` | — | Select «Verarbeitung» — Pipeline setzt `auto STP` |
 | `CF_PERSON_ID` | — | Select «Person» — Werte = `anzeigename` aus `family.json` |
+| `BRILLENPAESSE_JSON` | `/opt/.../brillenpaesse.json` | Gespeicherte Brillenpass-Versionen |
+| `PENDING_BRILLENPASS_JSONL` | `/opt/.../pending_brillenpass.jsonl` | Review-Queue vor Freigabe |
+| `PENDING_BRILLENPASS_TAG` | `pending_brillenpass` | Tag am Quelldokument während Review |
 | `OLLAMA_REGEX_MODEL` | `llama3.3:70b` | Separates Ollama-Modell für den Regex-Assistenten in paper.manager (Fallback auf `OLLAMA_MODEL`) |
 
 Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VERSIONING.md`.
@@ -294,6 +302,7 @@ Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
 | Tags | Ausschluss-Keywords pro Tag |
 | Speicherpfade | Ordnerkonfiguration |
 | Familie | Haushaltsname, Personen, Fahrzeuge; Beziehungsübersicht über alle Korrespondenten |
+| Brillenpass | Optiker-Rechnungen → Review-Queue → versionierter Pass pro Person (Fielmann-Parser zuerst) |
 
 ---
 

@@ -104,6 +104,11 @@
         "hat_faelligkeitsdatum": false,
         "hat_betrag": true
       },
+      "brillenpass": {
+        "aktiv": true,
+        "parser": "fielmann",
+        "typische_begriffe": ["Brillenglas", "Nähe Rechts", "Asph.Hochbr"]
+      },
       "_paperless": {
         "id": null,
         "is_insensitive": true,
