@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.35"  # 12.35: Doc-Review-Queue Dedupe (Grund mergen, Duplikate)
+POST_CONSUME_VERSION = "12.36"  # 12.36: Korrespondent-Match via UID/IBAN/Telefon
 import re
 import sys
 import json
@@ -338,6 +338,146 @@ def _resolve_corr_entry(corr_map: dict, absender: str) -> dict | None:
 def _match_korrespondent_eintrag(corr_map: dict, absender: str) -> dict | None:
     """Alias — identisch mit _resolve_corr_entry."""
     return _resolve_corr_entry(corr_map, absender)
+
+
+def _norm_corr_uid(raw: str) -> str:
+    """CHE-106.827.671 MWST → CHE106827671 (Vergleich)."""
+    if not raw:
+        return ""
+    s = re.sub(r"[^A-Za-z0-9]", "", str(raw).upper())
+    if s.startswith("CHE") and len(s) >= 12:
+        return s[:12]
+    return s
+
+
+def _norm_corr_iban(raw: str) -> str:
+    return re.sub(r"\s+", "", str(raw).upper())
+
+
+def _norm_corr_telefon(raw: str) -> str:
+    """Schweizer Telefonnummer → Ziffernfolge (41…)."""
+    digits = re.sub(r"\D", "", str(raw))
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("41") and len(digits) >= 11:
+        return digits
+    if digits.startswith("0") and len(digits) >= 10:
+        return "41" + digits[1:]
+    return digits
+
+
+_CORR_UID_RE = re.compile(
+    r"CHE[-\s.]?\d{3}[-\s.]?\d{3}[-\s.]?\d{3}(?:\s*MWST)?",
+    re.IGNORECASE,
+)
+_CORR_IBAN_RE = re.compile(
+    r"\bCH[0-9A-Z]{2}\s?(?:[0-9A-Z]{4}\s?){4}[0-9A-Z]{0,2}\b",
+    re.IGNORECASE,
+)
+_CORR_IBAN_COMPACT_RE = re.compile(r"CH[0-9A-Z]{19}", re.IGNORECASE)
+
+
+def _corr_document_search_text(
+    ocr_text: str,
+    qr_meta: dict | None = None,
+    vision_meta: dict | None = None,
+) -> str:
+    parts = [ocr_text or ""]
+    if qr_meta:
+        for key in ("iban", "referenz", "zusatzinfo"):
+            val = qr_meta.get(key)
+            if val:
+                parts.append(str(val))
+    if vision_meta:
+        for key in ("absender", "text", "inhalt", "empfaenger"):
+            val = vision_meta.get(key)
+            if val:
+                parts.append(str(val))
+    return "\n".join(parts)
+
+
+def _extract_corr_uids_from_text(text: str) -> set[str]:
+    found: set[str] = set()
+    for m in _CORR_UID_RE.findall(text or ""):
+        n = _norm_corr_uid(m)
+        if n:
+            found.add(n)
+    return found
+
+
+def _extract_corr_ibans_from_text(text: str) -> set[str]:
+    found: set[str] = set()
+    compact = re.sub(r"\s+", "", text or "").upper()
+    for m in _CORR_IBAN_RE.findall(text or ""):
+        n = _norm_corr_iban(m)
+        if len(n) >= 21:
+            found.add(n)
+    for m in _CORR_IBAN_COMPACT_RE.findall(compact):
+        n = _norm_corr_iban(m)
+        if len(n) >= 21:
+            found.add(n)
+    return found
+
+
+def _corr_phone_in_text(phone_norm: str, digit_stream: str) -> bool:
+    if not phone_norm or len(phone_norm) < 9:
+        return False
+    return phone_norm in digit_stream
+
+
+def _match_correspondent_by_identifikatoren(
+    corr_map: dict,
+    ocr_text: str,
+    *,
+    qr_meta: dict | None = None,
+    vision_meta: dict | None = None,
+) -> tuple[dict | None, str]:
+    """Deterministischer Korrespondent-Match: UID > IBAN > Telefon (nur eindeutig)."""
+    text = _corr_document_search_text(ocr_text, qr_meta, vision_meta)
+    if not text.strip():
+        return None, ""
+    doc_uids = _extract_corr_uids_from_text(text)
+    doc_ibans = _extract_corr_ibans_from_text(text)
+    digit_stream = re.sub(r"\D", "", text)
+
+    uid_hits: list[dict] = []
+    iban_hits: list[dict] = []
+    tel_hits: list[dict] = []
+
+    for entry in corr_map.get("eintraege", []):
+        ident = entry.get("identifikatoren") or {}
+        for uid in ident.get("uid", []) or []:
+            if _norm_corr_uid(uid) in doc_uids:
+                uid_hits.append(entry)
+                break
+        for iban in ident.get("iban", []) or []:
+            if _norm_corr_iban(iban) in doc_ibans:
+                iban_hits.append(entry)
+                break
+        for tel in ident.get("telefon", []) or []:
+            if _corr_phone_in_text(_norm_corr_telefon(tel), digit_stream):
+                tel_hits.append(entry)
+                break
+
+    if len(uid_hits) == 1:
+        return uid_hits[0], "UID"
+    if len(uid_hits) > 1:
+        log.warning("Identifikator UID: mehrdeutig (%d Treffer)", len(uid_hits))
+        return None, ""
+
+    if len(iban_hits) == 1:
+        return iban_hits[0], "IBAN"
+    if len(iban_hits) > 1:
+        log.warning("Identifikator IBAN: mehrdeutig (%d Treffer)", len(iban_hits))
+        return None, ""
+
+    if len(tel_hits) == 1:
+        return tel_hits[0], "Telefon"
+    if len(tel_hits) > 1:
+        log.warning("Identifikator Telefon: mehrdeutig (%d Treffer)", len(tel_hits))
+        return None, ""
+
+    return None, ""
 
 
 def _doctyp_matches_visuell(visuell: str, erlaubte_doctypen: list[str]) -> bool:
@@ -3043,9 +3183,19 @@ def main():
     _corr_entry    = None   # gefundener Korrespondenten-Eintrag
     _beziehung     = None   # gefundene Beziehung
     _stufe1_grund  = ""     # warum kein Stufe-1-Match (für LLM-Prompt)
+    _ident_grund   = ""     # UID / IBAN / Telefon
 
     if not pre_decision:
-        _corr_entry = _match_korrespondent_eintrag(corr_map, vision_absender)
+        _corr_entry, _ident_grund = _match_correspondent_by_identifikatoren(
+            corr_map, ocr_text, qr_meta=qr_meta, vision_meta=vision_meta,
+        )
+        if _corr_entry:
+            log.info(
+                "Stufe 1: Korrespondent '%s' via Identifikator (%s)",
+                _corr_entry["name"], _ident_grund,
+            )
+        if not _corr_entry:
+            _corr_entry = _match_korrespondent_eintrag(corr_map, vision_absender)
         if _corr_entry:
             log.info("Stufe 1: Korrespondent '%s' gefunden", _corr_entry["name"])
             _beziehung = _match_beziehung_v2(_corr_entry, vision_empfaenger, ocr_text,
@@ -3237,6 +3387,25 @@ def main():
     log.info("Entscheidung: %s", json.dumps(decision, ensure_ascii=False))
     log.info("Begründung: %s", decision.get("begruendung", ""))
     write_audit_entry(document_id, "sanitized", decision)
+
+    # Identifikator-Match: Korrespondent setzen (UID/IBAN überschreibt LLM)
+    if _corr_entry and _ident_grund:
+        existing = (decision.get("korrespondent") or "").strip()
+        if _ident_grund in ("UID", "IBAN") or not existing:
+            if existing and existing.lower() != _corr_entry["name"].lower():
+                log.info(
+                    "Korrespondent überschrieben: LLM '%s' → Identifikator %s '%s'",
+                    existing, _ident_grund, _corr_entry["name"],
+                )
+            decision["korrespondent"] = _corr_entry["name"]
+            begr = (decision.get("begruendung") or "").strip()
+            id_note = f"Korrespondent via {_ident_grund}: {_corr_entry['name']}"
+            decision["begruendung"] = f"{begr}\n{id_note}".strip() if begr else id_note
+            if _ident_grund in ("UID", "IBAN") and decision.get("confidence") in ("tief", "mittel"):
+                decision["confidence"] = "hoch"
+                log.info("Confidence → hoch (Identifikator %s)", _ident_grund)
+            elif _ident_grund == "Telefon" and decision.get("confidence") == "tief":
+                decision["confidence"] = "mittel"
 
     # ── Systemische Confidence-Anpassung ─────────────────────────────────────
     # Kleine Modelle setzen fast alles auf "hoch" — wir korrigieren systemisch
