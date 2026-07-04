@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.20"  # 2.20: UI-Sync Korrespondenten-Review Labels
-UI_VERSION = "2.33"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.21"  # 2.21: Korrespondent manuell anlegen (POST /api/correspondents)
+UI_VERSION = "2.34"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -832,24 +832,32 @@ def _get_or_create_storage_path(pfad: str) -> Optional[int]:
         return None
 
 
-def approve_neu(entry: dict, decision: ReviewDecision) -> str:
-    """Neuen Korrespondenten anlegen: in Paperless + in correspondents.json."""
-    name            = decision.canonical_name or entry["vorgeschlagener_eintrag"]["name"]
-    varianten       = decision.varianten or entry["vorgeschlagener_eintrag"].get("varianten", [])
-    match_list      = decision.match_strings or entry["vorgeschlagener_eintrag"].get("match", [])
-    default_dt      = (decision.default_dokumenttyp or decision.typ or
-                       entry["vorgeschlagener_eintrag"].get("default_dokumenttyp", ""))
-    default_dt_id   = decision.default_dokumenttyp_id or entry["vorgeschlagener_eintrag"].get("default_dokumenttyp_id")
-    ordner          = decision.typische_ordner or entry["vorgeschlagener_eintrag"].get("typische_ordner", [])
-    notiz           = decision.notiz or entry["vorgeschlagener_eintrag"].get("notiz", "")
-    extr_muster     = decision.extraktion_muster or entry["vorgeschlagener_eintrag"].get("extraktion_muster", {})
-    erwartungen     = decision.erwartungen or entry["vorgeschlagener_eintrag"].get("erwartungen", {})
-    kuerzel         = (decision.kuerzel or entry["vorgeschlagener_eintrag"].get("kuerzel") or "").strip().upper()
+def _register_new_correspondent(
+    *,
+    name: str,
+    kuerzel: str,
+    varianten: list,
+    match_list: list,
+    default_dt: str,
+    default_dt_id: Optional[int],
+    ordner: list,
+    notiz: str,
+    extr_muster: dict | None = None,
+    erwartungen: dict | None = None,
+) -> int:
+    """Korrespondent in Paperless + correspondents.json anlegen. Gibt Paperless-ID zurück."""
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(400, "Name fehlt")
+    kuerzel = (kuerzel or "").strip().upper()
 
-    # 1. Vollständige Validation VOR Paperless-Anlage
     corr_map = load_corr_map()
+    if any(e.get("name", "").strip().lower() == name.lower() for e in corr_map.get("eintraege", [])):
+        raise HTTPException(409, f"Korrespondent «{name}» existiert bereits in correspondents.json")
+
     if kuerzel and not _check_kuerzel_unique(kuerzel, exclude_name=name, corr_map=corr_map):
-        raise HTTPException(409, f"Kürzel '{kuerzel}' wird bereits von einem anderen Korrespondenten verwendet")
+        raise HTTPException(409, f"Kürzel «{kuerzel}» wird bereits verwendet")
+
     errors, warnings = _validate_correspondent_entry(
         name=name,
         match_strings=match_list,
@@ -862,40 +870,22 @@ def approve_neu(entry: dict, decision: ReviewDecision) -> str:
     if warnings:
         log.warning("Korrespondent '%s' — Warnings: %s", name, "; ".join(warnings))
 
-    # 2. Paperless: existiert schon?
     paperless_id = get_correspondent_id_by_name(name)
     if paperless_id:
-        log.info("approve_neu: '%s' existiert bereits in Paperless (ID %s) — kein Duplikat angelegt", name, paperless_id)
+        log.info("Korrespondent '%s' existiert in Paperless (ID %s) — Map-Eintrag wird verknüpft", name, paperless_id)
     else:
         paperless_id = create_correspondent(name, match_list)
 
-    # 3. Dokumente zuweisen + Tag entfernen + Dokumenttyp setzen
-    doc_ids = entry.get("source_document_ids", [])
-    assign_documents_to_correspondent(doc_ids, paperless_id)
-    remove_all_pending_tags(doc_ids)
-
-    # Dokumenttyp-ID ermitteln/anlegen falls nur Name vorhanden
     if default_dt and not default_dt_id:
         default_dt_id = _resolve_or_create_doctype_id(default_dt)
 
-    # Dokumenttyp auf Dokumente setzen
-    if default_dt_id and doc_ids:
-        _set_document_type_on_documents_by_id(doc_ids, default_dt_id)
-    elif default_dt and doc_ids:
-        _set_document_type_on_documents(doc_ids, default_dt)
-
-    # Audit-Log: fehlende Klassifizierung nachholen (Tags, Storage Path, Custom Fields)
-    for doc_id in doc_ids:
-        _apply_audit_classification(doc_id)
-
-    # 4. In correspondents.json eintragen
     new_entry = {
         "name": name,
         "kuerzel": kuerzel,
         "varianten": varianten,
         "match": match_list,
         "matching_algorithm": "any",
-        "default_dokumenttyp":    default_dt,
+        "default_dokumenttyp": default_dt,
         "default_dokumenttyp_id": default_dt_id,
         "typische_ordner": ordner,
         "notiz": notiz,
@@ -913,9 +903,48 @@ def approve_neu(entry: dict, decision: ReviewDecision) -> str:
     }
     corr_map["eintraege"].append(new_entry)
     save_corr_map(corr_map)
-
-    # 5. Manifest-Einträge für neue Ordner als "pending" anlegen
     _ensure_manifest_entries(ordner, name)
+    return paperless_id
+
+
+def approve_neu(entry: dict, decision: ReviewDecision) -> str:
+    """Neuen Korrespondenten anlegen: in Paperless + in correspondents.json."""
+    name            = decision.canonical_name or entry["vorgeschlagener_eintrag"]["name"]
+    varianten       = decision.varianten or entry["vorgeschlagener_eintrag"].get("varianten", [])
+    match_list      = decision.match_strings or entry["vorgeschlagener_eintrag"].get("match", [])
+    default_dt      = (decision.default_dokumenttyp or decision.typ or
+                       entry["vorgeschlagener_eintrag"].get("default_dokumenttyp", ""))
+    default_dt_id   = decision.default_dokumenttyp_id or entry["vorgeschlagener_eintrag"].get("default_dokumenttyp_id")
+    ordner          = decision.typische_ordner or entry["vorgeschlagener_eintrag"].get("typische_ordner", [])
+    notiz           = decision.notiz or entry["vorgeschlagener_eintrag"].get("notiz", "")
+    extr_muster     = decision.extraktion_muster or entry["vorgeschlagener_eintrag"].get("extraktion_muster", {})
+    erwartungen     = decision.erwartungen or entry["vorgeschlagener_eintrag"].get("erwartungen", {})
+    kuerzel         = (decision.kuerzel or entry["vorgeschlagener_eintrag"].get("kuerzel") or "").strip().upper()
+
+    paperless_id = _register_new_correspondent(
+        name=name,
+        kuerzel=kuerzel,
+        varianten=varianten,
+        match_list=match_list,
+        default_dt=default_dt,
+        default_dt_id=default_dt_id,
+        ordner=ordner,
+        notiz=notiz,
+        extr_muster=extr_muster,
+        erwartungen=erwartungen,
+    )
+
+    doc_ids = entry.get("source_document_ids", [])
+    assign_documents_to_correspondent(doc_ids, paperless_id)
+    remove_all_pending_tags(doc_ids)
+
+    if default_dt_id and doc_ids:
+        _set_document_type_on_documents_by_id(doc_ids, default_dt_id)
+    elif default_dt and doc_ids:
+        _set_document_type_on_documents(doc_ids, default_dt)
+
+    for doc_id in doc_ids:
+        _apply_audit_classification(doc_id)
 
     return f"Korrespondent '{name}' angelegt (Paperless-ID {paperless_id}), {len(doc_ids)} Dokumente zugewiesen"
 
@@ -1319,6 +1348,36 @@ def api_reject_beziehung(index: int):
 def api_correspondents():
     """Kanonisierungs-Map als JSON."""
     return load_corr_map()
+
+
+@app.post("/api/correspondents")
+def api_create_correspondent(body: dict = Body(...)):
+    """Korrespondent manuell anlegen — gleiche Validierung wie Review-Freigabe, ohne Pending-Eintrag."""
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name erforderlich")
+    match_list = body.get("match") or body.get("match_strings") or []
+    if not match_list:
+        match_list = [name.lower()]
+    paperless_id = _register_new_correspondent(
+        name=name,
+        kuerzel=(body.get("kuerzel") or "").strip().upper(),
+        varianten=body.get("varianten") or [],
+        match_list=match_list,
+        default_dt=(body.get("default_dokumenttyp") or body.get("typ") or "").strip(),
+        default_dt_id=body.get("default_dokumenttyp_id"),
+        ordner=body.get("typische_ordner") or [],
+        notiz=(body.get("notiz") or "").strip(),
+        extr_muster=body.get("extraktion_muster"),
+        erwartungen=body.get("erwartungen"),
+    )
+    log.info("Manuell angelegt: '%s' (Paperless #%s)", name, paperless_id)
+    return {
+        "status": "created",
+        "name": name,
+        "paperless_id": paperless_id,
+        "message": f"Korrespondent «{name}» angelegt (Paperless #{paperless_id})",
+    }
 
 
 @app.get("/api/document/{doc_id}", response_class=JSONResponse)

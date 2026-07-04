@@ -492,12 +492,16 @@
 
   <!-- CORRESPONDENTS VIEW -->
   <div id="view-correspondents" style="display:none">
-    <h2>Korrespondenten</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Korrespondenten</h2>
+      <button class="btn btn-primary" onclick="openCorrCreate()">+ Manuell anlegen</button>
+    </div>
     <div style="margin-bottom:12px">
       <input type="text" id="corr-search" placeholder="🔍 Name, Variante, Ordner suchen…"
         style="width:100%;box-sizing:border-box"
         oninput="filterCorrespondents(this.value)">
     </div>
+    <div id="corr-create-panel" style="display:none;margin-bottom:16px"></div>
     <div id="corr-list"></div>
   </div>
 
@@ -753,7 +757,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.33';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.34';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -1730,6 +1734,187 @@ async function submitReview(index, action) {
 // CORRESPONDENTS MAP VIEW
 // ──────────────────────────────────────────────
 let _corrAllEntries = [];
+let _corrCreateOpen = false;
+
+async function openCorrCreate() {
+  _corrCreateOpen = true;
+  const panel = document.getElementById('corr-create-panel');
+  if (!panel) return;
+  if (!window._allDocTypes?.length) {
+    try {
+      const d = await (await fetch(`${API_BASE}/paperless/document_types`)).json();
+      window._allDocTypes = d.results || [];
+    } catch(e) {}
+  }
+  if (!allStoragePaths?.length) {
+    try { await loadAllStoragePaths(); } catch(e) {}
+  }
+  panel.style.display = '';
+  panel.innerHTML = `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Neuer Korrespondent (manuell)</span>
+        <button class="btn btn-ghost" style="padding:2px 10px;font-size:11px" onclick="closeCorrCreate()">✕ Schliessen</button>
+      </div>
+      <p style="color:var(--muted);font-size:11px;margin:0 0 14px">
+        Legt den Korrespondenten in Paperless und correspondents.json an — ohne Review-Warteschlange.
+      </p>
+      <div class="field-group">
+        <label>Kanonischer Name *</label>
+        <input type="text" id="cf-name" placeholder="z.B. Fachhochschule Nordwestschweiz" oninput="onCorrCreateNameInput()">
+      </div>
+      <div class="field-group">
+        <label>Kürzel <span style="color:var(--muted);font-size:10px">2–6 Zeichen, eindeutig</span></label>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <input type="text" id="cf-kuerzel" maxlength="6"
+            style="text-transform:uppercase;max-width:120px;letter-spacing:1px;font-weight:600"
+            oninput="this.dataset.userEdited='true';checkKuerzelField(this,'cf-kuerzel-status','cf-name')">
+          <span id="cf-kuerzel-status" style="font-size:11px"></span>
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Standard-Dokumenttyp</label>
+        <select id="cf-typ">
+          <option value="">— kein Standard-Typ —</option>
+          ${(window._allDocTypes||[]).map(t => `<option value="${t.name}">${t.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field-group">
+        <label>Varianten (Enter)</label>
+        <div class="tags-input" id="tags-cf-varianten" data-tags='[]'>
+          <input type="text" placeholder="Variante…" onkeydown="addTag(event,'tags-cf-varianten')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Match-Strings (Enter) *</label>
+        <div class="tags-input" id="tags-cf-match" data-tags='[]'>
+          <input type="text" placeholder="match string…" onkeydown="addTag(event,'tags-cf-match')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Typische Ordner</label>
+        <div class="tags-input" id="tags-cf-ordner" data-tags='[]'>
+          <select id="cf-ordner-select" onchange="addTagDirect('tags-cf-ordner',this.value);this.value=''">
+            <option value="">— Ordner hinzufügen —</option>
+            ${allStoragePaths.map(sp => `<option value="${sp.name}">${sp.name}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Notiz</label>
+        <textarea id="cf-notiz" rows="2"></textarea>
+      </div>
+      <div id="cf-create-error" style="display:none;color:var(--danger);font-size:12px;margin-bottom:8px"></div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="submitCorrCreate()">✓ Anlegen</button>
+        <button class="btn btn-ghost" onclick="closeCorrCreate()">Abbrechen</button>
+      </div>
+    </div>`;
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeCorrCreate() {
+  _corrCreateOpen = false;
+  const panel = document.getElementById('corr-create-panel');
+  if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+}
+
+function onCorrCreateNameInput() {
+  const kuerzelEl = document.getElementById('cf-kuerzel');
+  const nameEl = document.getElementById('cf-name');
+  if (!kuerzelEl || !nameEl || kuerzelEl.dataset.userEdited === 'true') return;
+  kuerzelEl.value = suggestKuerzel(nameEl.value);
+  checkKuerzelField(kuerzelEl, 'cf-kuerzel-status', 'cf-name');
+  const matchContainer = document.getElementById('tags-cf-match');
+  if (matchContainer && !getTagsFromContainer('tags-cf-match').length) {
+    const norm = nameEl.value.trim().toLowerCase();
+    if (norm) {
+      matchContainer.dataset.tags = JSON.stringify([norm]);
+      matchContainer.innerHTML = tagChip(norm, 'tags-cf-match') +
+        '<input type="text" placeholder="match string…" onkeydown="addTag(event,\'tags-cf-match\')">';
+    }
+  }
+}
+
+async function checkKuerzelField(input, statusId, nameInputId) {
+  const status = document.getElementById(statusId);
+  const name = document.getElementById(nameInputId)?.value?.trim() || '';
+  if (!status || !input) return;
+  const val = input.value.trim().toUpperCase();
+  input.value = val;
+  if (!val || val.length < 2) {
+    status.textContent = val ? 'mind. 2 Zeichen' : '';
+    status.style.color = 'var(--muted)';
+    status.dataset.conflict = 'false';
+    return;
+  }
+  try {
+    const r = await fetch(`${API_BASE}/check-kuerzel?kuerzel=${encodeURIComponent(val)}&exclude=${encodeURIComponent(name)}`);
+    const d = await r.json();
+    if (d.available) {
+      status.textContent = '✓ verfügbar';
+      status.style.color = 'var(--success)';
+      status.dataset.conflict = 'false';
+    } else {
+      status.textContent = '✗ bereits vergeben';
+      status.style.color = 'var(--danger)';
+      status.dataset.conflict = 'true';
+    }
+  } catch(e) {
+    status.textContent = '';
+    status.dataset.conflict = 'false';
+  }
+}
+
+async function submitCorrCreate() {
+  const errEl = document.getElementById('cf-create-error');
+  if (errEl) errEl.style.display = 'none';
+  const name = document.getElementById('cf-name')?.value?.trim();
+  const kuerzel = (document.getElementById('cf-kuerzel')?.value || '').trim().toUpperCase();
+  const match_strings = getTagsFromContainer('tags-cf-match');
+  const varianten = getTagsFromContainer('tags-cf-varianten');
+  const typische_ordner = getTagsFromContainer('tags-cf-ordner');
+  const notiz = document.getElementById('cf-notiz')?.value || '';
+  const default_dokumenttyp = document.getElementById('cf-typ')?.value || '';
+
+  if (!name) {
+    if (errEl) { errEl.textContent = 'Name fehlt.'; errEl.style.display = ''; }
+    return;
+  }
+  if (document.getElementById('cf-kuerzel-status')?.dataset?.conflict === 'true') {
+    showToast('Kürzel bereits vergeben', 'error'); return;
+  }
+  const vr = await fetch(`${API_BASE}/validate-correspondent`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name, match: match_strings.length ? match_strings : [name.toLowerCase()], varianten, typische_ordner })
+  }).then(r=>r.json()).catch(()=>null);
+  if (vr && !vr.valid) {
+    if (errEl) { errEl.innerHTML = vr.errors.map(e => `• ${e}`).join('<br>'); errEl.style.display = ''; }
+    return;
+  }
+
+  const r = await fetch(`${API_BASE}/correspondents`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name, kuerzel, varianten,
+      match: match_strings.length ? match_strings : [name.toLowerCase()],
+      typische_ordner, notiz, default_dokumenttyp,
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) {
+    showToast(d.message || `«${name}» angelegt`, 'success');
+    closeCorrCreate();
+    await loadCorrMap();
+    const search = document.getElementById('corr-search');
+    if (search) { search.value = name; filterCorrespondents(name); }
+  } else {
+    const msg = typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail || d);
+    if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
+    else showToast(msg, 'error');
+  }
+}
 
 async function loadCorrMap() {
   const [corrR, plR] = await Promise.all([
