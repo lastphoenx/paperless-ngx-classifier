@@ -31,6 +31,8 @@ FILES=(
   correspondent_manager_app.py
   paper_manager_ui.html
   post_consume.py
+  document_date.py
+  brillenpass_parser.py
   pre_consume.sh
   pre_consume_qr.py
   scripts/legacy-import-batch.sh
