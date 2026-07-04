@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.36"  # 12.36: Korrespondent-Match via UID/IBAN/Telefon
+POST_CONSUME_VERSION = "12.37"  # 12.37: Identifikatoren-Vorschlag Pending + CF Dok-ID
 import re
 import sys
 import json
@@ -480,6 +480,70 @@ def _match_correspondent_by_identifikatoren(
     return None, ""
 
 
+def _format_iban_display(compact: str) -> str:
+    if len(compact) < 21:
+        return compact
+    return f"{compact[:4]} {compact[4:8]} {compact[8:12]} {compact[12:16]} {compact[16:21]}"
+
+
+def _fix_iban_ocr_compact(compact: str) -> str:
+    c = compact.upper()
+    if c.startswith("CHO") and len(c) >= 4:
+        c = "CH0" + c[3:]
+    return c
+
+
+def _extract_identifikatoren_vorschlag(
+    ocr_text: str,
+    qr_meta: dict | None = None,
+    vision_meta: dict | None = None,
+) -> dict:
+    """UID/IBAN/Telefon aus Dokument für Korrespondenten-Review-Vorschlag."""
+    text = _corr_document_search_text(ocr_text, qr_meta, vision_meta)
+    uid_out: list[str] = []
+    iban_out: list[str] = []
+    tel_out: list[str] = []
+    tel_seen: set[str] = set()
+    iban_seen: set[str] = set()
+
+    for m in _CORR_UID_RE.findall(text):
+        s = m.strip().rstrip(".")
+        if s and s not in uid_out:
+            uid_out.append(s)
+
+    if qr_meta and qr_meta.get("iban"):
+        ib = _fix_iban_ocr_compact(_norm_corr_iban(qr_meta["iban"]))
+        if len(ib) >= 21 and ib not in iban_seen:
+            iban_seen.add(ib)
+            iban_out.append(_format_iban_display(ib))
+
+    for m in _CORR_IBAN_RE.findall(text):
+        ib = _fix_iban_ocr_compact(_norm_corr_iban(m))
+        if len(ib) >= 21 and ib not in iban_seen:
+            iban_seen.add(ib)
+            iban_out.append(_format_iban_display(ib))
+
+    compact_text = re.sub(r"\s+", "", text).upper()
+    for m in _CORR_IBAN_COMPACT_RE.findall(compact_text):
+        ib = _fix_iban_ocr_compact(_norm_corr_iban(m))
+        if len(ib) >= 21 and ib not in iban_seen:
+            iban_seen.add(ib)
+            iban_out.append(_format_iban_display(ib))
+
+    _tel_label_re = re.compile(
+        r"(?:Telefon|Tel\.?|Fax|Telefax)\s*[:\s]*([+()0-9][\d\s./-]{7,22})",
+        re.IGNORECASE,
+    )
+    for m in _tel_label_re.findall(text):
+        t = re.sub(r"\s+", " ", m.strip().rstrip(" -"))
+        n = _norm_corr_telefon(t)
+        if n and n not in tel_seen and len(n) >= 9:
+            tel_seen.add(n)
+            tel_out.append(t)
+
+    return {"uid": uid_out[:3], "iban": iban_out[:2], "telefon": tel_out[:3]}
+
+
 def _doctyp_matches_visuell(visuell: str, erlaubte_doctypen: list[str]) -> bool:
     """Prüft ob dokumenttyp_visuell (Vision-Freitext) einem der erlaubten Doctypen entspricht.
 
@@ -829,6 +893,7 @@ CF_BEZAHLT_AM      = int(os.environ.get("CF_BEZAHLT_AM_ID",      "12"))
 CF_GESCANNT_AM     = int(os.environ.get("CF_GESCANNT_AM_ID",     "13"))
 CF_VERARBEITUNG    = int(os.environ.get("CF_VERARBEITUNG_ID",    "0"))  # 0 = deaktiviert
 CF_PERSON          = int(os.environ.get("CF_PERSON_ID",          "0"))  # 0 = deaktiviert
+CF_DOK_ID          = int(os.environ.get("CF_DOK_ID",             "0"))  # 0 = deaktiviert — Paperless-Dokument-ID
 
 # Tags die diesen Regex-Mustern entsprechen lösen KEINEN Confidence-Downgrade aus
 # wenn sie verworfen werden (z.B. Jahreszahlen, Monat.Jahr).
@@ -2614,9 +2679,11 @@ def write_pending_beziehung(vorschlag: dict, document_id: int, korrespondent_nam
 
 def _build_pending_entry(aktion: str, raw_name: str, document_id: int,
                           fuzzy_match: Optional[dict] = None,
-                          fuzzy_score: int = 0) -> dict:
+                          fuzzy_score: int = 0,
+                          identifikatoren: dict | None = None) -> dict:
     """Pending-Eintrag im Schema von pending_correspondents.jsonl aufbauen."""
     import time as _time
+    idents = identifikatoren or {"uid": [], "iban": [], "telefon": []}
     vorschlag = {
         "name": raw_name,
         "varianten": [],
@@ -2625,6 +2692,7 @@ def _build_pending_entry(aktion: str, raw_name: str, document_id: int,
         "typ": "",
         "typische_ordner": [],
         "notiz": "",
+        "identifikatoren": idents,
         "_paperless": {"id": None, "is_insensitive": True, "owner": None,
                        "permissions": {"view": {"users": [], "groups": []},
                                        "change": {"users": [], "groups": []}}},
@@ -2655,6 +2723,10 @@ def _build_pending_entry(aktion: str, raw_name: str, document_id: int,
 def resolve_correspondent_canonical(
     raw_name: str,
     document_id: int,
+    *,
+    ocr_text: str = "",
+    qr_meta: dict | None = None,
+    vision_meta: dict | None = None,
 ) -> tuple[Optional[int], bool, Optional[str]]:
     """
     Hauptfunktion: Kanonisierung + Paperless-Zuordnung.
@@ -2712,8 +2784,15 @@ def resolve_correspondent_canonical(
 
     pending_entry = _build_pending_entry(
         aktion, raw_name, document_id,
-        fuzzy_match=fuzzy_entry, fuzzy_score=fuzzy_score
+        fuzzy_match=fuzzy_entry, fuzzy_score=fuzzy_score,
+        identifikatoren=_extract_identifikatoren_vorschlag(ocr_text, qr_meta, vision_meta),
     )
+    idents = pending_entry.get("vorgeschlagener_eintrag", {}).get("identifikatoren", {})
+    if any(idents.get(k) for k in ("uid", "iban", "telefon")):
+        log.info(
+            "Identifikatoren-Vorschlag für '%s': uid=%s iban=%s tel=%s",
+            raw_name, idents.get("uid"), idents.get("iban"), idents.get("telefon"),
+        )
     _append_pending_corr(pending_entry)
 
     # Kein direkter PATCH hier — pending_review Tag wird im finalen Haupt-PATCH gesetzt
@@ -3478,6 +3557,9 @@ def main():
     korr_id, pending_review_needed, corr_default_dt = resolve_correspondent_canonical(
         decision.get("korrespondent") or "",
         document_id=document_id,
+        ocr_text=ocr_text_full,
+        qr_meta=qr_meta,
+        vision_meta=vision_meta,
     )
     if korr_id:
         patch["correspondent"] = korr_id
@@ -3696,6 +3778,7 @@ def main():
         vision_meta=vision_meta,
         qr_meta=qr_meta,
         corr_entry=_corr_entry,
+        document_id=document_id,
         person_name=person_name,
         auto_stp=auto_stp,
         family_kennzeichen=(
@@ -3886,6 +3969,7 @@ def build_custom_fields(
     qr_meta: dict,
     corr_entry: dict | None,
     *,
+    document_id: int = 0,
     person_name: str = "",
     auto_stp: bool = False,
     family_kennzeichen: str = "",
@@ -4015,6 +4099,8 @@ def build_custom_fields(
     _add(CF_GESCANNT_AM, _dt2.date.today().isoformat(), "Gescannt am")
 
     # ── Pipeline-CFs (immer, unabhängig vom Feldprofil) ───────────────────────
+    if CF_DOK_ID and document_id:
+        _add(CF_DOK_ID, document_id, "Dok-ID", pipeline=True)
     if person_name:
         _add_select(CF_PERSON, person_name, "Person", pipeline=True)
     if auto_stp:

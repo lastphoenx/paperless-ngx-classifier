@@ -757,7 +757,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.35';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.36';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -1292,6 +1292,7 @@ function renderPanelNeu(entry, i, docContent, docIds) {
   const e = entry.vorgeschlagener_eintrag || {};
   const varianten = e.varianten || [];
   const match     = e.match || [];
+  const idents    = e.identifikatoren || {uid: [], iban: [], telefon: []};
   const kuerzelVorschlag = e.kuerzel || suggestKuerzel(e.name || entry.llm_raw || '');
   const korrTypen = allKorrTypen.length ? allKorrTypen : ['Behörde','Bank','Versicherung','Arzt','Arbeitgeber','Kundenservice','Verein','Online-Shop','Händler','Handwerk','Telekommunikation','Energie','Transport','Sonstiges'];
   return `
@@ -1348,6 +1349,32 @@ function renderPanelNeu(entry, i, docContent, docIds) {
         <div class="tags-input" id="tags-match" data-tags='${JSON.stringify(match)}'>
           ${match.map(v => tagChip(v, 'tags-match')).join('')}
           <input type="text" placeholder="match string..." onkeydown="addTag(event,'tags-match')">
+        </div>
+      </div>
+      <div class="field-group" style="padding-top:6px;border-top:1px dashed var(--border)">
+        <label style="font-size:11px;color:var(--muted)">
+          IDENTIFIKATOREN — aus Dokument erkannt (editierbar)
+        </label>
+      </div>
+      <div class="field-group">
+        <label>UID / MWST (CHE-…)</label>
+        <div class="tags-input" id="tags-review-uid" data-tags='${JSON.stringify(idents.uid||[])}'>
+          ${(idents.uid||[]).map(v => tagChip(v, 'tags-review-uid', '#c084fc', 'rgba(168,85,247,.15)')).join('')}
+          <input type="text" placeholder="CHE-106.827.671" onkeydown="addTag(event,'tags-review-uid')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>IBAN</label>
+        <div class="tags-input" id="tags-review-iban" data-tags='${JSON.stringify(idents.iban||[])}'>
+          ${(idents.iban||[]).map(v => tagChip(v, 'tags-review-iban', '#10b981', 'rgba(16,185,129,.15)')).join('')}
+          <input type="text" placeholder="CH09 0023 …" onkeydown="addTag(event,'tags-review-iban')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Telefon</label>
+        <div class="tags-input" id="tags-review-tel" data-tags='${JSON.stringify(idents.telefon||[])}'>
+          ${(idents.telefon||[]).map(v => tagChip(v, 'tags-review-tel', '#60a5fa', 'rgba(59,130,246,.15)')).join('')}
+          <input type="text" placeholder="061 266 16 20" onkeydown="addTag(event,'tags-review-tel')">
         </div>
       </div>
       <div class="field-group">
@@ -1656,6 +1683,11 @@ async function submitReview(index, action) {
       payload.typ             = document.getElementById('f-typ')?.value;
       payload.varianten       = getTagsFromContainer('tags-varianten');
       payload.match_strings   = getTagsFromContainer('tags-match');
+      payload.identifikatoren = {
+        uid:     getTagsFromContainer('tags-review-uid'),
+        iban:    getTagsFromContainer('tags-review-iban'),
+        telefon: getTagsFromContainer('tags-review-tel'),
+      };
       payload.typische_ordner = getTagsFromContainer('tags-ordner');
       payload.notiz           = document.getElementById('f-notiz')?.value;
 
@@ -1673,6 +1705,7 @@ async function submitReview(index, action) {
             match: payload.match_strings,
             varianten: payload.varianten,
             typische_ordner: payload.typische_ordner,
+            identifikatoren: payload.identifikatoren,
           })
         }).then(r=>r.json()).catch(()=>null);
         if (vr && !vr.valid) {

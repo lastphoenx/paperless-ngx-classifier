@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.23"  # 2.23: Korrespondent-Identifikatoren (UID/IBAN/Telefon)
-UI_VERSION = "2.35"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.24"  # 2.24: Identifikatoren-Vorschlag im Korrespondenten-Review
+UI_VERSION = "2.36"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
