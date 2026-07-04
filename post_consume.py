@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.33.py — Paperless-NGX Post-Consume Pipeline v12.33
+post_consume_v12.34.py — Paperless-NGX Post-Consume Pipeline v12.34
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,8 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.33"  # 12.33: Direkte Person-Zuweisung via AHV/Geb.datum/Name
+POST_CONSUME_VERSION = "12.34"  # 12.34: Geburtsdatum CH-Formate (15.5.1980, 15.5.80)
+import re
 import sys
 import json
 import logging
@@ -151,20 +152,55 @@ def _extract_ahvs_from_text(text: str) -> set[str]:
     return found
 
 
-def _geburtsdatum_search_patterns(geb: str) -> list[str]:
-    """Suchmuster für Geburtsdatum im OCR-Text."""
+def _parse_geburtsdatum(geb: str) -> tuple[int, int, int] | None:
+    """Parst Geburtsdatum: 15.5.1980, 15.05.1980, 15.5.80, 1980-05-15."""
     geb = (geb or "").strip()
     if not geb:
-        return []
-    patterns = [geb]
+        return None
     m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", geb)
     if m:
-        y, mo, d = m.groups()
-        patterns.extend([f"{int(d):02d}.{int(mo):02d}.{y}", f"{d}.{mo}.{y}", f"{d}.{mo}.{y[2:]}"])
-    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$", geb)
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= d <= 31 and 1 <= mo <= 12:
+            return d, mo, y
+        return None
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", geb)
     if m:
-        d, mo, y = m.groups()
-        patterns.extend([f"{int(d):02d}.{int(mo):02d}.{y}", f"{d}.{mo}.{y}"])
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y = 2000 + y if y < 30 else 1900 + y
+        if 1 <= d <= 31 and 1 <= mo <= 12:
+            return d, mo, y
+    return None
+
+
+def _normalize_geburtsdatum(geb: str) -> str:
+    """Speicherformat: 15.5.1980 (ohne führende Nullen)."""
+    parsed = _parse_geburtsdatum(geb)
+    if not parsed:
+        return geb.strip()
+    d, mo, y = parsed
+    return f"{d}.{mo}.{y}"
+
+
+def _geburtsdatum_search_patterns(geb: str) -> list[str]:
+    """Suchmuster für Geburtsdatum im OCR-Text — CH/DE-Üblichkeiten."""
+    geb = (geb or "").strip()
+    parsed = _parse_geburtsdatum(geb)
+    if not parsed:
+        return [geb] if geb else []
+    d, mo, y = parsed
+    y2 = y % 100
+    patterns = [
+        f"{d}.{mo}.{y}",
+        f"{d:02d}.{mo:02d}.{y}",
+        f"{d}.{mo}.{y2}",
+        f"{d:02d}.{mo:02d}.{y2:02d}",
+        f"{y}-{mo:02d}-{d:02d}",
+        f"{d}/{mo}/{y}",
+        f"{d:02d}/{mo:02d}/{y}",
+    ]
+    if geb not in patterns:
+        patterns.insert(0, geb)
     return list(dict.fromkeys(patterns))
 
 

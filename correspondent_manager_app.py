@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.17"  # 2.17: Person-ID-Felder, Review-Merge, request-aware Paperless-URL
-UI_VERSION = "2.30"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.18"  # 2.18: Geburtsdatum CH-Formate in Familie-Validierung
+UI_VERSION = "2.31"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -97,6 +97,36 @@ def _effective_paperless_url(request: Request | None = None) -> str:
     if host_without_port in ("localhost", "127.0.0.1"):
         return canonical
     return f"{proto}://{host_without_port}"
+
+
+def _parse_geburtsdatum(geb: str) -> tuple[int, int, int] | None:
+    """Parst Geburtsdatum: 15.5.1980, 15.05.1980, 15.5.80, 1980-05-15."""
+    import re as _re
+    geb = (geb or "").strip()
+    if not geb:
+        return None
+    m = _re.match(r"^(\d{4})-(\d{2})-(\d{2})$", geb)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= d <= 31 and 1 <= mo <= 12:
+            return d, mo, y
+        return None
+    m = _re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", geb)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y = 2000 + y if y < 30 else 1900 + y
+        if 1 <= d <= 31 and 1 <= mo <= 12:
+            return d, mo, y
+    return None
+
+
+def _normalize_geburtsdatum(geb: str) -> str:
+    parsed = _parse_geburtsdatum(geb)
+    if not parsed:
+        return geb.strip()
+    d, mo, y = parsed
+    return f"{d}.{mo}.{y}"
 
 
 @app.middleware("http")
@@ -2393,8 +2423,10 @@ def api_patch_family(body: dict = Body(...)):
                     raise HTTPException(400, f"AHV «{ahv}» ungültig — Format: 756.XXXX.XXXX.XX")
                 p["ahv_nummer"] = f"{digits[0:3]}.{digits[3:7]}.{digits[7:11]}.{digits[11:13]}"
             geb = (p.get("geburtsdatum") or "").strip()
-            if geb and not _re.match(r"^(\d{4}-\d{2}-\d{2}|\d{1,2}\.\d{1,2}\.\d{4})$", geb):
-                raise HTTPException(400, f"Geburtsdatum «{geb}» ungültig — YYYY-MM-DD oder DD.MM.YYYY")
+            if geb:
+                if not _parse_geburtsdatum(geb):
+                    raise HTTPException(400, f"Geburtsdatum «{geb}» ungültig — z.B. 15.5.1980 oder 15.5.80")
+                p["geburtsdatum"] = _normalize_geburtsdatum(geb)
             nv = p.get("namen_varianten")
             if nv is not None:
                 if not isinstance(nv, list):
