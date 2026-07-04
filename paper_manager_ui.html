@@ -753,7 +753,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.31';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.32';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -1136,9 +1136,9 @@ function renderMergePendingPicker(index) {
   ).join('');
   return `
     <div class="field-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-      <label>Mit anderem Pending-Eintrag zusammenführen
+      <label>Warteschlangen-Einträge bündeln
         <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px">
-          z.B. FHNW-Varianten — Dokumente werden gebündelt, Name bleibt editierbar
+          nur Review-Queue — kein neuer Korrespondent
         </span>
       </label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -1146,9 +1146,63 @@ function renderMergePendingPicker(index) {
           <option value="">— Ziel-Eintrag wählen —</option>
           ${opts}
         </select>
-        <button class="btn btn-ghost" onclick="mergePending(${index}, parseInt(document.getElementById('f-merge-target').value, 10))">⇔ Zusammenführen</button>
+        <button class="btn btn-ghost" onclick="mergePending(${index}, parseInt(document.getElementById('f-merge-target').value, 10))">⇔ Bündeln</button>
       </div>
     </div>`;
+}
+
+function renderAssignExistingPicker(index) {
+  const approved = (allCorrEntries || []).filter(e => e._paperless?.id);
+  if (!approved.length) return '';
+  const opts = approved.map(e =>
+    `<option value="${e.name}">${e.name}${e.kuerzel ? ' (' + e.kuerzel + ')' : ''}</option>`
+  ).join('');
+  return `
+    <div class="field-group" style="margin-top:8px">
+      <label>Bestehendem Korrespondenten zuweisen
+        <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px">
+          Dokumente zuordnen — kein Duplikat anlegen
+        </span>
+      </label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="f-assign-existing" style="flex:1;min-width:200px">
+          <option value="">— Korrespondent wählen —</option>
+          ${opts}
+        </select>
+        <button class="btn btn-primary" onclick="submitAssignExisting(${index})">→ Zuweisen</button>
+      </div>
+    </div>`;
+}
+
+async function submitAssignExisting(index) {
+  const name = document.getElementById('f-assign-existing')?.value;
+  if (!name) { showToast('Bitte Korrespondent wählen', 'warn'); return; }
+  const entry = pendingEntries[index];
+  const docs = (entry.source_document_ids || []).join(', ');
+  if (!confirm(
+    `Dokument(e) ${docs} dem bestehenden Korrespondenten «${name}» zuweisen?\n\n` +
+    `Es wird kein neuer Korrespondent angelegt.`
+  )) return;
+  try {
+    const r = await fetch(`${API_BASE}/review/${index}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ action: 'assign_existing', assign_to_existing_name: name, reviewed_by: 'admin' }),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      showToast(d.message || 'Zugewiesen', 'success');
+      await loadPending();
+      await loadCorrMap();
+      renderStats();
+      renderPendingList();
+      selectedIndex = null;
+      document.getElementById('review-panel-wrapper').innerHTML =
+        '<div class="empty"><div class="icon">👈</div><div>Eintrag links auswählen</div></div>';
+    } else {
+      showToast(d.detail || 'Zuweisung fehlgeschlagen', 'error');
+    }
+  } catch(e) { showToast('Fehler: ' + e.message, 'error'); }
 }
 
 function promptMergePending(index) {
@@ -1169,6 +1223,7 @@ function promptMergePending(index) {
 async function selectEntry(i) {
   selectedIndex = i;
   renderPendingList();
+  await loadCorrMap();
   const entry = pendingEntries[i];
   const wrapper = document.getElementById('review-panel-wrapper');
 
@@ -1295,6 +1350,7 @@ function renderPanelNeu(entry, i, docContent, docIds) {
         <label>Notiz</label>
         <textarea id="f-notiz">${e.notiz || ''}</textarea>
       </div>
+      ${renderAssignExistingPicker(i)}
       ${renderMergePendingPicker(i)}
       <div class="btn-row">
         <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Freigeben & in Paperless anlegen</button>
@@ -1363,6 +1419,7 @@ function renderPanelErgaenzung(entry, i, docContent, docIds) {
           <input type="text" placeholder="match string..." onkeydown="addTag(event,'tags-match')">
         </div>
       </div>
+      ${renderAssignExistingPicker(i)}
       ${renderMergePendingPicker(i)}
       <div class="btn-row">
         <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Ergänzung übernehmen</button>
@@ -1420,6 +1477,7 @@ function renderPanelMerge(entry, i, docContent, docIds) {
         <label>Begründung LLM</label>
         <div style="color:var(--muted);font-size:12px;padding:8px">${entry.merge_begruendung || '—'}</div>
       </div>
+      ${renderAssignExistingPicker(i)}
       ${renderMergePendingPicker(i)}
       <div class="btn-row">
         <button class="btn btn-success" onclick="submitReview(${i},'approve')">✓ Merge durchführen</button>

@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.18"  # 2.18: Geburtsdatum CH-Formate in Familie-Validierung
-UI_VERSION = "2.31"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.19"  # 2.19: Doc-Review Dropdown-Fix, assign_existing in Korrespondenten-Review
+UI_VERSION = "2.32"
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -234,6 +234,7 @@ class ReviewDecision(BaseModel):
     notiz:                   Optional[str]       = None
     kuerzel:                 Optional[str]       = None
     merge_ziel_name:         Optional[str]       = None
+    assign_to_existing_name: Optional[str]       = None
     reviewed_by:             Optional[str]       = "admin"
     extraktion_muster:       Optional[dict]      = None   # {feldname: ExtraktionsMuster}
     erwartungen:             Optional[dict]      = None   # {hat_qr_rechnung: bool, ...}
@@ -919,6 +920,51 @@ def approve_neu(entry: dict, decision: ReviewDecision) -> str:
     return f"Korrespondent '{name}' angelegt (Paperless-ID {paperless_id}), {len(doc_ids)} Dokumente zugewiesen"
 
 
+def approve_assign_existing(entry: dict, ziel_name: str) -> str:
+    """Pending-Dokumente einem bereits freigegebenen Korrespondenten zuweisen — kein Neuanlegen."""
+    ziel_name = (ziel_name or "").strip()
+    if not ziel_name:
+        raise HTTPException(400, "Ziel-Korrespondent fehlt")
+
+    corr_map = load_corr_map()
+    ziel = next((e for e in corr_map.get("eintraege", []) if e["name"] == ziel_name), None)
+    if not ziel:
+        raise HTTPException(404, f"Korrespondent '{ziel_name}' nicht in correspondents.json")
+
+    paperless_id = ziel.get("_paperless", {}).get("id")
+    if not paperless_id:
+        paperless_id = get_correspondent_id_by_name(ziel_name)
+        if paperless_id:
+            ziel.setdefault("_paperless", {})["id"] = paperless_id
+            save_corr_map(corr_map)
+    if not paperless_id:
+        raise HTTPException(409, f"Korrespondent '{ziel_name}' hat keine Paperless-ID")
+
+    pending_name = (entry.get("vorgeschlagener_eintrag") or {}).get("name", "").strip()
+    if pending_name and pending_name.lower() != ziel_name.lower():
+        varianten = list(ziel.get("varianten") or [])
+        if pending_name.lower() not in {v.lower() for v in varianten}:
+            varianten.append(pending_name)
+            ziel["varianten"] = varianten
+            save_corr_map(corr_map)
+            try:
+                match_str = "|".join(ziel.get("match", []))
+                pl_patch(f"/correspondents/{paperless_id}/", {"match": match_str})
+            except Exception as ex:
+                log.warning("Paperless match nach Varianten-Ergänzung: %s", ex)
+
+    doc_ids = entry.get("source_document_ids", [])
+    assign_documents_to_correspondent(doc_ids, paperless_id)
+    remove_all_pending_tags(doc_ids)
+    for doc_id in doc_ids:
+        _apply_audit_classification(doc_id)
+
+    return (
+        f"{len(doc_ids)} Dokument(e) → bestehender Korrespondent «{ziel_name}» "
+        f"(Paperless #{paperless_id}) — kein Duplikat angelegt"
+    )
+
+
 def approve_ergaenzung(entry: dict, decision: ReviewDecision) -> str:
     """Bestehenden Korrespondenten in der Map um Varianten ergänzen."""
     ziel_name      = entry["ziel_name"]
@@ -1126,27 +1172,30 @@ def _escalate_corr_reject_to_doc_review(entry: dict) -> None:
 
 
 def _approved_correspondents_for_docs() -> list[dict]:
-    """Korrespondenten die im Dokument-Review zuweisbar sind: in Map + Paperless-ID, nicht pending-neu."""
+    """Korrespondenten für Dokument-Review: in Map + Paperless-ID.
+
+    Bereits freigegebene Korrespondenten bleiben sichtbar — auch wenn noch
+    Duplikat-Pending-Einträge in der Review-Warteschlange existieren.
+    """
     corr_map = load_corr_map()
-    pending_new_names = set()
-    for e in load_pending():
-        if e.get("status") != "pending" or e.get("aktion") != "neu":
-            continue
-        name = (e.get("vorgeschlagener_eintrag") or {}).get("name", "").strip().lower()
-        if name:
-            pending_new_names.add(name)
     results = []
+    dirty = False
     for e in corr_map.get("eintraege", []):
         pl_id = e.get("_paperless", {}).get("id")
         if not pl_id:
-            continue
-        if e["name"].strip().lower() in pending_new_names:
+            pl_id = get_correspondent_id_by_name(e.get("name", ""))
+            if pl_id:
+                e.setdefault("_paperless", {})["id"] = pl_id
+                dirty = True
+        if not pl_id:
             continue
         results.append({
             "id": pl_id,
             "name": e["name"],
             "kuerzel": e.get("kuerzel", ""),
         })
+    if dirty:
+        save_corr_map(corr_map)
     results.sort(key=lambda x: x["name"].lower())
     return results
 
@@ -1464,6 +1513,18 @@ def api_review(index: int, decision: ReviewDecision, request: "Request"):
             entries[original_index]["reviewed_at"] = now
             save_pending(entries)
             return {"status": "rejected", "message": "Abgelehnt — Dokument(e) in Document-Review eingereiht"}
+
+        if decision.action == "assign_existing":
+            ziel = (decision.assign_to_existing_name or decision.merge_ziel_name or "").strip()
+            if not ziel:
+                raise HTTPException(400, "assign_to_existing_name erforderlich")
+            msg = approve_assign_existing(entry, ziel)
+            entries[original_index]["status"] = "approved"
+            entries[original_index]["assigned_to"] = ziel
+            entries[original_index]["reviewed_by"] = decision.reviewed_by
+            entries[original_index]["reviewed_at"] = now
+            save_pending(entries)
+            return {"status": "approved", "message": msg}
 
         aktion = entry.get("aktion", "neu")
         if decision.action in ("approve", "approve_neu") and aktion == "neu":
