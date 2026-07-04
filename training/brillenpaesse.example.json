@@ -1,0 +1,34 @@
+{
+  "version": "1.0",
+  "beschreibung": "Brillenpass pro Person — Versionen aus Optiker-Rechnungen. Pflegbar via paper.manager → Brillenpass (Review-Queue).",
+  "eintraege": [
+    {
+      "person_id": "person1",
+      "anzeigename": "Person1",
+      "aktuell": "2025-06-19",
+      "versionen": [
+        {
+          "id": "bp-2025-06-19-fielmann-ag",
+          "gueltig_ab": "2025-06-19",
+          "korrespondent": "Fielmann AG",
+          "document_id": 9001,
+          "auftrag": "AUF-123456",
+          "rechnung": "RE-987654321",
+          "fern": { "rechts": null, "links": null },
+          "naehe": {
+            "rechts": { "sph": "+0.50", "cyl": "-0.50", "achse": "65", "prisma": "1.75", "basis": "A", "add": null },
+            "links": { "sph": "+0.25", "cyl": "-0.50", "achse": "105", "prisma": "1.75", "basis": "A", "add": null }
+          },
+          "glas": {
+            "beschreibung": "Asph.Hochbr.Kst.1.6+Blaufil., Superentspiegelung",
+            "index": "1.6",
+            "durchmesser": 75,
+            "beschichtungen": ["Blaufilter", "Superentspiegelung"]
+          },
+          "extraktion": { "quelle": "fielmann_regex+vision", "confidence": "mittel" },
+          "diff_zu_vorher": {}
+        }
+      ]
+    }
+  ]
+}

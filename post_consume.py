@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.34.py — Paperless-NGX Post-Consume Pipeline v12.34
+post_consume_v12.38.py — Paperless-NGX Post-Consume Pipeline v12.38
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.37"  # 12.37: Identifikatoren-Vorschlag Pending + CF Dok-ID
+POST_CONSUME_VERSION = "12.38"  # 12.38: Brillenpass-Queue (Fielmann-Parser + Review)
 import re
 import sys
 import json
@@ -40,6 +40,14 @@ from typing import Optional
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from brillenpass_parser import (
+    corr_supports_brillenpass,
+    has_brillenpass_values,
+    looks_like_optiker_rechnung,
+    merge_brillenpass,
+    parse_fielmann_brillenpass,
+)
 
 # ─── Konfiguration ────────────────────────────────────────────────────────────
 
@@ -133,6 +141,21 @@ def _resolve_person_anzeigename(person_ref: str) -> str:
         if name and name.lower() == ref:
             return name
     return ""
+
+
+def _resolve_person_id(person_ref: str) -> str:
+    """family.json person_id oder Anzeigename → person_id."""
+    if not person_ref or not str(person_ref).strip():
+        return ""
+    ref = str(person_ref).strip().lower()
+    for p in _load_family().get("personen", []):
+        pid = (p.get("id") or "").strip()
+        name = (p.get("anzeigename") or "").strip()
+        if pid and pid.lower() == ref:
+            return pid
+        if name and name.lower() == ref:
+            return pid
+    return str(person_ref).strip()
 
 
 _AHV_OCR_RE = re.compile(r"756[\s.]?\d{4}[\s.]?\d{4}[\s.]?\d{2}")
@@ -1604,6 +1627,175 @@ def vision_analyze(image_b64: Optional[str], ocr_text: str) -> dict:
         return {}
 
 
+def vision_brillenpass_analyze(
+    image_b64: Optional[str], ocr_text: str, parser_hint: dict | None = None,
+) -> dict:
+    """Zweiter Vision-Call nur bei Brillenpass-Trigger — strukturierte Glaswerte."""
+    hint = ""
+    if parser_hint:
+        hint = (
+            "\nOCR-Parser hat bereits extrahiert (Tabellenzeilen haben Vorrang):\n"
+            f"{json.dumps(parser_hint, ensure_ascii=False)[:1200]}\n"
+        )
+    user_content = (
+        "Extrahiere Brillenpass-Daten aus dieser Optiker-Rechnung als JSON.\n"
+        '{"fern":{"rechts":{"sph","cyl","achse","prisma","basis","add"},"links":{...}},'
+        '"naehe":{"rechts":{...},"links":{...}},'
+        '"glas":{"beschreibung","index","durchmesser","beschichtungen":[]},'
+        '"auftrag":"...","rechnung":"...","gueltig_ab":"YYYY-MM-DD oder null"}\n'
+        "Nur JSON. null für fehlende Werte.\n"
+        f"{hint}"
+        f"OCR-Text:\n{(ocr_text or '')[:2000]}"
+    )
+    if image_b64:
+        messages = [{"role": "user", "content": user_content, "images": [image_b64]}]
+    else:
+        messages = [{"role": "user", "content": user_content}]
+    try:
+        resp = ollama_post(
+            "api/chat",
+            {
+                "model": MODEL_VISION,
+                "messages": messages,
+                "system": VISION_SYSTEM,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.1, "num_predict": 400},
+            },
+            timeout=VISION_TIMEOUT,
+        )
+        raw = resp.get("message", {}).get("content", "")
+        data = extract_json_from_response(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning("Vision Brillenpass fehlgeschlagen: %s", e)
+        return {}
+
+
+def _load_brillenpaesse_data() -> dict:
+    if not BRILLENPAESSE_PATH.exists():
+        return {"version": "1.0", "eintraege": []}
+    try:
+        return json.loads(BRILLENPAESSE_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning("brillenpaesse.json laden fehlgeschlagen: %s", e)
+        return {"version": "1.0", "eintraege": []}
+
+
+def _get_letzte_brillenpass_version(person_id: str) -> dict | None:
+    for entry in _load_brillenpaesse_data().get("eintraege", []):
+        if entry.get("person_id") == person_id:
+            vers = entry.get("versionen") or []
+            return vers[-1] if vers else None
+    return None
+
+
+def write_pending_brillenpass(
+    vorschlag: dict,
+    document_id: int,
+    person_id: str,
+    anzeigename: str,
+    korrespondent_name: str,
+) -> bool:
+    """Brillenpass-Vorschlag in pending_brillenpass.jsonl — Dedupe pro document_id."""
+    import time as _time
+    import fcntl as _fcntl
+
+    PENDING_BRILLENPASS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if PENDING_BRILLENPASS_PATH.exists():
+        lines = [
+            ln for ln in PENDING_BRILLENPASS_PATH.read_text(encoding="utf-8").split("\n") if ln.strip()
+        ]
+        for ln in lines:
+            try:
+                e = json.loads(ln)
+                if e.get("document_id") == document_id and e.get("status") == "pending":
+                    log.info("Brillenpass pending bereits vorhanden für Dok #%s — übersprungen", document_id)
+                    return False
+            except Exception:
+                continue
+
+    entry = {
+        "status":           "pending",
+        "timestamp":        _time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "document_id":      document_id,
+        "person_id":        person_id,
+        "anzeigename":      anzeigename,
+        "korrespondent":    korrespondent_name,
+        "vorschlag":        vorschlag,
+        "letzte_version":   _get_letzte_brillenpass_version(person_id),
+    }
+    with open(PENDING_BRILLENPASS_PATH, "a", encoding="utf-8") as f:
+        _fcntl.flock(f, _fcntl.LOCK_EX)
+        try:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        finally:
+            _fcntl.flock(f, _fcntl.LOCK_UN)
+    log.info(
+        "Pending-Brillenpass: person=%s korrespondent=%s dok=%s",
+        person_id, korrespondent_name, document_id,
+    )
+    return True
+
+
+def maybe_queue_brillenpass(
+    document_id: int,
+    ocr_text: str,
+    vision_meta: dict | None,
+    corr_entry: dict | None,
+    image_b64: Optional[str] = None,
+) -> None:
+    """Optiker-Rechnung → Parser + Vision → Review-Queue."""
+    if not corr_entry:
+        return
+    aktiv, parser_name = corr_supports_brillenpass(corr_entry)
+    if not aktiv:
+        return
+
+    dt_vis = (vision_meta or {}).get("dokumenttyp_visuell", "")
+    if not looks_like_optiker_rechnung(ocr_text, dt_vis):
+        log.debug("Brillenpass: keine Optiker-Rechnung erkannt")
+        return
+
+    direct_name, direct_reason = _match_person_direct(ocr_text, vision_meta)
+    if not direct_name:
+        log.info("Brillenpass: Person nicht eindeutig — übersprungen")
+        return
+    person_id = _resolve_person_id(direct_name)
+    anzeigename = _resolve_person_anzeigename(person_id) or direct_name
+    log.info("Brillenpass-Trigger: person=%s (%s), parser=%s", person_id, direct_reason, parser_name)
+
+    parser_data: dict | None = None
+    if parser_name == "fielmann":
+        parser_data = parse_fielmann_brillenpass(ocr_text)
+    vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
+    merged = merge_brillenpass(parser_data, vision_bp)
+    merged["korrespondent"] = corr_entry.get("name", "")
+    if not merged.get("gueltig_ab") and vision_meta:
+        merged["gueltig_ab"] = vision_meta.get("datum")
+
+    if not has_brillenpass_values(merged):
+        log.info("Brillenpass: keine verwertbaren Werte — übersprungen")
+        return
+
+    if not write_pending_brillenpass(
+        merged, document_id, person_id, anzeigename, corr_entry.get("name", ""),
+    ):
+        return
+
+    tag_id = _get_by_name("tags", PENDING_BRILLENPASS_TAG) or _create_obj("tags", PENDING_BRILLENPASS_TAG)
+    if tag_id:
+        try:
+            doc = paperless_get(f"/documents/{document_id}/")
+            tags = list(doc.get("tags") or [])
+            if tag_id not in tags:
+                tags.append(tag_id)
+                paperless_patch(document_id, {"tags": tags})
+        except Exception as e:
+            log.warning("Brillenpass-Tag setzen fehlgeschlagen: %s", e)
+
+
 def parse_handschrift_bezahlt(handschrift):
     """Extrahiert Bezahlt-Datum aus handschriftlicher Notiz.
     Erkennt: bez. 6.2.26, bez 26.3.2026, BEZ 6.2.26, bezahlt 6.2.26, bz. 6.2.26
@@ -2382,12 +2574,21 @@ PENDING_BEZIEHUNGEN_PATH = Path(os.environ.get(
     "PENDING_BEZIEHUNGEN_JSONL",
     "/opt/paperless-scripts/training/pending_beziehungen.jsonl"
 ))
+BRILLENPAESSE_PATH = Path(os.environ.get(
+    "BRILLENPAESSE_JSON",
+    "/opt/paperless-scripts/training/brillenpaesse.json",
+))
+PENDING_BRILLENPASS_PATH = Path(os.environ.get(
+    "PENDING_BRILLENPASS_JSONL",
+    "/opt/paperless-scripts/training/pending_brillenpass.jsonl",
+))
 PENDING_REVIEW_TAG       = os.environ.get("PENDING_REVIEW_TAG",       "pending_review")
 PENDING_QS_TAG           = os.environ.get("PENDING_QS_TAG",           "pending_qs")
 PENDING_NEW_CORR_TAG     = os.environ.get("PENDING_NEW_CORR_TAG",      "pending_new_correspondent")
+PENDING_BRILLENPASS_TAG  = os.environ.get("PENDING_BRILLENPASS_TAG",  "pending_brillenpass")
 
 # Alle System-Pending-Tags (für cleanup beim Freigeben)
-ALL_PENDING_TAGS = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG}
+ALL_PENDING_TAGS = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG, PENDING_BRILLENPASS_TAG}
 HIGH_THRESHOLD  = int(os.environ.get("HIGH_THRESHOLD",  "90"))  # ergaenzung
 MERGE_THRESHOLD = int(os.environ.get("MERGE_THRESHOLD", "80"))  # merge_into — höher = weniger False Positives
 
@@ -3841,6 +4042,17 @@ def main():
         )
     except Exception as e:
         log.warning("Pipeline-Notiz fehlgeschlagen (unkritisch): %s", e)
+
+    try:
+        maybe_queue_brillenpass(
+            document_id=document_id,
+            ocr_text=ocr_text,
+            vision_meta=vision_meta,
+            corr_entry=_corr_entry,
+            image_b64=image_b64,
+        )
+    except Exception as e:
+        log.warning("Brillenpass-Queue fehlgeschlagen (unkritisch): %s", e)
 
     elapsed = time.monotonic() - start_time
     log.info("Fertig in %.1fs | Ordner='%s'", elapsed, pfad)

@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.24"  # 2.24: Identifikatoren-Vorschlag im Korrespondenten-Review
-UI_VERSION = "2.36"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.25"  # 2.25: Brillenpass API + Review
+UI_VERSION = "2.37"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -34,6 +34,8 @@ from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from brillenpass_parser import build_version_id, compute_brillenpass_diff, has_brillenpass_values
+
 # ──────────────────────────────────────────────
 # Konfiguration
 # ──────────────────────────────────────────────
@@ -43,12 +45,17 @@ CORRESPONDENTS_JSON = os.environ.get("CORRESPONDENTS_JSON", "data/correspondents
 PENDING_JSONL       = os.environ.get("PENDING_JSONL", "data/pending_correspondents.jsonl")
 TAGS_JSON           = Path(os.environ.get("TAGS_JSON", "/opt/paperless-scripts/training/tags.json"))
 FAMILY_JSON         = Path(os.environ.get("FAMILY_JSON", "/opt/paperless-scripts/training/family.json"))
+BRILLENPAESSE_JSON  = Path(os.environ.get("BRILLENPAESSE_JSON", "/opt/paperless-scripts/training/brillenpaesse.json"))
+PENDING_BRILLENPASS_JSONL = Path(os.environ.get(
+    "PENDING_BRILLENPASS_JSONL", "/opt/paperless-scripts/training/pending_brillenpass.jsonl",
+))
 PAPERLESS_VIEW_GROUPS   = [g.strip() for g in os.environ.get("PAPERLESS_VIEW_GROUPS", "family,Eltern").split(",")]
 PAPERLESS_CHANGE_GROUPS = [g.strip() for g in os.environ.get("PAPERLESS_CHANGE_GROUPS", "Eltern").split(",")]
 PENDING_REVIEW_TAG       = os.environ.get("PENDING_REVIEW_TAG",       "pending_review")
 PENDING_QS_TAG           = os.environ.get("PENDING_QS_TAG",           "pending_qs")
 PENDING_NEW_CORR_TAG     = os.environ.get("PENDING_NEW_CORR_TAG",      "pending_new_correspondent")
-ALL_PENDING_TAGS         = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG}
+PENDING_BRILLENPASS_TAG  = os.environ.get("PENDING_BRILLENPASS_TAG",  "pending_brillenpass")
+ALL_PENDING_TAGS         = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG, PENDING_BRILLENPASS_TAG}
 
 PAPERLESS_HEADERS = {
     "Authorization": f"Token {PAPERLESS_API_TOKEN}",
@@ -765,7 +772,7 @@ def add_tag_to_documents(doc_ids: list[int], tag_name: str) -> None:
 
 def remove_all_pending_tags(doc_ids: list[int]) -> None:
     """ALLE pending-Tags entfernen beim Freigeben.
-    Entfernt: pending_review, pending_qs, pending_new_correspondent
+    Entfernt: pending_review, pending_qs, pending_new_correspondent, pending_brillenpass
     """
     for tag_name in ALL_PENDING_TAGS:
         remove_tag_from_documents(doc_ids, tag_name)
@@ -1582,6 +1589,199 @@ def api_reject_beziehung(index: int):
     lines[index] = json.dumps(entry, ensure_ascii=False)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"status": "rejected"}
+
+
+def _load_brillenpaesse() -> dict:
+    if not BRILLENPAESSE_JSON.exists():
+        return {"version": "1.0", "eintraege": []}
+    return json.loads(BRILLENPAESSE_JSON.read_text(encoding="utf-8"))
+
+
+def _save_brillenpaesse(data: dict) -> None:
+    BRILLENPAESSE_JSON.parent.mkdir(parents=True, exist_ok=True)
+    tmp = BRILLENPAESSE_JSON.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(BRILLENPAESSE_JSON)
+
+
+def _load_pending_brillenpass_lines() -> list[str]:
+    if not PENDING_BRILLENPASS_JSONL.exists():
+        return []
+    return [ln for ln in PENDING_BRILLENPASS_JSONL.read_text(encoding="utf-8").split("\n") if ln.strip()]
+
+
+def _save_pending_brillenpass_lines(lines: list[str]) -> None:
+    PENDING_BRILLENPASS_JSONL.parent.mkdir(parents=True, exist_ok=True)
+    PENDING_BRILLENPASS_JSONL.write_text(
+        ("\n".join(lines) + "\n") if lines else "", encoding="utf-8",
+    )
+
+
+def _find_brillenpass_entry(data: dict, person_id: str) -> dict | None:
+    for e in data.get("eintraege", []):
+        if e.get("person_id") == person_id:
+            return e
+    return None
+
+
+@app.get("/api/brillenpass", response_class=JSONResponse)
+def api_brillenpass_list():
+    """Alle Brillenpässe mit aktueller Version pro Person."""
+    data = _load_brillenpaesse()
+    result = []
+    for e in data.get("eintraege", []):
+        vers = e.get("versionen") or []
+        aktuell = e.get("aktuell")
+        current = None
+        if vers:
+            current = next((v for v in reversed(vers) if v.get("gueltig_ab") == aktuell), vers[-1])
+        result.append({
+            "person_id":    e.get("person_id"),
+            "anzeigename":  e.get("anzeigename"),
+            "aktuell":      aktuell,
+            "version_count": len(vers),
+            "current":      current,
+        })
+    pending_lines = _load_pending_brillenpass_lines()
+    pending_persons = set()
+    for ln in pending_lines:
+        try:
+            pe = json.loads(ln)
+            if pe.get("status") == "pending":
+                pending_persons.add(pe.get("person_id"))
+        except Exception:
+            pass
+    for r in result:
+        r["pending_review"] = r["person_id"] in pending_persons
+    return {"count": len(result), "eintraege": result}
+
+
+@app.get("/api/brillenpass/{person_id}", response_class=JSONResponse)
+def api_brillenpass_detail(person_id: str):
+    data = _load_brillenpaesse()
+    entry = _find_brillenpass_entry(data, person_id)
+    if not entry:
+        raise HTTPException(404, f"Kein Brillenpass für '{person_id}'")
+    return entry
+
+
+@app.get("/api/brillenpass-review", response_class=JSONResponse)
+def api_brillenpass_review():
+    entries = []
+    for i, line in enumerate(_load_pending_brillenpass_lines()):
+        try:
+            e = json.loads(line)
+            entries.append({"index": i, **e})
+        except Exception:
+            pass
+    pending = [e for e in entries if e.get("status") == "pending"]
+    return {"count": len(pending), "entries": pending}
+
+
+@app.post("/api/brillenpass-review/{index}")
+def api_brillenpass_review_action(index: int, body: dict = Body(...)):
+    """action=approve|reject — bei approve optional vorschlag überschreiben."""
+    lines = _load_pending_brillenpass_lines()
+    if index >= len(lines):
+        raise HTTPException(404, f"Index {index} nicht gefunden")
+
+    entry = json.loads(lines[index])
+    action = (body.get("action") or "approve").lower()
+    now = datetime.now(timezone.utc).isoformat()
+
+    if action == "reject":
+        entry["status"] = "rejected"
+        entry["reviewed_at"] = now
+        lines[index] = json.dumps(entry, ensure_ascii=False)
+        _save_pending_brillenpass_lines(lines)
+        doc_id = entry.get("document_id")
+        if doc_id:
+            remove_tag_from_documents([doc_id], PENDING_BRILLENPASS_TAG)
+        return {"status": "rejected"}
+
+    if action != "approve":
+        raise HTTPException(400, "action muss approve oder reject sein")
+
+    vorschlag = body.get("vorschlag") or entry.get("vorschlag") or {}
+    person_id = entry.get("person_id", "")
+    anzeigename = entry.get("anzeigename", "")
+    korrespondent = entry.get("korrespondent") or vorschlag.get("korrespondent", "")
+    doc_id = entry.get("document_id")
+
+    if not has_brillenpass_values(vorschlag):
+        raise HTTPException(400, "Mindestens ein Auge mit Sph oder Glas-Index erforderlich")
+
+    gueltig_ab = (vorschlag.get("gueltig_ab") or "").strip()
+    if not gueltig_ab:
+        gueltig_ab = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    data = _load_brillenpaesse()
+    bp_entry = _find_brillenpass_entry(data, person_id)
+    if not bp_entry:
+        bp_entry = {"person_id": person_id, "anzeigename": anzeigename, "aktuell": gueltig_ab, "versionen": []}
+        data.setdefault("eintraege", []).append(bp_entry)
+
+    prev = (bp_entry.get("versionen") or [])[-1] if bp_entry.get("versionen") else None
+    version = {
+        "id": build_version_id(gueltig_ab, korrespondent),
+        "gueltig_ab": gueltig_ab,
+        "korrespondent": korrespondent,
+        "document_id": doc_id,
+        "auftrag": vorschlag.get("auftrag", ""),
+        "rechnung": vorschlag.get("rechnung", ""),
+        "fern": vorschlag.get("fern") or {"rechts": None, "links": None},
+        "naehe": vorschlag.get("naehe") or {"rechts": None, "links": None},
+        "glas": vorschlag.get("glas") or {},
+        "extraktion": vorschlag.get("extraktion") or {"quelle": "review", "confidence": "hoch"},
+        "diff_zu_vorher": compute_brillenpass_diff(prev, vorschlag),
+    }
+    bp_entry.setdefault("versionen", []).append(version)
+    bp_entry["aktuell"] = gueltig_ab
+    if anzeigename:
+        bp_entry["anzeigename"] = anzeigename
+    _save_brillenpaesse(data)
+
+    entry["status"] = "approved"
+    entry["reviewed_at"] = now
+    lines[index] = json.dumps(entry, ensure_ascii=False)
+    _save_pending_brillenpass_lines(lines)
+
+    if doc_id:
+        remove_tag_from_documents([doc_id], PENDING_BRILLENPASS_TAG)
+        try:
+            note = f"Brillenpass aktualisiert ({gueltig_ab}) — {korrespondent}"
+            pl_post(f"/documents/{doc_id}/notes/", {"note": note})
+        except Exception as e:
+            log.warning("Brillenpass-Notiz fehlgeschlagen: %s", e)
+
+    return {"status": "approved", "version_id": version["id"], "diff": version["diff_zu_vorher"]}
+
+
+@app.patch("/api/brillenpass/{person_id}")
+def api_brillenpass_patch(person_id: str, body: dict = Body(...)):
+    """Manuelle Korrektur einer bestehenden Version (version_id im Body)."""
+    version_id = (body.get("version_id") or "").strip()
+    if not version_id:
+        raise HTTPException(400, "version_id erforderlich")
+
+    data = _load_brillenpaesse()
+    bp_entry = _find_brillenpass_entry(data, person_id)
+    if not bp_entry:
+        raise HTTPException(404, f"Kein Brillenpass für '{person_id}'")
+
+    vers = bp_entry.get("versionen") or []
+    idx = next((i for i, v in enumerate(vers) if v.get("id") == version_id), None)
+    if idx is None:
+        raise HTTPException(404, f"Version '{version_id}' nicht gefunden")
+
+    prev = vers[idx - 1] if idx > 0 else None
+    updated = {**vers[idx], **(body.get("version") or {})}
+    updated["diff_zu_vorher"] = compute_brillenpass_diff(prev, updated)
+    vers[idx] = updated
+    if updated.get("gueltig_ab"):
+        bp_entry["aktuell"] = updated["gueltig_ab"]
+    _save_brillenpaesse(data)
+    return {"status": "updated", "version": updated}
 
 
 @app.get("/api/correspondents", response_class=JSONResponse)
