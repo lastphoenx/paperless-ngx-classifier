@@ -18,9 +18,10 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 
 import json
 import os
+import re
 
-__version__ = "2.22"  # 2.22: Doc-Review Dedupe + kein Re-Queue nach Endverarbeitung
-UI_VERSION = "2.34"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.23"  # 2.23: Korrespondent-Identifikatoren (UID/IBAN/Telefon)
+UI_VERSION = "2.35"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -238,6 +239,7 @@ class ReviewDecision(BaseModel):
     reviewed_by:             Optional[str]       = "admin"
     extraktion_muster:       Optional[dict]      = None   # {feldname: ExtraktionsMuster}
     erwartungen:             Optional[dict]      = None   # {hat_qr_rechnung: bool, ...}
+    identifikatoren:         Optional[dict]      = None   # {uid:[], iban:[], telefon:[]}
 
 
 # ══════════════════════════════════════════════
@@ -319,6 +321,9 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
     all_names:    set  = set()
     all_matches:  dict = {}
     all_varianten: dict = {}
+    all_uids:     dict = {}
+    all_ibans:    dict = {}
+    all_telefone: dict = {}
     for e in corr_map.get("eintraege", []):
         if e["name"] == (exclude_name or ""):
             continue
@@ -327,10 +332,26 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
             all_matches[m.lower()] = e["name"]
         for v in e.get("varianten", []):
             all_varianten[v.lower()] = e["name"]
+        ident = e.get("identifikatoren") or {}
+        for uid in ident.get("uid", []) or []:
+            n = _norm_corr_uid(uid)
+            if n:
+                all_uids[n] = e["name"]
+        for iban in ident.get("iban", []) or []:
+            n = _norm_corr_iban(iban)
+            if n:
+                all_ibans[n] = e["name"]
+        for tel in ident.get("telefon", []) or []:
+            n = _norm_corr_telefon(tel)
+            if n:
+                all_telefone[n] = e["name"]
     return {
         "names":     all_names,
         "matches":   all_matches,
         "varianten": all_varianten,
+        "uids":      all_uids,
+        "ibans":     all_ibans,
+        "telefone":  all_telefone,
     }
 
 
@@ -356,6 +377,7 @@ def _validate_correspondent_entry(
     typische_ordner: list,
     corr_map: dict,
     exclude_name: str = None,
+    identifikatoren: dict | None = None,
 ) -> tuple:
     """Validiert Eindeutigkeit und Konsistenz. O(n) dank Index.
 
@@ -407,6 +429,31 @@ def _validate_correspondent_entry(
                 errors.append(f"Duplikat in {label}: '{item}'")
             seen.add(item.lower())
 
+    ident = _normalize_identifikatoren(identifikatoren or {})
+    for uid in ident.get("uid", []):
+        n = _norm_corr_uid(uid)
+        if n in idx["uids"]:
+            errors.append(f"UID '{uid}' bereits bei '{idx['uids'][n]}'")
+    for iban in ident.get("iban", []):
+        n = _norm_corr_iban(iban)
+        if n in idx["ibans"]:
+            errors.append(f"IBAN '{iban}' bereits bei '{idx['ibans'][n]}'")
+    for tel in ident.get("telefon", []):
+        n = _norm_corr_telefon(tel)
+        if n in idx["telefone"]:
+            warnings.append(f"Telefon '{tel}' bereits bei '{idx['telefone'][n]}'")
+
+    for label, lst in [("uid", ident.get("uid", [])), ("iban", ident.get("iban", [])),
+                        ("telefon", ident.get("telefon", []))]:
+        seen_id: set[str] = set()
+        for item in lst:
+            norm = _norm_corr_uid(item) if label == "uid" else (
+                _norm_corr_iban(item) if label == "iban" else _norm_corr_telefon(item)
+            )
+            if norm in seen_id:
+                errors.append(f"Duplikat in identifikatoren.{label}: '{item}'")
+            seen_id.add(norm)
+
     return errors, warnings
 
 
@@ -430,6 +477,59 @@ def _normalize_string_list(raw) -> list[str]:
             seen.add(s)
             out.append(s)
     return out
+
+
+def _norm_corr_uid(raw: str) -> str:
+    if not raw:
+        return ""
+    s = re.sub(r"[^A-Za-z0-9]", "", str(raw).upper())
+    if s.startswith("CHE") and len(s) >= 12:
+        return s[:12]
+    return s
+
+
+def _norm_corr_iban(raw: str) -> str:
+    return re.sub(r"\s+", "", str(raw).upper())
+
+
+def _norm_corr_telefon(raw: str) -> str:
+    digits = re.sub(r"\D", "", str(raw))
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("41") and len(digits) >= 11:
+        return digits
+    if digits.startswith("0") and len(digits) >= 10:
+        return "41" + digits[1:]
+    return digits
+
+
+def _normalize_identifikatoren(raw) -> dict:
+    """UID/IBAN/Telefon-Listen normalisieren (Anzeigeformat behalten)."""
+    if not raw or not isinstance(raw, dict):
+        return {"uid": [], "iban": [], "telefon": []}
+    uid_seen: set[str] = set()
+    iban_seen: set[str] = set()
+    tel_seen: set[str] = set()
+    uids, ibans, tels = [], [], []
+    for item in raw.get("uid") or []:
+        s = str(item).strip()
+        n = _norm_corr_uid(s)
+        if s and n and n not in uid_seen:
+            uid_seen.add(n)
+            uids.append(s)
+    for item in raw.get("iban") or []:
+        s = str(item).strip()
+        n = _norm_corr_iban(s)
+        if s and n and n not in iban_seen:
+            iban_seen.add(n)
+            ibans.append(s)
+    for item in raw.get("telefon") or []:
+        s = str(item).strip()
+        n = _norm_corr_telefon(s)
+        if s and n and n not in tel_seen:
+            tel_seen.add(n)
+            tels.append(s)
+    return {"uid": uids, "iban": ibans, "telefon": tels}
 
 
 def _normalize_beziehung_fields(bez: dict) -> None:
@@ -844,6 +944,7 @@ def _register_new_correspondent(
     notiz: str,
     extr_muster: dict | None = None,
     erwartungen: dict | None = None,
+    identifikatoren: dict | None = None,
 ) -> int:
     """Korrespondent in Paperless + correspondents.json anlegen. Gibt Paperless-ID zurück."""
     name = (name or "").strip()
@@ -864,6 +965,7 @@ def _register_new_correspondent(
         varianten=varianten,
         typische_ordner=ordner,
         corr_map=corr_map,
+        identifikatoren=identifikatoren,
     )
     if errors:
         raise HTTPException(409, f"Validation fehlgeschlagen: {'; '.join(errors)}")
@@ -891,6 +993,7 @@ def _register_new_correspondent(
         "notiz": notiz,
         "extraktion_muster": extr_muster or {},
         "erwartungen": erwartungen or {},
+        "identifikatoren": _normalize_identifikatoren(identifikatoren),
         "_paperless": {
             "id": paperless_id,
             "is_insensitive": True,
@@ -932,6 +1035,7 @@ def approve_neu(entry: dict, decision: ReviewDecision) -> str:
         notiz=notiz,
         extr_muster=extr_muster,
         erwartungen=erwartungen,
+        identifikatoren=decision.identifikatoren or entry["vorgeschlagener_eintrag"].get("identifikatoren"),
     )
 
     doc_ids = entry.get("source_document_ids", [])
@@ -1506,6 +1610,7 @@ def api_create_correspondent(body: dict = Body(...)):
         notiz=(body.get("notiz") or "").strip(),
         extr_muster=body.get("extraktion_muster"),
         erwartungen=body.get("erwartungen"),
+        identifikatoren=body.get("identifikatoren"),
     )
     log.info("Manuell angelegt: '%s' (Paperless #%s)", name, paperless_id)
     return {
@@ -1769,6 +1874,7 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
         typische_ordner=new_ordner,
         corr_map=corr_map,
         exclude_name=name,  # eigenen Eintrag nicht als Konflikt werten
+        identifikatoren=body.get("identifikatoren", entry.get("identifikatoren")),
     )
     if errors:
         raise HTTPException(409, f"Validation fehlgeschlagen: {'; '.join(errors)}")
@@ -1784,13 +1890,15 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     for field in ["varianten", "match", "default_dokumenttyp", "default_dokumenttyp_id",
                   "typische_ordner", "notiz", "extraktion_muster", "erwartungen",
                   "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
-                  "nicht_verwechseln_mit", "beziehungen", "kuerzel"]:
+                  "nicht_verwechseln_mit", "beziehungen", "kuerzel", "identifikatoren"]:
         if field in body:
             val = body[field]
             if field == "kuerzel":
                 val = (body[field] or "").strip().upper()
             elif field == "nicht_verwechseln_mit":
                 val = _normalize_string_list(body[field])
+            elif field == "identifikatoren":
+                val = _normalize_identifikatoren(body[field])
             entry[field] = val
 
     for bez in entry.get("beziehungen", []):
@@ -1804,6 +1912,7 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     entry.setdefault("nicht_verwechseln_mit", [])
     entry.setdefault("beziehungen", [])
     entry.setdefault("kuerzel", "")
+    entry.setdefault("identifikatoren", {"uid": [], "iban": [], "telefon": []})
 
     # default_dokumenttyp_id synchronisieren falls nur Name geändert
     if "default_dokumenttyp" in body and "default_dokumenttyp_id" not in body:
@@ -1870,6 +1979,7 @@ def api_validate_correspondent(body: dict = Body(...)):
         typische_ordner=body.get("typische_ordner", []),
         corr_map=corr_map,
         exclude_name=body.get("exclude_name"),
+        identifikatoren=body.get("identifikatoren"),
     )
     return {"errors": errors, "warnings": warnings, "valid": len(errors) == 0}
 

@@ -74,6 +74,45 @@
           "change": {"users": [], "groups": []}
         }
       }
+    },
+    {
+      "name": "Fielmann AG",
+      "kuerzel": "FIEL",
+      "varianten": [
+        "Fielmann",
+        "Fielmann Basel"
+      ],
+      "match": [
+        "fielmann ag",
+        "fielmann"
+      ],
+      "matching_algorithm": "any",
+      "default_dokumenttyp": "Rechnung",
+      "default_dokumenttyp_id": null,
+      "typische_ordner": [
+        "Person1/Gesundheit"
+      ],
+      "notiz": "Optiker Basel Marktplatz",
+      "identifikatoren": {
+        "uid": ["CHE-106.827.671"],
+        "iban": ["CH09 0023 3233 9837 0124 U"],
+        "telefon": ["061 266 16 20"]
+      },
+      "extraktion_muster": {},
+      "erwartungen": {
+        "hat_qr_rechnung": true,
+        "hat_faelligkeitsdatum": false,
+        "hat_betrag": true
+      },
+      "_paperless": {
+        "id": null,
+        "is_insensitive": true,
+        "owner": null,
+        "permissions": {
+          "view": {"users": [], "groups": []},
+          "change": {"users": [], "groups": []}
+        }
+      }
     }
   ]
 }

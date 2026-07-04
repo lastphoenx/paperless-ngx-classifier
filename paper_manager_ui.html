@@ -757,7 +757,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.34';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.35';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -1791,6 +1791,27 @@ async function openCorrCreate() {
           <input type="text" placeholder="match string…" onkeydown="addTag(event,'tags-cf-match')">
         </div>
       </div>
+      <div class="field-group" style="padding-top:4px;border-top:1px dashed var(--border)">
+        <label style="font-size:11px;color:var(--muted)">IDENTIFIKATOREN (optional)</label>
+      </div>
+      <div class="field-group">
+        <label>UID / MWST (CHE-…)</label>
+        <div class="tags-input" id="tags-cf-uid" data-tags='[]'>
+          <input type="text" placeholder="CHE-106.827.671" onkeydown="addTag(event,'tags-cf-uid')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>IBAN</label>
+        <div class="tags-input" id="tags-cf-iban" data-tags='[]'>
+          <input type="text" placeholder="CH09 0023 …" onkeydown="addTag(event,'tags-cf-iban')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Telefon</label>
+        <div class="tags-input" id="tags-cf-tel" data-tags='[]'>
+          <input type="text" placeholder="061 266 16 20" onkeydown="addTag(event,'tags-cf-tel')">
+        </div>
+      </div>
       <div class="field-group">
         <label>Typische Ordner</label>
         <div class="tags-input" id="tags-cf-ordner" data-tags='[]'>
@@ -1876,6 +1897,11 @@ async function submitCorrCreate() {
   const typische_ordner = getTagsFromContainer('tags-cf-ordner');
   const notiz = document.getElementById('cf-notiz')?.value || '';
   const default_dokumenttyp = document.getElementById('cf-typ')?.value || '';
+  const identifikatoren = {
+    uid:     getTagsFromContainer('tags-cf-uid'),
+    iban:    getTagsFromContainer('tags-cf-iban'),
+    telefon: getTagsFromContainer('tags-cf-tel'),
+  };
 
   if (!name) {
     if (errEl) { errEl.textContent = 'Name fehlt.'; errEl.style.display = ''; }
@@ -1886,7 +1912,11 @@ async function submitCorrCreate() {
   }
   const vr = await fetch(`${API_BASE}/validate-correspondent`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ name, match: match_strings.length ? match_strings : [name.toLowerCase()], varianten, typische_ordner })
+    body: JSON.stringify({
+      name,
+      match: match_strings.length ? match_strings : [name.toLowerCase()],
+      varianten, typische_ordner, identifikatoren,
+    })
   }).then(r=>r.json()).catch(()=>null);
   if (vr && !vr.valid) {
     if (errEl) { errEl.innerHTML = vr.errors.map(e => `• ${e}`).join('<br>'); errEl.style.display = ''; }
@@ -1899,7 +1929,7 @@ async function submitCorrCreate() {
     body: JSON.stringify({
       name, kuerzel, varianten,
       match: match_strings.length ? match_strings : [name.toLowerCase()],
-      typische_ordner, notiz, default_dokumenttyp,
+      typische_ordner, notiz, default_dokumenttyp, identifikatoren,
     }),
   });
   const d = await r.json().catch(() => ({}));
@@ -1999,6 +2029,14 @@ function renderCorrMap(eintraege) {
           <span style="color:var(--muted);font-size:11px">VARIANTEN: </span>
           ${(e.varianten||[]).map(v=>`<span class="badge badge-neu" style="margin-right:4px">${v}</span>`).join('')}
         </div>
+        ${(() => {
+          const id = e.identifikatoren || {};
+          const rows = [];
+          (id.uid||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(168,85,247,.15);color:#c084fc;margin-right:4px" title="UID">UID ${u}</span>`));
+          (id.iban||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(16,185,129,.15);color:#10b981;margin-right:4px" title="IBAN">IBAN ${u}</span>`));
+          (id.telefon||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(59,130,246,.15);color:#60a5fa;margin-right:4px" title="Telefon">☎ ${u}</span>`));
+          return rows.length ? `<div style="margin-bottom:8px"><span style="color:var(--muted);font-size:11px">IDENTIFIKATOREN: </span>${rows.join('')}</div>` : '';
+        })()}
         <div>
           <span style="color:var(--muted);font-size:11px">MATCH: </span>
           <code style="color:var(--muted);font-size:11px">${(e.match||[]).join(' | ')}</code>
@@ -2026,7 +2064,10 @@ function filterCorrespondents(q) {
     (e.varianten||[]).some(v => v.toLowerCase().includes(lq)) ||
     (e.match||[]).some(m => m.toLowerCase().includes(lq)) ||
     (e.typische_ordner||[]).some(o => o.toLowerCase().includes(lq)) ||
-    (e.notiz||'').toLowerCase().includes(lq)
+    (e.notiz||'').toLowerCase().includes(lq) ||
+    (e.identifikatoren?.uid||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.identifikatoren?.iban||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.identifikatoren?.telefon||[]).some(v => v.toLowerCase().includes(lq))
   ));
 }
 
@@ -2077,6 +2118,30 @@ function toggleCorrEdit(idx, entry) {
         <div class="tags-input" id="ce-match-${idx}" data-tags='${JSON.stringify(entry.match||[])}'>
           ${(entry.match||[]).map(v => tagChip(v, `ce-match-${idx}`)).join('')}
           <input type="text" placeholder="match string..." onkeydown="addTag(event,'ce-match-${idx}')">
+        </div>
+      </div>
+      <div class="field-group" style="padding-top:8px;border-top:1px dashed var(--border)">
+        <label style="font-size:11px;color:var(--muted)">IDENTIFIKATOREN — deterministische Zuordnung (UID &gt; IBAN &gt; Telefon)</label>
+      </div>
+      <div class="field-group">
+        <label>UID / MWST-Nr. (CHE-…)</label>
+        <div class="tags-input" id="ce-uid-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).uid||[])}'>
+          ${((entry.identifikatoren||{}).uid||[]).map(v => tagChip(v, `ce-uid-${idx}`, '#c084fc', 'rgba(168,85,247,.15)')).join('')}
+          <input type="text" placeholder="z.B. CHE-106.827.671" onkeydown="addTag(event,'ce-uid-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>IBAN</label>
+        <div class="tags-input" id="ce-iban-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).iban||[])}'>
+          ${((entry.identifikatoren||{}).iban||[]).map(v => tagChip(v, `ce-iban-${idx}`, '#10b981', 'rgba(16,185,129,.15)')).join('')}
+          <input type="text" placeholder="CH09 0023 …" onkeydown="addTag(event,'ce-iban-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Telefon</label>
+        <div class="tags-input" id="ce-tel-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).telefon||[])}'>
+          ${((entry.identifikatoren||{}).telefon||[]).map(v => tagChip(v, `ce-tel-${idx}`, '#60a5fa', 'rgba(59,130,246,.15)')).join('')}
+          <input type="text" placeholder="061 266 16 20" onkeydown="addTag(event,'ce-tel-${idx}')">
         </div>
       </div>
       <div class="field-group">
@@ -2375,7 +2440,8 @@ async function checkKuerzelUnique(input, idx, corrName) {
 }
 
 async function saveCorrEdit(idx, nameParam) {
-  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-nvm-${idx}`, `ce-ord-${idx}`,
+  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-tel-${idx}`,
+                  `ce-nvm-${idx}`, `ce-ord-${idx}`,
                   `ce-fixtags-${idx}`, `ce-verbdt-${idx}`, `ce-verbord-${idx}`, `ce-verbtag-${idx}`]);
   const name = nameParam || document.getElementById(`corr-edit-${idx}`)?.dataset?.name;
   const dtName = document.getElementById(`ce-typ-${idx}`)?.value || '';
@@ -2396,6 +2462,11 @@ async function saveCorrEdit(idx, nameParam) {
     verbotene_ordner:       getTagsFromContainer(`ce-verbord-${idx}`),
     verbotene_tags:         getTagsFromContainer(`ce-verbtag-${idx}`),
     notiz:                  document.getElementById(`ce-notiz-${idx}`)?.value || '',
+    identifikatoren: {
+      uid:     getTagsFromContainer(`ce-uid-${idx}`),
+      iban:    getTagsFromContainer(`ce-iban-${idx}`),
+      telefon: getTagsFromContainer(`ce-tel-${idx}`),
+    },
     extraktion_muster:      collectExtraktionsMuster(idx),
     erwartungen: {
       hat_qr_rechnung:       document.getElementById(`ce-qr-${idx}`)?.checked || false,
