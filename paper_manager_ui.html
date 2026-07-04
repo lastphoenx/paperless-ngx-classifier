@@ -753,7 +753,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.32';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
+const UI_VERSION = '2.33';  // Fallback — primär aus /api/config versions.ui (siehe docs/VERSIONING.md)
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs']);
 
 function isWorkflowTag(name) {
@@ -1034,7 +1034,7 @@ async function loadDocReviewByType() {
     <div class="stat-card"><div class="stat-num" style="color:var(--accent)">${total}</div><div class="stat-label">Total Pending</div></div>
     <div class="stat-card"><div class="stat-num" style="color:var(--accent)">${neu}</div><div class="stat-label">Neu</div></div>
     <div class="stat-card"><div class="stat-num" style="color:#a78bfa">${erg}</div><div class="stat-label">Ergänzungen</div></div>
-    <div class="stat-card"><div class="stat-num" style="color:var(--warn)">${merge}</div><div class="stat-label">Merge</div></div>
+    <div class="stat-card"><div class="stat-num" style="color:var(--warn)">${merge}</div><div class="stat-label">Merge-Vorschläge</div></div>
   `;
 }
 
@@ -1048,14 +1048,6 @@ function renderPendingList() {
     return;
   }
 
-  // Duplikate erkennen: gleicher Name → Merge-Button anzeigen
-  const nameCount = {};
-  pendingEntries.forEach((e, i) => {
-    const name = (e.aktion === 'ergaenzung' ? e.ziel_name : e.vorgeschlagener_eintrag?.name || '').toLowerCase();
-    if (!nameCount[name]) nameCount[name] = [];
-    nameCount[name].push(i);
-  });
-
   container.innerHTML = pendingEntries.map((e, i) => {
     const name     = e.aktion === 'ergaenzung' ? e.ziel_name : (e.vorgeschlagener_eintrag?.name || '?');
     const raw      = e.llm_raw || '';
@@ -1066,20 +1058,11 @@ function renderPendingList() {
       'merge_into': '<span class="badge badge-merge">MERGE</span>',
     }[e.aktion] || '';
     const docCount = (e.source_document_ids || []).length;
-    // Merge-Button: gleicher Name → Schnell-Merge, sonst Auswahl-Dialog
-    const dupes = nameCount[name.toLowerCase()] || [];
-    const mergePartner = dupes.find(j => j !== i);
-    const mergeBtn = pendingEntries.length > 1
-      ? `<button class="btn btn-ghost" style="padding:2px 8px;font-size:10px;margin-left:auto"
-           onclick="event.stopPropagation();${mergePartner !== undefined ? `mergePending(${i},${mergePartner})` : `promptMergePending(${i})`}"
-           title="${mergePartner !== undefined ? 'Gleicher Name — direkt zusammenführen' : 'Mit anderem Pending-Eintrag zusammenführen'}">⇔ Merge</button>`
-      : '';
     return `
       <div class="pending-item ${selectedIndex === i ? 'selected' : ''}" onclick="selectEntry(${i})">
         <div style="display:flex;align-items:center;gap:8px">
           ${aktionBadge}
           <strong>${name}</strong>
-          ${mergeBtn}
         </div>
         <div class="pending-meta">
           LLM: "${raw}" · Confidence: ${conf}% · ${docCount} Dok.
@@ -1101,7 +1084,7 @@ async function mergePending(indexA, indexB) {
   const nameB = pendingEntries[indexB]?.vorgeschlagener_eintrag?.name || pendingEntries[indexB]?.ziel_name || '?';
   const idsA = pendingEntries[indexA]?.source_document_ids || [];
   const idsB = pendingEntries[indexB]?.source_document_ids || [];
-  if (!confirm(`«${nameA}» (Dok ${idsA.join(',')}) mit «${nameB}» (Dok ${idsB.join(',')}) in der Warteschlange zusammenführen?\n\nDie Dokumente werden einem Review-Eintrag zugeordnet — noch kein Korrespondent in Paperless.`)) return;
+  if (!confirm(`Review-Einträge bündeln?\n\n«${nameA}» (Dok ${idsA.join(',')})\n+ «${nameB}» (Dok ${idsB.join(',')})\n\n→ ein Formular, Dokumente bleiben getrennt. Kein Korrespondent wird angelegt.`)) return;
   const r = await fetch(`${API_BASE}/review/merge`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -1109,7 +1092,7 @@ async function mergePending(indexA, indexB) {
   });
   if (r.ok) {
     const d = await r.json();
-    showToast(`Zusammengeführt — ${d.count} Dokument(e) in einem Eintrag`, 'success');
+    showToast(`Gebündelt — ${d.count} Dokument(e) in einem Review-Eintrag`, 'success');
     await loadPending();
     renderStats();
     renderPendingList();
@@ -1118,7 +1101,7 @@ async function mergePending(indexA, indexB) {
     if (selectedIndex !== null) selectEntry(selectedIndex);
   } else {
     const err = await r.json().catch(()=>({}));
-    showToast(err.detail || 'Merge fehlgeschlagen', 'error');
+    showToast(err.detail || 'Bündeln fehlgeschlagen', 'error');
   }
 }
 
@@ -1128,40 +1111,71 @@ function _pendingEntryLabel(e) {
   return `${name} (${docs} Dok.)`;
 }
 
+/** Freigegebene Korrespondenten — Treffer zum Pending-Namen zuerst, sonst A–Z. */
+function sortedApprovedCorrespondents(pendingNameHint) {
+  const approved = (allCorrEntries || []).filter(e => e._paperless?.id);
+  const hint = (pendingNameHint || '').trim().toLowerCase();
+  const words = hint.split(/\s+/).filter(w => w.length >= 3);
+  const score = (e) => {
+    if (!hint) return 1;
+    const name = (e.name || '').toLowerCase();
+    const kuerzel = (e.kuerzel || '').toLowerCase();
+    const varianten = (e.varianten || []).map(v => String(v).toLowerCase());
+    if (name === hint || kuerzel === hint) return 0;
+    if (name.includes(hint) || hint.includes(name)) return 0;
+    if (kuerzel && hint.includes(kuerzel)) return 0;
+    if (varianten.some(v => v.includes(hint) || hint.includes(v))) return 0;
+    if (words.some(w => name.includes(w) || varianten.some(v => v.includes(w)))) return 0;
+    return 1;
+  };
+  return approved.slice().sort((a, b) => {
+    const sa = score(a), sb = score(b);
+    if (sa !== sb) return sa - sb;
+    return (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
+  });
+}
+
 function renderMergePendingPicker(index) {
-  const others = pendingEntries.map((e, j) => ({e, j})).filter(x => x.j !== index);
+  const others = pendingEntries
+    .map((e, j) => ({ e, j, label: _pendingEntryLabel(e) }))
+    .filter(x => x.j !== index)
+    .sort((a, b) => a.label.localeCompare(b.label, 'de', { sensitivity: 'base' }));
   if (!others.length) return '';
-  const opts = others.map(({e, j}) =>
-    `<option value="${j}">${_pendingEntryLabel(e)}</option>`
+  const opts = others.map(({ j, label }) =>
+    `<option value="${j}">${label}</option>`
   ).join('');
   return `
     <div class="field-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
       <label>Warteschlangen-Einträge bündeln
         <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px">
-          nur Review-Queue — kein neuer Korrespondent
+          optional — mehrere Pending-Einträge in einem Formular bearbeiten
         </span>
       </label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <select id="f-merge-target" style="flex:1;min-width:200px">
-          <option value="">— Ziel-Eintrag wählen —</option>
+          <option value="">— Pending-Eintrag wählen —</option>
           ${opts}
         </select>
-        <button class="btn btn-ghost" onclick="mergePending(${index}, parseInt(document.getElementById('f-merge-target').value, 10))">⇔ Bündeln</button>
+        <button class="btn btn-ghost" onclick="mergePending(${index}, parseInt(document.getElementById('f-merge-target').value, 10))">⊞ Bündeln</button>
       </div>
     </div>`;
 }
 
 function renderAssignExistingPicker(index) {
-  const approved = (allCorrEntries || []).filter(e => e._paperless?.id);
+  const entry = pendingEntries[index];
+  const hint = entry?.aktion === 'ergaenzung'
+    ? entry.ziel_name
+    : (entry?.vorgeschlagener_eintrag?.name || '');
+  const approved = sortedApprovedCorrespondents(hint);
   if (!approved.length) return '';
   const opts = approved.map(e =>
     `<option value="${e.name}">${e.name}${e.kuerzel ? ' (' + e.kuerzel + ')' : ''}</option>`
   ).join('');
   return `
-    <div class="field-group" style="margin-top:8px">
+    <div class="field-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
       <label>Bestehendem Korrespondenten zuweisen
         <span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:6px">
-          Dokumente zuordnen — kein Duplikat anlegen
+          Dokumente zuordnen — kein Duplikat anlegen · sortiert A–Z, Treffer oben
         </span>
       </label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -1737,7 +1751,9 @@ async function loadCorrMap() {
     const plId = e._paperless?.id;
     const document_count = plId != null ? (plCounts[plId] ?? 0) : null;
     return { ...e, document_count };
-  });
+  }).sort((a, b) =>
+    (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' })
+  );
   _corrAllEntries = allCorrEntries;
   renderCorrMap(_corrAllEntries);
 }

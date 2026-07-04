@@ -19,8 +19,8 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 
-__version__ = "2.19"  # 2.19: Doc-Review Dropdown-Fix, assign_existing in Korrespondenten-Review
-UI_VERSION = "2.32"
+__version__ = "2.20"  # 2.20: UI-Sync Korrespondenten-Review Labels
+UI_VERSION = "2.33"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
 import fcntl
 from contextlib import contextmanager
 import logging
