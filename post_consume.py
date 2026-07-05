@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.44"  # 12.44: Brillenpass Auto-Parser (Format-Erkennung)
+POST_CONSUME_VERSION = "12.45"  # 12.45: document_date Ort+Monatsname (Frick, den 22. März)
 import re
 import sys
 import json
