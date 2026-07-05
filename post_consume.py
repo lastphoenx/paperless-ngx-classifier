@@ -3874,16 +3874,13 @@ def main():
     patch.update(_default_permissions())
 
     # Custom Fields setzen (Betrag, QR-Referenz, Fällig am, Kennzeichen, etc.)
-    # Korrespondenten-Eintrag für zukünftige Muster-Validierung
-    _corr_entry = None
+    # Korrespondenten-Eintrag: Stufe-1-Match behalten, sonst fuzzy/substring (nicht nur exakter Name)
+    _corr_map: dict = {}
     try:
         _corr_map = _load_corr_map()
-        _raw_corr = decision.get("korrespondent") or ""
-        _corr_entry = next(
-            (e for e in _corr_map.get("eintraege", [])
-             if e["name"].lower() == _raw_corr.lower()),
-            None
-        )
+        if not _corr_entry:
+            _raw_corr = (decision.get("korrespondent") or vision_absender or "").strip()
+            _corr_entry = _resolve_corr_entry(_corr_map, _raw_corr)
     except Exception:
         pass
 
@@ -3925,6 +3922,14 @@ def main():
     )
     if korr_id:
         patch["correspondent"] = korr_id
+        # Paperless-ID ist autoritativ (LLM/Vision-String kann Filialname sein)
+        try:
+            for _e in _corr_map.get("eintraege", []):
+                if _e.get("_paperless", {}).get("id") == korr_id:
+                    _corr_entry = _e
+                    break
+        except Exception:
+            pass
 
     # Default-Dokumenttyp aus Korrespondenten-Map als Fallback wenn LLM keinen gesetzt hat
     if corr_default_dt and not (decision.get("dokumenttyp_semantisch") or "").strip():
