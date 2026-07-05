@@ -189,9 +189,12 @@
     min-height: 200px;
     height: 200px;
   }
-  .bp-grid { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
-  @media (max-width: 900px) { .bp-grid { grid-template-columns: 1fr; } }
-  .bp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; cursor: pointer; }
+  .bp-grid { display: flex; flex-direction: column; gap: 24px; }
+  .bp-person-group + .bp-person-group { border-top: 1px solid var(--border); padding-top: 20px; }
+  .bp-person-head { font-size: 14px; font-weight: 700; color: #f1f5f9; margin-bottom: 12px; letter-spacing: -0.02em; }
+  .bp-person-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  @media (max-width: 700px) { .bp-person-cards { grid-template-columns: 1fr; } }
+  .bp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; cursor: pointer; min-width: 0; }
   .bp-card:hover { border-color: var(--accent); }
   .bp-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .bp-card-body { font-size: 11px; color: #cbd5e1; margin-top: 8px; line-height: 1.55; }
@@ -886,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.51';
+const UI_VERSION = '2.74';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5013,61 +5016,58 @@ function _bpFmtPd(pd) {
   return parts.join(' · ');
 }
 
-function _bpOverviewCards() {
-  const cards = [];
-  for (const e of _bpOverview) {
-    const vers = (e.versionen && e.versionen.length)
-      ? [...e.versionen].sort((a, b) => (b.gueltig_ab || '').localeCompare(a.gueltig_ab || ''))
-      : (e.current ? [e.current] : []);
-    for (const v of vers) {
-      cards.push({
-        person_id: e.person_id,
-        anzeigename: e.anzeigename,
-        pending_review: e.pending_review,
-        aktuell: e.aktuell,
-        is_latest: v.gueltig_ab === e.aktuell,
-        current: v,
-      });
-    }
-  }
-  return cards;
+function _bpRenderOverviewCard(e) {
+  const c = e.current || {};
+  const naehe = c.naehe || {};
+  const fern = c.fern || {};
+  const glas = c.glas || {};
+  const pd = c.pd || {};
+  const badge = e.pending_review && e.is_latest
+    ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
+  const latestBadge = e.is_latest
+    ? '<span class="badge" style="background:#22c55e;margin-left:4px">Aktuell</span>'
+    : '<span class="badge" style="background:#64748b;margin-left:4px">Archiv</span>';
+  const docLink = _bpDocLinks(c);
+  const distHtml = [_bpFmtDistBlock('Nähe', naehe), _bpFmtDistBlock('Fern', fern)].filter(Boolean).join('');
+  const pdHtml = _bpFmtPd(pd);
+  return `<div class="bp-card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <div class="bp-card-meta" style="margin:0">Stand: ${c.gueltig_ab || '—'} · ${c.korrespondent || '—'}</div>
+      <span>${badge}${latestBadge}</span>
+    </div>
+    <div class="bp-card-body">
+      ${distHtml || '<div class="bp-eye-row">Keine Glaswerte</div>'}
+      ${pdHtml ? `<div class="bp-eye-row" style="margin-top:4px"><span class="bp-eye-lbl">PD</span> ${pdHtml}</div>` : ''}
+      <div class="bp-eye-row" style="margin-top:6px"><span class="bp-eye-lbl">Glas</span> ${_bpFmtGlas(glas)}</div>
+      ${c.auftrag ? `<div class="bp-eye-row"><span class="bp-eye-lbl">Auftrag</span> ${c.auftrag}</div>` : ''}
+    </div>
+    <div style="margin-top:8px">${docLink}</div>
+  </div>`;
 }
 
 function _bpRenderOverview() {
   const el = document.getElementById('bp-overview-list');
   if (!el) return;
-  const cards = _bpOverviewCards();
-  if (!cards.length) {
+  if (!_bpOverview.length) {
     el.innerHTML = '<p style="color:var(--muted);font-size:12px">Noch keine freigegebenen Brillenpässe.</p>';
     return;
   }
-  el.innerHTML = cards.map(e => {
-    const c = e.current || {};
-    const naehe = c.naehe || {};
-    const fern = c.fern || {};
-    const glas = c.glas || {};
-    const pd = c.pd || {};
-    const badge = e.pending_review && e.is_latest
-      ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
-    const latestBadge = e.is_latest
-      ? '<span class="badge" style="background:#22c55e;margin-left:4px">Aktuell</span>'
-      : '<span class="badge" style="background:#64748b;margin-left:4px">Archiv</span>';
-    const docLink = _bpDocLinks(c);
-    const distHtml = [_bpFmtDistBlock('Nähe', naehe), _bpFmtDistBlock('Fern', fern)].filter(Boolean).join('');
-    const pdHtml = _bpFmtPd(pd);
-    return `<div class="bp-card">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-        <strong style="color:#f1f5f9">${e.anzeigename || e.person_id}</strong>
-        <span>${badge}${latestBadge}</span>
-      </div>
-      <div class="bp-card-meta">Stand: ${c.gueltig_ab || '—'} · ${c.korrespondent || '—'}</div>
-      <div class="bp-card-body">
-        ${distHtml || '<div class="bp-eye-row">Keine Glaswerte</div>'}
-        ${pdHtml ? `<div class="bp-eye-row" style="margin-top:4px"><span class="bp-eye-lbl">PD</span> ${pdHtml}</div>` : ''}
-        <div class="bp-eye-row" style="margin-top:6px"><span class="bp-eye-lbl">Glas</span> ${_bpFmtGlas(glas)}</div>
-        ${c.auftrag ? `<div class="bp-eye-row"><span class="bp-eye-lbl">Auftrag</span> ${c.auftrag}</div>` : ''}
-      </div>
-      <div style="margin-top:8px">${docLink}</div>
+  el.innerHTML = _bpOverview.map(person => {
+    const vers = (person.versionen && person.versionen.length)
+      ? [...person.versionen].sort((a, b) => (b.gueltig_ab || '').localeCompare(a.gueltig_ab || ''))
+      : (person.current ? [person.current] : []);
+    const cards = vers.map(v => ({
+      person_id: person.person_id,
+      pending_review: person.pending_review,
+      aktuell: person.aktuell,
+      is_latest: v.gueltig_ab === person.aktuell,
+      current: v,
+    }));
+    if (!cards.length) return '';
+    const cardsHtml = cards.map(_bpRenderOverviewCard).join('');
+    return `<div class="bp-person-group">
+      <div class="bp-person-head">${person.anzeigename || person.person_id}</div>
+      <div class="bp-person-cards">${cardsHtml}</div>
     </div>`;
   }).join('');
 }
