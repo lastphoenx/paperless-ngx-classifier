@@ -9,6 +9,7 @@ from brillenpass_parser import (  # noqa: E402
     detect_parser,
     has_brillenpass_values,
     merge_brillenpass,
+    merge_brillenpass_version,
     normalize_parser_name,
     _merge_eye,
     parse_augenarzt,
@@ -149,6 +150,27 @@ def test_merge_sph_sign_conflict_prefers_parser():
     v = {"sph": "2.50", "cyl": "-1.25", "achse": "178"}
     m = _merge_eye(p, v)
     assert m["sph"] == "-2.50"
+
+
+def test_merge_brillenpass_version_collects_document_ids():
+    existing = {
+        "gueltig_ab": "2022-03-15",
+        "document_id": 1001,
+        "document_ids": [1001],
+        "fern": {"rechts": {"sph": "-2.50"}, "links": None},
+        "naehe": {"rechts": None, "links": None},
+        "glas": {},
+    }
+    incoming = {
+        "document_id": 1002,
+        "document_ids": [1002],
+        "naehe": {"rechts": None, "links": {"sph": "-0.75"}},
+        "glas": {"beschreibung": "0120RX Comfort"},
+    }
+    m = merge_brillenpass_version(existing, incoming)
+    assert m["document_ids"] == [1001, 1002]
+    assert m["document_id"] == 3559
+    assert m["extraktion"]["dedup_merged"] is True
 
 
 def test_augenarzt():

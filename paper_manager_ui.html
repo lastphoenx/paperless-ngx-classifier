@@ -886,7 +886,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.49';
+const UI_VERSION = '2.50';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -4988,6 +4988,23 @@ function _bpFmtGlas(glas) {
   return parts.length ? parts.join(' · ') : '—';
 }
 
+function _bpDocLinks(version) {
+  if (!version) return '';
+  const seen = new Set();
+  const ids = [];
+  for (const raw of (version.document_ids || [])) {
+    const n = parseInt(raw, 10);
+    if (n && !seen.has(n)) { seen.add(n); ids.push(n); }
+  }
+  const legacy = parseInt(version.document_id, 10);
+  if (legacy && !seen.has(legacy)) ids.push(legacy);
+  if (!ids.length) return '';
+  return ids.map(id =>
+    `<a href="${paperlessDocUrl(id)}" target="_blank" data-paperless-doc="${id}"` +
+    ` style="color:var(--accent);font-size:11px;text-decoration:none;font-weight:500">Dok #${id} ↗</a>`
+  ).join('<span style="color:var(--muted);margin:0 4px">·</span>');
+}
+
 function _bpRenderOverview() {
   const el = document.getElementById('bp-overview-list');
   if (!el) return;
@@ -5001,10 +5018,7 @@ function _bpRenderOverview() {
     const fern = c.fern || {};
     const glas = c.glas || {};
     const badge = e.pending_review ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
-    const docLink = c.document_id
-      ? `<a href="${paperlessDocUrl(c.document_id)}" target="_blank" data-paperless-doc="${c.document_id}"
-          style="color:var(--accent);font-size:11px;text-decoration:none;font-weight:500">Dok #${c.document_id} ↗</a>`
-      : '';
+    const docLink = _bpDocLinks(c);
     const distHtml = [_bpFmtDistBlock('Nähe', naehe), _bpFmtDistBlock('Fern', fern)].filter(Boolean).join('');
     return `<div class="bp-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
