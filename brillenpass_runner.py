@@ -81,7 +81,7 @@ def reprocess_brillenpass_document(
 
     vision_meta = {"dokumenttyp_visuell": "", "datum": (doc.get("created") or "")[:10] or None}
     dt_vis = vision_meta.get("dokumenttyp_visuell", "")
-    if not pc.looks_like_brillenpass_any(ocr_text, parser_names, dt_vis, vision_meta):
+    if not pc.should_trigger_brillenpass(ocr_text, parser_names, dt_vis, vision_meta):
         detected = pc.detect_parser(
             ocr_text, allowed=parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
         )
@@ -104,7 +104,7 @@ def reprocess_brillenpass_document(
     if not parser_data and "fielmann_rechnung" in parser_names:
         parser_data = pc.parse_fielmann_brillenpass(ocr_text)
     vision_bp = pc.vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
-    merged = pc.merge_brillenpass(parser_data, vision_bp)
+    merged = pc.merge_brillenpass(parser_data, vision_bp, prefer_vision=bool(image_b64))
     merged["korrespondent"] = corr_entry.get("name", "")
     if not merged.get("gueltig_ab") and doc.get("created"):
         merged["gueltig_ab"] = str(doc["created"])[:10]

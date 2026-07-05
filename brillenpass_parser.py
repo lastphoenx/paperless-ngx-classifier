@@ -135,13 +135,30 @@ def _prefer_parser_sph_sign(parser_eye: dict, vision_eye: dict, merged: dict) ->
         pass
 
 
-def _merge_eye(p_eye: dict | None, v_eye: dict | None) -> dict | None:
+_OPTICAL_VERIFY_FIELDS = frozenset({"sph", "cyl", "achse", "add", "prisma", "basis"})
+
+
+def _merge_eye(
+    p_eye: dict | None,
+    v_eye: dict | None,
+    *,
+    prefer_vision: bool = False,
+) -> dict | None:
     if p_eye and not v_eye:
         return _sanitize_eye(p_eye)
     if v_eye and not p_eye:
         return _sanitize_eye(v_eye)
     if not p_eye and not v_eye:
         return None
+    if prefer_vision and v_eye:
+        merged = dict(p_eye) if p_eye else {}
+        for k, val in v_eye.items():
+            if not val:
+                continue
+            if k in _OPTICAL_VERIFY_FIELDS or not merged.get(k):
+                merged[k] = val
+        _prefer_parser_sph_sign(p_eye, v_eye, merged)
+        return _sanitize_eye(merged)
     merged = dict(p_eye)
     for k, val in (v_eye or {}).items():
         if not val or merged.get(k):
@@ -271,8 +288,13 @@ def _empty_eye_block() -> dict:
     return {"rechts": None, "links": None}
 
 
-def merge_brillenpass(parser_data: dict | None, vision_data: dict | None) -> dict:
-    """Regex gewinnt bei gesetzten Augenwerten; Vision füllt Lücken."""
+def merge_brillenpass(
+    parser_data: dict | None,
+    vision_data: dict | None,
+    *,
+    prefer_vision: bool = False,
+) -> dict:
+    """Stufe 1 Parser + Stufe 2 Vision. prefer_vision=True: Bild-Werte verifizieren/ersetzen."""
     base = deepcopy(parser_data) if parser_data else {
         "parser": "vision",
         "fern": _empty_eye_block(),
@@ -287,28 +309,42 @@ def merge_brillenpass(parser_data: dict | None, vision_data: dict | None) -> dic
         for side in ("rechts", "links"):
             v_eye = (vision_data.get(dist) or {}).get(side)
             p_eye = (base.get(dist) or {}).get(side)
-            merged_eye = _merge_eye(p_eye, v_eye)
+            merged_eye = _merge_eye(p_eye, v_eye, prefer_vision=prefer_vision)
             if merged_eye:
                 base.setdefault(dist, _empty_eye_block())[side] = merged_eye
 
     v_glas = vision_data.get("glas") or {}
     b_glas = base.setdefault("glas", {})
     for k in ("beschreibung", "index", "durchmesser", "beschichtungen"):
-        if not b_glas.get(k) and v_glas.get(k):
+        if prefer_vision and v_glas.get(k):
+            b_glas[k] = v_glas[k]
+        elif not b_glas.get(k) and v_glas.get(k):
             b_glas[k] = v_glas[k]
 
     for k in ("auftrag", "rechnung", "gueltig_ab"):
-        if not base.get(k) and vision_data.get(k):
+        if prefer_vision and vision_data.get(k):
             base[k] = vision_data[k]
+        elif not base.get(k) and vision_data.get(k):
+            base[k] = vision_data[k]
+
+    p_out = base.setdefault("pd", {"rechts": None, "links": None})
+    v_pd = vision_data.get("pd") or {}
+    for side in ("rechts", "links"):
+        if prefer_vision and v_pd.get(side):
+            p_out[side] = v_pd[side]
+        elif not p_out.get(side) and v_pd.get(side):
+            p_out[side] = v_pd[side]
 
     base = _reconcile_split_eyes(base, parser_data)
 
     sources = [base.get("extraktion", {}).get("quelle", "")]
     if vision_data:
-        sources.append("vision")
+        sources.append("vision_verify" if prefer_vision else "vision")
     base["extraktion"] = {
         "quelle": "+".join(s for s in sources if s) or "merged",
-        "confidence": base.get("extraktion", {}).get("confidence") or "mittel",
+        "confidence": "hoch" if prefer_vision and vision_data else (
+            base.get("extraktion", {}).get("confidence") or "mittel"
+        ),
     }
     return base
 
@@ -450,6 +486,35 @@ def looks_like_brillenpass_any(
         looks_like_brillenpass_document(ocr_text, p, dokumenttyp_visuell)
         for p in allowed
     )
+
+
+def should_trigger_brillenpass(
+    ocr_text: str,
+    parser_names: list[str],
+    dokumenttyp_visuell: str = "",
+    vision_meta: dict | None = None,
+) -> bool:
+    """
+    Brillenpass-Pipeline starten — auch wenn Stufe-1-Parser noch keinen Tabellen-Treffer hat.
+    Korrespondent mit brillenpass.aktiv + Optiker-/Glas-Hinweise genügen.
+    """
+    if looks_like_brillenpass_any(ocr_text, parser_names, dokumenttyp_visuell, vision_meta):
+        return True
+    if looks_like_optiker_rechnung(ocr_text, dokumenttyp_visuell):
+        return True
+    vis = (dokumenttyp_visuell or "").lower()
+    meta_blob = " ".join(
+        str((vision_meta or {}).get(k) or "")
+        for k in ("layout", "besonderheiten", "dokumenttyp_visuell", "absender")
+    ).lower()
+    hints = (
+        "brillen", "optik", "glas", "korrektur", "messung", "refraktion",
+        "sph", "zyl", "brillenpass", "mcoptic", "fielmann",
+    )
+    if any(h in vis or h in meta_blob for h in hints):
+        return True
+    ocr_l = (ocr_text or "").lower()
+    return any(h in ocr_l for h in ("sph", "zyl", "brillenglas", "messungsart", "korrektur", "achse"))
 
 
 def _vision_format_boost(dokumenttyp_visuell: str, fmt: str) -> int:
@@ -847,6 +912,7 @@ def _parse_pass_date(text: str) -> str | None:
         r"Datum:\s*(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
         r"Verordnung\s+vom\s+(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
         r"ausgestellt\s+(?:am\s+)?(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
+        r"(?:^|\n)\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s*(?:\n|$)",
     ]:
         m = re.search(pat, text, re.IGNORECASE)
         if not m:
@@ -887,8 +953,7 @@ _MCOPTIC_RL = re.compile(
     r"([+\-]?\s*[\d.,]+)\s+"
     r"([+\-]?\s*[\d.,]+)\s+"
     r"(\d+)\s*°?"
-    r"(?:\s+([+\-]?\s*[\d.,]+))?"
-    r"(?:\s+([+\-]?\s*[\d.,]+))?",
+    r"(.*?)(?:\n|$)",
     re.IGNORECASE,
 )
 
@@ -909,19 +974,19 @@ def _pd_or_add(raw: str | None) -> tuple[str | None, str | None]:
 
 
 def _fill_mcoptic_pass_rows(text: str) -> tuple[dict[str, dict | None], dict[str, str | None]]:
-    """McOptic-Karte: SPH/ZYL/ACHSE/ADD + mono-PD pro Auge."""
+    """McOptic-Karte: SPH/ZYL/ACHSE + optionale Spalten (PRISMA/BAS/ADD/PD)."""
     eyes: dict[str, dict | None] = {"rechts": None, "links": None}
     pd: dict[str, str | None] = {"rechts": None, "links": None}
     for m in _MCOPTIC_RL.finditer(text):
         side = _side_key(m.group(1))
         add_v, pd_v = None, None
-        for gi in (5, 6):
-            if m.lastindex and m.lastindex >= gi and m.group(gi):
-                a, p = _pd_or_add(m.group(gi))
-                if a and not add_v:
-                    add_v = a
-                if p and not pd_v:
-                    pd_v = p
+        tail = (m.group(5) or "").strip()
+        for raw in re.findall(r"[+\-]?\s*[\d.,]+", tail):
+            a, p = _pd_or_add(raw)
+            if a and not add_v:
+                add_v = a
+            if p and not pd_v:
+                pd_v = p
         eye = _eye_from_parts(m.group(2), m.group(3), m.group(4), add_v)
         if eye:
             eyes[side] = eye
