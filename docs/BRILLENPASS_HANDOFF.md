@@ -80,7 +80,7 @@ GET /api/brillenpass/trigger-status/{id}   # UI pollt alle 3s
    - `curl -s http://127.0.0.1:8100/health`
    - `wc -c /opt/paperless-scripts/paper_manager_ui.html` (erwarten ~250 KB)
    - Deploy-Stand: `grep -m1 UI_VERSION /opt/paperless-scripts/correspondent_manager_app.py`
-2. **McOptic Parser Stufe 1** — OCR liefert nichts; Parser-Regex/OCR-Snippet prüfen (`parse_mcoptic_pass`).
+2. **McOptic Stufe 1 leer trotz OCR** — **Ursache:** Regex-Tail `(.*?)(?:\n|$)` schluckte PD vor Zeilenende. **Fix:** `([^\n]*)` + letzte PD gewinnt (`f60ec00`+ Parser-prior Merge `12.49`).
 3. **Vision-Prompt** — `prisma`/`basis` bei leerer Karte weglassen; PD nur in `pd.*`; McOptic fern-only explizit.
 4. **PD-Split-Sanitizer** — `9.5`+`2` → `29.5` erkennen.
 5. **Tests auf CT121:** `python3 -m pytest tests/test_brillenpass_parsers.py`

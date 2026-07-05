@@ -261,7 +261,9 @@ def _run_brillenpass_pipeline(ctx: dict, *, force: bool = False) -> dict:
             "snapshot": pc.snapshot_brillenpass(vision_bp),
             "vision_empty": not vision_bp,
         })
-    prefer_vis = bool(image_b64)
+    prefer_vis = pc.prefer_vision_for_brillenpass_merge(
+        parser_data, vision_bp, has_image=bool(image_b64),
+    )
     merged = pc.merge_brillenpass(parser_data, vision_bp, prefer_vision=prefer_vis)
     from brillenpass_parser import diagnose_brillenpass_extraction  # noqa: WPS433
     diagnose = diagnose_brillenpass_extraction(
