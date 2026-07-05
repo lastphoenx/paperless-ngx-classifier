@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.49"  # 12.49: Brillenpass Vision-Schema, McOptic-PD-Fix, Parser-prior Merge
+POST_CONSUME_VERSION = "12.50"  # 12.50: Brillenpass Tesseract-TSV Stufe 1, Vision Fallback per Flag
 import re
 import sys
 import json
@@ -1080,6 +1080,14 @@ MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
 MODEL_EMBED  = "bge-m3"
 MODEL_LLM    = os.environ.get("OLLAMA_MODEL_LLM", "llama3.3:70b")
 
+BRILLENPASS_VISION_FALLBACK = os.environ.get("BRILLENPASS_VISION_FALLBACK", "0").strip().lower() in (
+    "1", "true", "yes",
+)
+BRILLENPASS_TESSERACT = os.environ.get("BRILLENPASS_TESSERACT", "1").strip().lower() not in (
+    "0", "false", "no",
+)
+BRILLENPASS_MIN_HEADER_ANCHORS = int(os.environ.get("BRILLENPASS_MIN_HEADER_ANCHORS", "3"))
+
 MEDIA_ROOT = os.environ.get(
     "PAPERLESS_MEDIA_ROOT",
     os.environ.get("MEDIA_ROOT", "/usr/src/paperless/media"),
@@ -1891,6 +1899,153 @@ def vision_brillenpass_analyze(
         return {}
 
 
+def should_use_brillenpass_vision_fallback(
+    header_anchors: int,
+    primary_data: dict | None,
+    *,
+    has_image: bool,
+) -> bool:
+    """Vision nur als Notnagel: Flag an, Bild da, wenig Header-Anker, keine Primärdaten."""
+    if not BRILLENPASS_VISION_FALLBACK or not has_image:
+        return False
+    if header_anchors >= BRILLENPASS_MIN_HEADER_ANCHORS:
+        return False
+    if primary_data and has_brillenpass_values(primary_data):
+        return False
+    return True
+
+
+def _brillenpass_extraction_confidence(
+    tsv_meta: dict,
+    regex_data: dict | None,
+    *,
+    vision_used: bool,
+    merged: dict | None,
+) -> str:
+    if vision_used:
+        return "niedrig"
+    if has_brillenpass_values(merged or {}):
+        if tsv_meta.get("header_anchors", 0) >= BRILLENPASS_MIN_HEADER_ANCHORS:
+            return "hoch"
+        if regex_data and has_brillenpass_values(regex_data):
+            return "mittel"
+        return tsv_meta.get("confidence") or "mittel"
+    return tsv_meta.get("confidence") or "keine_extraktion"
+
+
+def run_brillenpass_extraction_stages(
+    document_id: int | None,
+    ocr_text: str,
+    parser_names: list,
+    dt_vis: str,
+    vision_meta: dict | None,
+    *,
+    pdf_path: str | None = None,
+    image_b64: Optional[str] = None,
+) -> dict:
+    """Stufe 1 TSV + Regex, Stufe 2 Vision nur bei BRILLENPASS_VISION_FALLBACK=1."""
+    from brillenpass_tsv import (  # noqa: WPS433
+        extract_brillenpass_from_image,
+        merge_brillenpass_tsv_with_regex,
+    )
+
+    chosen = detect_parser(
+        ocr_text, allowed=parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
+    )
+
+    tsv_data: dict = {}
+    tsv_meta: dict = {"enabled": BRILLENPASS_TESSERACT, "header_anchors": 0, "confidence": "keine_extraktion"}
+    if BRILLENPASS_TESSERACT and pdf_path:
+        log.info("Brillenpass Stufe 1a: Tesseract TSV (Dok #%s)", document_id)
+        tsv_data, _tsv_conf, tsv_meta = extract_brillenpass_from_image(pdf_path)
+        tsv_meta["enabled"] = True
+    elif not BRILLENPASS_TESSERACT:
+        log.info("Brillenpass Stufe 1a: Tesseract deaktiviert (BRILLENPASS_TESSERACT=0)")
+    elif not pdf_path:
+        log.warning("Brillenpass Stufe 1a: kein PDF — Tesseract übersprungen (Dok #%s)", document_id)
+
+    if document_id:
+        write_audit_entry(document_id, "brillenpass_s1_tsv", {
+            "header_anchors": tsv_meta.get("header_anchors", 0),
+            "word_count": tsv_meta.get("word_count", 0),
+            "confidence": tsv_meta.get("confidence"),
+            "snapshot": snapshot_brillenpass(tsv_data),
+        })
+
+    log.info("Brillenpass Stufe 1b: OCR-Regex-Parser")
+    regex_data = parse_brillenpass_with_parsers(
+        ocr_text, parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
+    )
+    if not regex_data and "fielmann_rechnung" in parser_names:
+        regex_data = parse_fielmann_brillenpass(ocr_text)
+
+    if document_id:
+        write_audit_entry(document_id, "brillenpass_s1", {
+            "parser": chosen,
+            "snapshot": snapshot_brillenpass(regex_data),
+        })
+
+    parser_data = merge_brillenpass_tsv_with_regex(tsv_data, regex_data)
+    header_anchors = int(tsv_meta.get("header_anchors") or 0)
+
+    if not image_b64 and pdf_path:
+        image_b64 = pdf_to_base64_image(pdf_path)
+
+    vision_used = should_use_brillenpass_vision_fallback(
+        header_anchors, parser_data, has_image=bool(image_b64),
+    )
+    vision_bp: dict = {}
+    if vision_used:
+        log.info(
+            "Brillenpass Stufe 2: Vision-Fallback (%s, Anker=%s) Dok #%s",
+            MODEL_VISION, header_anchors, document_id,
+        )
+        vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
+    elif not BRILLENPASS_VISION_FALLBACK:
+        log.info("Brillenpass Stufe 2: Vision deaktiviert (BRILLENPASS_VISION_FALLBACK=0) Dok #%s", document_id)
+    elif header_anchors >= BRILLENPASS_MIN_HEADER_ANCHORS:
+        log.info(
+            "Brillenpass Stufe 2: Vision übersprungen — %s Header-Anker (Dok #%s)",
+            header_anchors, document_id,
+        )
+    elif parser_data and has_brillenpass_values(parser_data):
+        log.info("Brillenpass Stufe 2: Vision übersprungen — Stufe 1 ausreichend (Dok #%s)", document_id)
+    elif not image_b64:
+        log.warning("Brillenpass Stufe 2: kein PDF-Bild — Vision übersprungen (Dok #%s)", document_id)
+
+    if document_id:
+        write_audit_entry(document_id, "brillenpass_s2", {
+            "has_image": bool(image_b64),
+            "vision_enabled": BRILLENPASS_VISION_FALLBACK,
+            "vision_used": vision_used,
+            "header_anchors": header_anchors,
+            "snapshot": snapshot_brillenpass(vision_bp),
+            "vision_empty": not vision_bp,
+        })
+
+    prefer_vis = (
+        prefer_vision_for_brillenpass_merge(parser_data, vision_bp, has_image=bool(image_b64))
+        if vision_used else False
+    )
+    merged = merge_brillenpass(parser_data, vision_bp, prefer_vision=prefer_vis)
+    confidence = _brillenpass_extraction_confidence(
+        tsv_meta, regex_data, vision_used=vision_used, merged=merged,
+    )
+    merged.setdefault("extraktion", {})["confidence"] = confidence
+
+    return {
+        "chosen": chosen,
+        "tsv_data": tsv_data,
+        "regex_data": regex_data,
+        "parser_data": parser_data,
+        "vision_bp": vision_bp,
+        "prefer_vis": prefer_vis,
+        "merged": merged,
+        "tsv_meta": tsv_meta,
+        "vision_used": vision_used,
+    }
+
+
 def _load_brillenpaesse_data() -> dict:
     if not BRILLENPAESSE_PATH.exists():
         return {"version": "1.0", "eintraege": []}
@@ -2004,44 +2159,26 @@ def maybe_queue_brillenpass(
         return
     person_id = _resolve_person_id(direct_name)
     anzeigename = _resolve_person_anzeigename(person_id) or direct_name
-    chosen = detect_parser(
-        ocr_text, allowed=parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
+
+    pdf_path = resolve_document_pdf(document_id)
+    stages = run_brillenpass_extraction_stages(
+        document_id,
+        ocr_text,
+        parser_names,
+        dt_vis,
+        vision_meta,
+        pdf_path=pdf_path,
+        image_b64=image_b64,
     )
+    chosen = stages["chosen"]
+    parser_data = stages["parser_data"]
+    vision_bp = stages["vision_bp"]
+    prefer_vis = stages["prefer_vis"]
+    merged = stages["merged"]
     log.info(
         "Brillenpass-Trigger: person=%s (%s), parser=%s → %s",
         person_id, direct_reason, parser_names, chosen,
     )
-
-    log.info("Brillenpass Stufe 1: OCR-Parser")
-    parser_data = parse_brillenpass_with_parsers(
-        ocr_text, parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
-    )
-    if not parser_data and "fielmann_rechnung" in parser_names:
-        parser_data = parse_fielmann_brillenpass(ocr_text)
-    write_audit_entry(document_id, "brillenpass_s1", {
-        "parser": chosen,
-        "snapshot": snapshot_brillenpass(parser_data),
-    })
-
-    if not image_b64:
-        pdf_path = resolve_document_pdf(document_id)
-        if pdf_path:
-            image_b64 = pdf_to_base64_image(pdf_path)
-    if not image_b64:
-        log.warning("Brillenpass Stufe 2: kein PDF-Bild — Vision übersprungen (Dok #%s)", document_id)
-    else:
-        log.info("Brillenpass Stufe 2: Vision-Verifikation (%s) Dok #%s", MODEL_VISION, document_id)
-    vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
-    write_audit_entry(document_id, "brillenpass_s2", {
-        "has_image": bool(image_b64),
-        "snapshot": snapshot_brillenpass(vision_bp),
-        "vision_empty": not vision_bp,
-    })
-
-    prefer_vis = prefer_vision_for_brillenpass_merge(
-        parser_data, vision_bp, has_image=bool(image_b64),
-    )
-    merged = merge_brillenpass(parser_data, vision_bp, prefer_vision=prefer_vis)
     merged["korrespondent"] = corr_entry.get("name", "")
     if not merged.get("gueltig_ab"):
         from brillenpass_parser import _parse_pass_date, normalize_gueltig_ab_iso  # noqa: WPS433
@@ -2054,7 +2191,7 @@ def maybe_queue_brillenpass(
     diagnose = diagnose_brillenpass_extraction(
         parser_data, vision_bp, merged,
         parser_detected=chosen,
-        has_image=bool(image_b64),
+        has_image=bool(image_b64 or pdf_path),
         prefer_vision=prefer_vis,
     )
     merged.setdefault("extraktion", {})["diagnose"] = diagnose

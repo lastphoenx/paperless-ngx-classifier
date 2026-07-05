@@ -1,0 +1,71 @@
+"""Tests für Tesseract-TSV Anker-Parser (ohne echtes tesseract)."""
+from brillenpass_tsv import (
+    count_header_anchors,
+    gruppiere_nach_top,
+    merge_brillenpass_tsv_with_regex,
+    parse_by_anchors,
+)
+from brillenpass_parser import parse_mcoptic_pass
+
+
+def _mcoptic_tsv_words() -> list[dict]:
+    """Simulierte TSV-Geometrie McOptic-Karte (Dok #3563)."""
+    def w(text, left, top):
+        return {"text": text, "left": left, "top": top, "width": 10, "height": 10, "conf": 90}
+
+    return [
+        w("SPH", 200, 100),
+        w("ZYL", 280, 100),
+        w("ACHSE", 360, 100),
+        w("PD", 480, 100),
+        w("R", 80, 130),
+        w("-2.75", 200, 130),
+        w("-1.25", 280, 130),
+        w("179", 360, 130),
+        w("29.5", 480, 130),
+        w("L", 80, 160),
+        w("-1.00", 200, 160),
+        w("-1.50", 280, 160),
+        w("0", 360, 160),
+        w("31.0", 480, 160),
+    ]
+
+
+def test_gruppiere_nach_top_tolerance():
+    words = [
+        {"text": "A", "left": 10, "top": 100},
+        {"text": "B", "left": 50, "top": 108},
+        {"text": "C", "left": 10, "top": 140},
+    ]
+    zeilen = gruppiere_nach_top(words, tol=12)
+    assert len(zeilen) == 2
+    assert len(zeilen[0]) == 2
+    assert len(zeilen[1]) == 1
+
+
+def test_count_header_anchors_mcoptic():
+    assert count_header_anchors(_mcoptic_tsv_words()) >= 3
+
+
+def test_parse_by_anchors_mcoptic_both_pd():
+    r = parse_by_anchors(_mcoptic_tsv_words())
+    assert r is not None
+    assert r["fern"]["rechts"]["sph"] == "-2.75"
+    assert r["fern"]["links"]["sph"] == "-1.00"
+    assert r["fern"]["links"]["achse"] == "0"
+    assert r["pd"]["rechts"] == "+29.5"
+    assert r["pd"]["links"] == "+31.0"
+
+
+def test_merge_tsv_wins_over_regex():
+    tsv = parse_by_anchors(_mcoptic_tsv_words())
+    regex = parse_mcoptic_pass("R -2.00 -1.00 90 28.0\nL -0.50 -1.00 0 30.0")
+    merged = merge_brillenpass_tsv_with_regex(tsv, regex)
+    assert merged["fern"]["rechts"]["sph"] == "-2.75"
+    assert merged["pd"]["links"] == "+31.0"
+
+
+def test_parse_by_anchors_insufficient_headers():
+    words = [{"text": "SPH", "left": 10, "top": 10, "conf": 90}]
+    assert parse_by_anchors(words) is None
+    assert count_header_anchors(words) < 3
