@@ -886,7 +886,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.50';
+const UI_VERSION = '2.51';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5005,28 +5005,65 @@ function _bpDocLinks(version) {
   ).join('<span style="color:var(--muted);margin:0 4px">·</span>');
 }
 
+function _bpFmtPd(pd) {
+  if (!pd) return '';
+  const parts = [];
+  if (pd.rechts) parts.push(`PD R ${pd.rechts}`);
+  if (pd.links) parts.push(`PD L ${pd.links}`);
+  return parts.join(' · ');
+}
+
+function _bpOverviewCards() {
+  const cards = [];
+  for (const e of _bpOverview) {
+    const vers = (e.versionen && e.versionen.length)
+      ? [...e.versionen].sort((a, b) => (b.gueltig_ab || '').localeCompare(a.gueltig_ab || ''))
+      : (e.current ? [e.current] : []);
+    for (const v of vers) {
+      cards.push({
+        person_id: e.person_id,
+        anzeigename: e.anzeigename,
+        pending_review: e.pending_review,
+        aktuell: e.aktuell,
+        is_latest: v.gueltig_ab === e.aktuell,
+        current: v,
+      });
+    }
+  }
+  return cards;
+}
+
 function _bpRenderOverview() {
   const el = document.getElementById('bp-overview-list');
   if (!el) return;
-  if (!_bpOverview.length) {
+  const cards = _bpOverviewCards();
+  if (!cards.length) {
     el.innerHTML = '<p style="color:var(--muted);font-size:12px">Noch keine freigegebenen Brillenpässe.</p>';
     return;
   }
-  el.innerHTML = _bpOverview.map(e => {
+  el.innerHTML = cards.map(e => {
     const c = e.current || {};
     const naehe = c.naehe || {};
     const fern = c.fern || {};
     const glas = c.glas || {};
-    const badge = e.pending_review ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
+    const pd = c.pd || {};
+    const badge = e.pending_review && e.is_latest
+      ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
+    const latestBadge = e.is_latest
+      ? '<span class="badge" style="background:#22c55e;margin-left:4px">Aktuell</span>'
+      : '<span class="badge" style="background:#64748b;margin-left:4px">Archiv</span>';
     const docLink = _bpDocLinks(c);
     const distHtml = [_bpFmtDistBlock('Nähe', naehe), _bpFmtDistBlock('Fern', fern)].filter(Boolean).join('');
+    const pdHtml = _bpFmtPd(pd);
     return `<div class="bp-card">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <strong style="color:#f1f5f9">${e.anzeigename || e.person_id}</strong>${badge}
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <strong style="color:#f1f5f9">${e.anzeigename || e.person_id}</strong>
+        <span>${badge}${latestBadge}</span>
       </div>
-      <div class="bp-card-meta">Stand: ${e.aktuell || '—'} · ${c.korrespondent || '—'}</div>
+      <div class="bp-card-meta">Stand: ${c.gueltig_ab || '—'} · ${c.korrespondent || '—'}</div>
       <div class="bp-card-body">
         ${distHtml || '<div class="bp-eye-row">Keine Glaswerte</div>'}
+        ${pdHtml ? `<div class="bp-eye-row" style="margin-top:4px"><span class="bp-eye-lbl">PD</span> ${pdHtml}</div>` : ''}
         <div class="bp-eye-row" style="margin-top:6px"><span class="bp-eye-lbl">Glas</span> ${_bpFmtGlas(glas)}</div>
         ${c.auftrag ? `<div class="bp-eye-row"><span class="bp-eye-lbl">Auftrag</span> ${c.auftrag}</div>` : ''}
       </div>
@@ -5101,6 +5138,10 @@ function renderBrillenpassReviewPanel(entry) {
         <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Rechts</div>${_bpEyeFields('bp-fr', (v.fern||{}).rechts)}</div>
         <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Links</div>${_bpEyeFields('bp-fl', (v.fern||{}).links)}</div>
       </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
+        <div class="field-group"><label>PD Rechts (mm)</label><input type="text" id="bp-pd-r" value="${(v.pd||{}).rechts || ''}" style="font-size:12px"></div>
+        <div class="field-group"><label>PD Links (mm)</label><input type="text" id="bp-pd-l" value="${(v.pd||{}).links || ''}" style="font-size:12px"></div>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px">
         <div class="field-group"><label>Glas Index</label><input id="bp-glas-index" value="${(v.glas||{}).index || ''}"></div>
         <div class="field-group"><label>Durchmesser</label><input id="bp-glas-dm" type="number" value="${(v.glas||{}).durchmesser || ''}"></div>
@@ -5150,6 +5191,10 @@ function _bpCollectVorschlag(entry) {
     auftrag: document.getElementById('bp-auftrag')?.value || v.auftrag,
     fern: { rechts: _bpCollectEye('bp-fr'), links: _bpCollectEye('bp-fl') },
     naehe: { rechts: _bpCollectEye('bp-nr'), links: _bpCollectEye('bp-nl') },
+    pd: {
+      rechts: document.getElementById('bp-pd-r')?.value?.trim() || null,
+      links: document.getElementById('bp-pd-l')?.value?.trim() || null,
+    },
     glas: {
       ...(v.glas || {}),
       index: document.getElementById('bp-glas-index')?.value || null,
@@ -5169,7 +5214,7 @@ async function approveBrillenpassReview(index) {
   });
   const d = await r.json();
   if (!r.ok) { showToast(d.detail || 'Fehler', 'error'); return; }
-  showToast(d.deduped ? 'Brillenpass zusammengeführt (gleiche Periode)' : 'Brillenpass freigegeben', 'success');
+  showToast(d.deduped ? 'Brillenpass zusammengeführt (≤21 Tage, gleicher Optiker)' : 'Brillenpass-Version gespeichert', 'success');
   await loadBrillenpassView();
 }
 
