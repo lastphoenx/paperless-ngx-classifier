@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.33"  # 2.33: Multi-Parser, Dedup, Legacy-QR-Split
-UI_VERSION = "2.45"
+__version__ = "2.35"  # 2.35: Session-Check host-aware, Legacy-Split Menü
+UI_VERSION = "2.47"
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -35,15 +35,21 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, Stre
 from pydantic import BaseModel
 
 from brillenpass_parser import (
+    PARSER_FORMAT,
     PARSER_LABELS,
     PARSER_NAMES,
+    PARSER_VENDOR,
+    VENDOR_LABELS,
+    VENDOR_PARSERS,
     build_version_id,
     compute_brillenpass_diff,
     detect_parser,
     find_brillenpass_period_duplicate,
     has_brillenpass_values,
     merge_brillenpass_version,
+    normalize_parser_name,
     parse_by_parser,
+    vendor_from_parser,
 )
 
 # ──────────────────────────────────────────────
@@ -154,18 +160,39 @@ def _normalize_geburtsdatum(geb: str) -> str:
 async def require_paperless_session(request: Request, call_next):
     """Prüft ob eine gültige Paperless-Session vorhanden ist.
     API-Calls (/api/*): Token-Check via PAPER_MANAGER_TOKEN falls gesetzt,
-    sonst Session-Cookie prüfen.
+    sonst Session-Cookie prüfen (gegen request-host-aware Paperless-URL).
     Browser-Requests: kein Cookie → immer Redirect zu Paperless Login.
     """
     path = request.url.path
-    paperless_url = os.environ.get("PAPERLESS_URL", "http://localhost:8000")
     paperless_login_base = _effective_paperless_url(request)
-    # Für Browser-Login immer die INTERNE URL verwenden —
-    # PAPERLESS_INTERNAL_URL zeigt direkt auf den Container ohne nginx/Authentik.
-    # Wer lokal (IP) zugreift, soll beim lokalen Paperless-Login landen.
-    # Wer extern (Domain) zugreift, ist bereits via Authentik authentifiziert.
     paperless_internal = os.environ.get("PAPERLESS_INTERNAL_URL",
                          os.environ.get("PAPERLESS_URL", "http://localhost:8000"))
+
+    def _session_valid() -> bool:
+        session_cookie = request.cookies.get("sessionid")
+        if not session_cookie:
+            return False
+        import urllib.request as _ur
+        # Gleiche Logik wie Login-Redirect: IP → :8000 auf Host, Domain → gleicher Host
+        paperless_base = _effective_paperless_url(request)
+        cookie_hdr = f"sessionid={session_cookie}"
+        csrf = request.cookies.get("csrftoken")
+        if csrf:
+            cookie_hdr += f"; csrftoken={csrf}"
+        for base in (paperless_base, paperless_internal):
+            if not base:
+                continue
+            try:
+                req = _ur.Request(
+                    f"{base.rstrip('/')}/api/profile/",
+                    headers={"Cookie": cookie_hdr},
+                )
+                with _ur.urlopen(req, timeout=3) as r:
+                    if r.status == 200:
+                        return True
+            except Exception:
+                continue
+        return False
 
     # Proxy-Endpoints: kein Auth nötig — Backend holt Daten selbst mit Token
     if path.startswith("/api/proxy/"):
@@ -173,7 +200,6 @@ async def require_paperless_session(request: Request, call_next):
 
     # API-Calls: Token oder Session prüfen
     if path.startswith("/api/"):
-        # Token-Auth (direkte API-Zugriffe ohne Browser)
         if _INTERNAL_TOKEN:
             token = (
                 request.headers.get("X-Paper-Manager-Token") or
@@ -181,40 +207,15 @@ async def require_paperless_session(request: Request, call_next):
             )
             if token == _INTERNAL_TOKEN:
                 return await call_next(request)
-        # Session-Cookie-Auth (Browser-Flow)
-        session_cookie = request.cookies.get("sessionid")
-        if session_cookie:
-            import urllib.request as _ur
-            try:
-                req = _ur.Request(
-                    f"{paperless_url}/api/profile/",
-                    headers={"Cookie": f"sessionid={session_cookie}"}
-                )
-                with _ur.urlopen(req, timeout=3) as r:
-                    if r.status == 200:
-                        return await call_next(request)
-            except Exception:
-                pass
-        # Kein gültiger Token und keine gültige Session → 401
+        if _session_valid():
+            return await call_next(request)
         from fastapi.responses import JSONResponse as _JR
         return _JR(status_code=401, content={"detail": "Nicht authentifiziert"})
 
     # Browser-Requests: kein Cookie → Login-Redirect
-    session_cookie = request.cookies.get("sessionid")
-    if session_cookie:
-        import urllib.request as _ur
-        try:
-            req = _ur.Request(
-                f"{paperless_url}/api/profile/",
-                headers={"Cookie": f"sessionid={session_cookie}"}
-            )
-            with _ur.urlopen(req, timeout=3) as r:
-                if r.status == 200:
-                    return await call_next(request)
-        except Exception:
-            pass
+    if _session_valid():
+        return await call_next(request)
 
-    # Login-Redirect: gleiche IP/Domain wie Request-Host (siehe _effective_paperless_url)
     host = request.headers.get("host", "localhost:8100")
     next_url = f"http://{host}/"
     login_url = f"{paperless_login_base}/accounts/login/?next={next_url}"
@@ -580,20 +581,29 @@ def _normalize_identifikatoren(raw) -> dict:
 
 def _normalize_brillenpass(raw) -> dict:
     if not raw or not isinstance(raw, dict):
-        return {"aktiv": False, "parser": "", "parsers": [], "typische_begriffe": []}
+        return {"aktiv": False, "vendor": "", "parser": "", "parsers": [], "typische_begriffe": []}
     begriffe = _normalize_string_list(raw.get("typische_begriffe") or [])
+    vendor = str(raw.get("vendor") or "").strip().lower()
+    if vendor not in VENDOR_PARSERS:
+        vendor = ""
     raw_parsers = raw.get("parsers") or []
     if isinstance(raw_parsers, str):
         raw_parsers = [raw_parsers]
-    single = str(raw.get("parser") or "").strip().lower()
+    single = str(raw.get("parser") or "").strip()
     parsers: list[str] = []
     for p in list(raw_parsers) + ([single] if single else []):
-        name = str(p or "").strip().lower()
+        name = normalize_parser_name(str(p or "").strip())
         if name in PARSER_NAMES and name not in parsers:
             parsers.append(name)
-    aktiv = bool(raw.get("aktiv")) and bool(parsers)
+    if not vendor and parsers:
+        vendors = {vendor_from_parser(p) for p in parsers}
+        vendors.discard(None)
+        if len(vendors) == 1:
+            vendor = vendors.pop()
+    aktiv = bool(raw.get("aktiv")) and bool(vendor or parsers)
     return {
         "aktiv": aktiv,
+        "vendor": vendor if aktiv else "",
         "parser": parsers[0] if parsers else "",
         "parsers": parsers if aktiv else [],
         "typische_begriffe": begriffe if aktiv else [],
@@ -1796,11 +1806,24 @@ def api_brillenpass_list():
 
 @app.get("/api/brillenpass/parsers", response_class=JSONResponse)
 def api_brillenpass_parsers():
-    """Verfügbare Brillenpass-Parser für UI-Dropdowns."""
+    """Verfügbare Brillenpass-Parser (nach Dokumentformat) + Optiker-Vendors."""
     return {
         "parsers": [
-            {"id": name, "label": PARSER_LABELS.get(name, name)}
+            {
+                "id": name,
+                "label": PARSER_LABELS.get(name, name),
+                "format": PARSER_FORMAT.get(name, ""),
+                "vendor": PARSER_VENDOR.get(name, ""),
+            }
             for name in PARSER_NAMES
+        ],
+        "vendors": [
+            {
+                "id": vid,
+                "label": VENDOR_LABELS.get(vid, vid),
+                "parsers": VENDOR_PARSERS[vid],
+            }
+            for vid in VENDOR_PARSERS
         ],
     }
 
@@ -1808,7 +1831,7 @@ def api_brillenpass_parsers():
 @app.post("/api/brillenpass/parse")
 def api_brillenpass_parse(body: dict = Body(...)):
     """OCR-Text oder Paperless-Dok-ID mit Parser parsen (ohne Review-Queue)."""
-    parser_name = (body.get("parser") or "").strip().lower()
+    parser_name = normalize_parser_name((body.get("parser") or "").strip())
     text = (body.get("text") or "").strip()
     doc_id = body.get("document_id")
 
@@ -1822,8 +1845,9 @@ def api_brillenpass_parse(body: dict = Body(...)):
     if not text:
         raise HTTPException(400, "text oder document_id mit OCR-Inhalt erforderlich")
 
+    detected = detect_parser(text)
     if not parser_name:
-        parser_name = detect_parser(text) or "fielmann"
+        parser_name = detected or "fielmann_rechnung"
 
     if parser_name not in PARSER_NAMES:
         raise HTTPException(400, f"Unbekannter Parser: {parser_name}")
@@ -1833,11 +1857,16 @@ def api_brillenpass_parse(body: dict = Body(...)):
         return {
             "ok": False,
             "parser": parser_name,
-            "detected_parser": detect_parser(text),
+            "detected_parser": detected,
             "result": result,
             "message": "Keine verwertbaren Werte erkannt",
         }
-    return {"ok": True, "parser": parser_name, "detected_parser": detect_parser(text), "result": result}
+    return {
+        "ok": True,
+        "parser": parser_name,
+        "detected_parser": detected or parser_name,
+        "result": result,
+    }
 
 
 @app.post("/api/brillenpass/manual")

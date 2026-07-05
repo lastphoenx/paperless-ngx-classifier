@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.43"  # 12.43: Brillenpass Multi-Parser + Dedup
+POST_CONSUME_VERSION = "12.44"  # 12.44: Brillenpass Auto-Parser (Format-Erkennung)
 import re
 import sys
 import json
@@ -1902,7 +1902,7 @@ def maybe_queue_brillenpass(
     parser_names = corr_brillenpass_parsers(corr_entry)
 
     dt_vis = (vision_meta or {}).get("dokumenttyp_visuell", "")
-    if not looks_like_brillenpass_any(ocr_text, parser_names, dt_vis):
+    if not looks_like_brillenpass_any(ocr_text, parser_names, dt_vis, vision_meta):
         log.debug("Brillenpass: kein Parser-Treffer für %s", parser_names)
         return
 
@@ -1912,10 +1912,18 @@ def maybe_queue_brillenpass(
         return
     person_id = _resolve_person_id(direct_name)
     anzeigename = _resolve_person_anzeigename(person_id) or direct_name
-    log.info("Brillenpass-Trigger: person=%s (%s), parser=%s", person_id, direct_reason, parser_names)
+    chosen = detect_parser(
+        ocr_text, allowed=parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
+    )
+    log.info(
+        "Brillenpass-Trigger: person=%s (%s), parser=%s → %s",
+        person_id, direct_reason, parser_names, chosen,
+    )
 
-    parser_data = parse_brillenpass_with_parsers(ocr_text, parser_names)
-    if not parser_data and "fielmann" in parser_names:
+    parser_data = parse_brillenpass_with_parsers(
+        ocr_text, parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
+    )
+    if not parser_data and "fielmann_rechnung" in parser_names:
         parser_data = parse_fielmann_brillenpass(ocr_text)
     vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
     merged = merge_brillenpass(parser_data, vision_bp)
