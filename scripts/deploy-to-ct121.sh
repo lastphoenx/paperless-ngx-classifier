@@ -33,6 +33,8 @@ FILES=(
   post_consume.py
   document_date.py
   brillenpass_parser.py
+  brillenpass_runner.py
+  steuerjahr.py
   pre_consume.sh
   pre_consume_qr.py
   scripts/legacy-import-batch.sh

@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.25"  # 2.25: Brillenpass API + Review
-UI_VERSION = "2.37"   # Frontend paper_manager_ui.html — mit api/config synchron halten (siehe docs/VERSIONING.md)
+__version__ = "2.27"  # 2.27: Brillenpass-Trigger API + Steuerjahr
+UI_VERSION = "2.39"
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -246,7 +246,7 @@ class ReviewDecision(BaseModel):
     reviewed_by:             Optional[str]       = "admin"
     extraktion_muster:       Optional[dict]      = None   # {feldname: ExtraktionsMuster}
     erwartungen:             Optional[dict]      = None   # {hat_qr_rechnung: bool, ...}
-    identifikatoren:         Optional[dict]      = None   # {uid:[], iban:[], telefon:[]}
+    identifikatoren:         Optional[dict]      = None   # {uid:[], iban:[], email:[], telefon:[]}
 
 
 # ══════════════════════════════════════════════
@@ -330,6 +330,7 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
     all_varianten: dict = {}
     all_uids:     dict = {}
     all_ibans:    dict = {}
+    all_emails:   dict = {}
     all_telefone: dict = {}
     for e in corr_map.get("eintraege", []):
         if e["name"] == (exclude_name or ""):
@@ -348,6 +349,10 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
             n = _norm_corr_iban(iban)
             if n:
                 all_ibans[n] = e["name"]
+        for em in ident.get("email", []) or []:
+            n = _norm_corr_email(em)
+            if n:
+                all_emails[n] = e["name"]
         for tel in ident.get("telefon", []) or []:
             n = _norm_corr_telefon(tel)
             if n:
@@ -358,6 +363,7 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
         "varianten": all_varianten,
         "uids":      all_uids,
         "ibans":     all_ibans,
+        "emails":    all_emails,
         "telefone":  all_telefone,
     }
 
@@ -445,18 +451,27 @@ def _validate_correspondent_entry(
         n = _norm_corr_iban(iban)
         if n in idx["ibans"]:
             errors.append(f"IBAN '{iban}' bereits bei '{idx['ibans'][n]}'")
+    for em in ident.get("email", []):
+        n = _norm_corr_email(em)
+        if n in idx["emails"]:
+            errors.append(f"E-Mail '{em}' bereits bei '{idx['emails'][n]}'")
     for tel in ident.get("telefon", []):
         n = _norm_corr_telefon(tel)
         if n in idx["telefone"]:
             warnings.append(f"Telefon '{tel}' bereits bei '{idx['telefone'][n]}'")
 
     for label, lst in [("uid", ident.get("uid", [])), ("iban", ident.get("iban", [])),
-                        ("telefon", ident.get("telefon", []))]:
+                        ("email", ident.get("email", [])), ("telefon", ident.get("telefon", []))]:
         seen_id: set[str] = set()
         for item in lst:
-            norm = _norm_corr_uid(item) if label == "uid" else (
-                _norm_corr_iban(item) if label == "iban" else _norm_corr_telefon(item)
-            )
+            if label == "uid":
+                norm = _norm_corr_uid(item)
+            elif label == "iban":
+                norm = _norm_corr_iban(item)
+            elif label == "email":
+                norm = _norm_corr_email(item)
+            else:
+                norm = _norm_corr_telefon(item)
             if norm in seen_id:
                 errors.append(f"Duplikat in identifikatoren.{label}: '{item}'")
             seen_id.add(norm)
@@ -510,14 +525,19 @@ def _norm_corr_telefon(raw: str) -> str:
     return digits
 
 
+def _norm_corr_email(raw: str) -> str:
+    return str(raw or "").strip().lower()
+
+
 def _normalize_identifikatoren(raw) -> dict:
-    """UID/IBAN/Telefon-Listen normalisieren (Anzeigeformat behalten)."""
+    """UID/IBAN/E-Mail/Telefon-Listen normalisieren (Anzeigeformat behalten)."""
     if not raw or not isinstance(raw, dict):
-        return {"uid": [], "iban": [], "telefon": []}
+        return {"uid": [], "iban": [], "email": [], "telefon": []}
     uid_seen: set[str] = set()
     iban_seen: set[str] = set()
+    email_seen: set[str] = set()
     tel_seen: set[str] = set()
-    uids, ibans, tels = [], [], []
+    uids, ibans, emails, tels = [], [], [], []
     for item in raw.get("uid") or []:
         s = str(item).strip()
         n = _norm_corr_uid(s)
@@ -530,13 +550,19 @@ def _normalize_identifikatoren(raw) -> dict:
         if s and n and n not in iban_seen:
             iban_seen.add(n)
             ibans.append(s)
+    for item in raw.get("email") or []:
+        s = str(item).strip().lower()
+        n = _norm_corr_email(s)
+        if s and n and "@" in n and n not in email_seen:
+            email_seen.add(n)
+            emails.append(s)
     for item in raw.get("telefon") or []:
         s = str(item).strip()
         n = _norm_corr_telefon(s)
         if s and n and n not in tel_seen:
             tel_seen.add(n)
             tels.append(s)
-    return {"uid": uids, "iban": ibans, "telefon": tels}
+    return {"uid": uids, "iban": ibans, "email": emails, "telefon": tels}
 
 
 def _normalize_beziehung_fields(bez: dict) -> None:
@@ -1757,6 +1783,18 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
     return {"status": "approved", "version_id": version["id"], "diff": version["diff_zu_vorher"]}
 
 
+@app.post("/api/brillenpass/trigger/{doc_id}")
+def api_brillenpass_trigger(doc_id: int, body: dict = Body(default={})):
+    """Bestehendes Dokument nachträglich durch Brillenpass-Pipeline schicken."""
+    from brillenpass_runner import reprocess_brillenpass_document
+
+    force = bool(body.get("force", False))
+    result = reprocess_brillenpass_document(doc_id, force=force)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error", "Brillenpass-Trigger fehlgeschlagen"))
+    return result
+
+
 @app.patch("/api/brillenpass/{person_id}")
 def api_brillenpass_patch(person_id: str, body: dict = Body(...)):
     """Manuelle Korrektur einer bestehenden Version (version_id im Body)."""
@@ -2112,7 +2150,7 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     entry.setdefault("nicht_verwechseln_mit", [])
     entry.setdefault("beziehungen", [])
     entry.setdefault("kuerzel", "")
-    entry.setdefault("identifikatoren", {"uid": [], "iban": [], "telefon": []})
+    entry.setdefault("identifikatoren", {"uid": [], "iban": [], "email": [], "telefon": []})
 
     # default_dokumenttyp_id synchronisieren falls nur Name geändert
     if "default_dokumenttyp" in body and "default_dokumenttyp_id" not in body:

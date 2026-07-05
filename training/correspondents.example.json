@@ -96,6 +96,7 @@
       "identifikatoren": {
         "uid": ["CHE-106.827.671"],
         "iban": ["CH09 0023 3233 9837 0124 U"],
+        "email": ["info@fielmann.ch"],
         "telefon": ["061 266 16 20"]
       },
       "extraktion_muster": {},

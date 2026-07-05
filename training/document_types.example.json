@@ -51,6 +51,26 @@
       ],
       "ausschliessen": [],
       "beschreibung": "Jährlicher Lohnausweis vom Arbeitgeber (steuerrelevant)",
+      "fix_tags": ["Steuerrelevant"],
+      "feldprofil": {
+        "15": {"extrahieren": true, "im_formular": true, "pflicht": false},
+        "17": {"extrahieren": true, "im_formular": true, "pflicht": true}
+      },
+      "_paperless_id": null
+    },
+    {
+      "name": "Steuerwertbescheinigung",
+      "synonyme": [
+        "Wertschriftenverzeichnis",
+        "Depotauszug steuerlich"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Bank-/Depot-Steuerwertbescheinigung (jährlich)",
+      "fix_tags": ["Steuerrelevant"],
+      "feldprofil": {
+        "15": {"extrahieren": true, "im_formular": true, "pflicht": false},
+        "17": {"extrahieren": true, "im_formular": true, "pflicht": true}
+      },
       "_paperless_id": null
     },
     {

@@ -744,6 +744,22 @@
         <div id="bp-review-panel" style="display:none;margin-top:12px"></div>
       </div>
     </div>
+    <div class="card" style="margin-top:20px;padding:14px 16px">
+      <div class="card-title" style="font-size:13px;margin-bottom:8px">Nachträglich verarbeiten</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        Paperless-Dokument-ID eingeben (z.&nbsp;B. Fielmann-Rechnung). Korrespondent braucht
+        <code>brillenpass.aktiv</code>, Person muss in <code>family.json</code> erkennbar sein.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="number" id="bp-trigger-id" placeholder="Dok-ID" min="1"
+          style="max-width:120px;font-size:13px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin:0">
+          <input type="checkbox" id="bp-trigger-force"> Erneut (ersetzt offenen Review)
+        </label>
+        <button class="btn btn-primary" onclick="triggerBrillenpass()">▶ Brillenpass starten</button>
+      </div>
+      <div id="bp-trigger-status" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
+    </div>
   </div>
 
 </main>
@@ -790,7 +806,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.37';
+const UI_VERSION = '2.39';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -1326,7 +1342,7 @@ function renderPanelNeu(entry, i, docContent, docIds) {
   const e = entry.vorgeschlagener_eintrag || {};
   const varianten = e.varianten || [];
   const match     = e.match || [];
-  const idents    = e.identifikatoren || {uid: [], iban: [], telefon: []};
+  const idents    = e.identifikatoren || {uid: [], iban: [], email: [], telefon: []};
   const kuerzelVorschlag = e.kuerzel || suggestKuerzel(e.name || entry.llm_raw || '');
   const korrTypen = allKorrTypen.length ? allKorrTypen : ['Behörde','Bank','Versicherung','Arzt','Arbeitgeber','Kundenservice','Verein','Online-Shop','Händler','Handwerk','Telekommunikation','Energie','Transport','Sonstiges'];
   return `
@@ -1405,10 +1421,17 @@ function renderPanelNeu(entry, i, docContent, docIds) {
         </div>
       </div>
       <div class="field-group">
+        <label>E-Mail</label>
+        <div class="tags-input" id="tags-review-email" data-tags='${JSON.stringify(idents.email||[])}'>
+          ${(idents.email||[]).map(v => tagChip(v, 'tags-review-email', '#f472b6', 'rgba(244,114,182,.15)')).join('')}
+          <input type="text" placeholder="marlene.hagmann@ubs.com" onkeydown="addTag(event,'tags-review-email')">
+        </div>
+      </div>
+      <div class="field-group">
         <label>Telefon</label>
         <div class="tags-input" id="tags-review-tel" data-tags='${JSON.stringify(idents.telefon||[])}'>
           ${(idents.telefon||[]).map(v => tagChip(v, 'tags-review-tel', '#60a5fa', 'rgba(59,130,246,.15)')).join('')}
-          <input type="text" placeholder="061 266 16 20" onkeydown="addTag(event,'tags-review-tel')">
+          <input type="text" placeholder="+41-31-358 64 33" onkeydown="addTag(event,'tags-review-tel')">
         </div>
       </div>
       <div class="field-group">
@@ -1720,6 +1743,7 @@ async function submitReview(index, action) {
       payload.identifikatoren = {
         uid:     getTagsFromContainer('tags-review-uid'),
         iban:    getTagsFromContainer('tags-review-iban'),
+        email:   getTagsFromContainer('tags-review-email'),
         telefon: getTagsFromContainer('tags-review-tel'),
       };
       payload.typische_ordner = getTagsFromContainer('tags-ordner');
@@ -1874,9 +1898,15 @@ async function openCorrCreate() {
         </div>
       </div>
       <div class="field-group">
+        <label>E-Mail</label>
+        <div class="tags-input" id="tags-cf-email" data-tags='[]'>
+          <input type="text" placeholder="kontakt@firma.ch" onkeydown="addTag(event,'tags-cf-email')">
+        </div>
+      </div>
+      <div class="field-group">
         <label>Telefon</label>
         <div class="tags-input" id="tags-cf-tel" data-tags='[]'>
-          <input type="text" placeholder="061 266 16 20" onkeydown="addTag(event,'tags-cf-tel')">
+          <input type="text" placeholder="+41-31-358 64 33" onkeydown="addTag(event,'tags-cf-tel')">
         </div>
       </div>
       <div class="field-group">
@@ -1967,6 +1997,7 @@ async function submitCorrCreate() {
   const identifikatoren = {
     uid:     getTagsFromContainer('tags-cf-uid'),
     iban:    getTagsFromContainer('tags-cf-iban'),
+    email:   getTagsFromContainer('tags-cf-email'),
     telefon: getTagsFromContainer('tags-cf-tel'),
   };
 
@@ -2101,6 +2132,7 @@ function renderCorrMap(eintraege) {
           const rows = [];
           (id.uid||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(168,85,247,.15);color:#c084fc;margin-right:4px" title="UID">UID ${u}</span>`));
           (id.iban||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(16,185,129,.15);color:#10b981;margin-right:4px" title="IBAN">IBAN ${u}</span>`));
+          (id.email||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(244,114,182,.15);color:#f472b6;margin-right:4px" title="E-Mail">✉ ${u}</span>`));
           (id.telefon||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(59,130,246,.15);color:#60a5fa;margin-right:4px" title="Telefon">☎ ${u}</span>`));
           return rows.length ? `<div style="margin-bottom:8px"><span style="color:var(--muted);font-size:11px">IDENTIFIKATOREN: </span>${rows.join('')}</div>` : '';
         })()}
@@ -2134,6 +2166,7 @@ function filterCorrespondents(q) {
     (e.notiz||'').toLowerCase().includes(lq) ||
     (e.identifikatoren?.uid||[]).some(v => v.toLowerCase().includes(lq)) ||
     (e.identifikatoren?.iban||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.identifikatoren?.email||[]).some(v => v.toLowerCase().includes(lq)) ||
     (e.identifikatoren?.telefon||[]).some(v => v.toLowerCase().includes(lq))
   ));
 }
@@ -2188,7 +2221,7 @@ function toggleCorrEdit(idx, entry) {
         </div>
       </div>
       <div class="field-group" style="padding-top:8px;border-top:1px dashed var(--border)">
-        <label style="font-size:11px;color:var(--muted)">IDENTIFIKATOREN — deterministische Zuordnung (UID &gt; IBAN &gt; Telefon)</label>
+        <label style="font-size:11px;color:var(--muted)">IDENTIFIKATOREN — deterministische Zuordnung (UID &gt; IBAN &gt; E-Mail &gt; Telefon)</label>
       </div>
       <div class="field-group">
         <label>UID / MWST-Nr. (CHE-…)</label>
@@ -2205,10 +2238,17 @@ function toggleCorrEdit(idx, entry) {
         </div>
       </div>
       <div class="field-group">
+        <label>E-Mail</label>
+        <div class="tags-input" id="ce-email-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).email||[])}'>
+          ${((entry.identifikatoren||{}).email||[]).map(v => tagChip(v, `ce-email-${idx}`, '#f472b6', 'rgba(244,114,182,.15)')).join('')}
+          <input type="text" placeholder="kontakt@firma.ch" onkeydown="addTag(event,'ce-email-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
         <label>Telefon</label>
         <div class="tags-input" id="ce-tel-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).telefon||[])}'>
           ${((entry.identifikatoren||{}).telefon||[]).map(v => tagChip(v, `ce-tel-${idx}`, '#60a5fa', 'rgba(59,130,246,.15)')).join('')}
-          <input type="text" placeholder="061 266 16 20" onkeydown="addTag(event,'ce-tel-${idx}')">
+          <input type="text" placeholder="+41-31-358 64 33" onkeydown="addTag(event,'ce-tel-${idx}')">
         </div>
       </div>
       <div class="field-group">
@@ -2507,7 +2547,7 @@ async function checkKuerzelUnique(input, idx, corrName) {
 }
 
 async function saveCorrEdit(idx, nameParam) {
-  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-tel-${idx}`,
+  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-email-${idx}`, `ce-tel-${idx}`,
                   `ce-nvm-${idx}`, `ce-ord-${idx}`,
                   `ce-fixtags-${idx}`, `ce-verbdt-${idx}`, `ce-verbord-${idx}`, `ce-verbtag-${idx}`]);
   const name = nameParam || document.getElementById(`corr-edit-${idx}`)?.dataset?.name;
@@ -2532,6 +2572,7 @@ async function saveCorrEdit(idx, nameParam) {
     identifikatoren: {
       uid:     getTagsFromContainer(`ce-uid-${idx}`),
       iban:    getTagsFromContainer(`ce-iban-${idx}`),
+      email:   getTagsFromContainer(`ce-email-${idx}`),
       telefon: getTagsFromContainer(`ce-tel-${idx}`),
     },
     extraktion_muster:      collectExtraktionsMuster(idx),
@@ -2575,6 +2616,7 @@ const CUSTOM_FIELD_OPTIONS = [
   {id: 13, name: "Gescannt am",      type: "date"},
   {id: 14, name: "Verarbeitung",     type: "select"},
   {id: 15, name: "Person",           type: "select"},
+  {id: 17, name: "Steuerjahr",       type: "integer"},
 ];
 
 function renderFeldprofilEdit(feldprofil, dtId) {
@@ -4826,6 +4868,33 @@ async function loadBrillenpassView() {
     if (_bpReview.length) selectBrillenpassReview(_bpReview[0].index);
   } catch (e) {
     showToast('Brillenpass laden fehlgeschlagen', 'error');
+  }
+}
+
+async function triggerBrillenpass() {
+  const id = parseInt(document.getElementById('bp-trigger-id')?.value || '', 10);
+  const force = document.getElementById('bp-trigger-force')?.checked || false;
+  const status = document.getElementById('bp-trigger-status');
+  if (!id) {
+    showToast('Dokument-ID eingeben', 'error');
+    return;
+  }
+  if (status) status.textContent = 'Verarbeite… (Vision kann ~1 Min dauern)';
+  try {
+    const r = await fetch(`${API_BASE}/brillenpass/trigger/${id}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({force}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || r.statusText);
+    showToast(d.message || 'Brillenpass eingereiht', 'success');
+    if (status) status.textContent = d.message || 'OK';
+    await loadBrillenpassView();
+    await loadBrillenpassBadge();
+  } catch (e) {
+    if (status) status.textContent = String(e.message || e);
+    showToast('Brillenpass: ' + (e.message || e), 'error');
   }
 }
 

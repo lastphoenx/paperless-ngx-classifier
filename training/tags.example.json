@@ -26,6 +26,11 @@
       "_paperless_id": null
     },
     {
+      "name": "Steuerrelevant",
+      "ausschliessen": [],
+      "_paperless_id": null
+    },
+    {
       "name": "Versicherung",
       "ausschliessen": [],
       "_paperless_id": null
