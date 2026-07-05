@@ -20,7 +20,7 @@ import json
 import os
 import re
 
-__version__ = "2.35"  # 2.35: Session-Check host-aware, Legacy-Split Menü
+__version__ = "2.36"  # 2.36: Legacy QR-Split 600 DPI, kein Kein_Barcode-Fallback
 UI_VERSION = "2.48"
 import fcntl
 from contextlib import contextmanager
@@ -2072,13 +2072,36 @@ def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
             tf.write(pdf_bytes)
             tmp = tf.name
         try:
-            from legacy_split_by_qr import find_split_markers
-            markers, total = find_split_markers(tmp, regex=regex)
+            from legacy_split_by_qr import find_split_markers, has_real_qr_splits
+            markers, total, qr_debug = find_split_markers(tmp, regex=regex)
+            qr_matched = sum(1 for x in qr_debug if x.get("matched"))
+            if not has_real_qr_splits(markers):
+                return {
+                    "ok": False,
+                    "dry_run": True,
+                    "document_id": doc_id,
+                    "pages": total,
+                    "splits": [],
+                    "qr_matched": qr_matched,
+                    "qr_seen": len(qr_debug),
+                    "qr_debug": qr_debug[:30],
+                    "message": (
+                        f"Keine QR-Codes passend zu Regex auf {total} Seiten "
+                        f"(Scan 600 DPI, Regex: {regex})"
+                    ),
+                }
             preview = []
             for i, (barcode, from_page) in enumerate(markers):
                 to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
                 preview.append({"barcode": barcode, "from_page": from_page, "to_page": to_page})
-            return {"ok": True, "dry_run": True, "document_id": doc_id, "pages": total, "splits": preview}
+            return {
+                "ok": True,
+                "dry_run": True,
+                "document_id": doc_id,
+                "pages": total,
+                "splits": preview,
+                "qr_matched": qr_matched,
+            }
         finally:
             Path(tmp).unlink(missing_ok=True)
 
@@ -2094,7 +2117,11 @@ def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
         raise HTTPException(500, f"Split fehlgeschlagen: {e}") from e
 
     if not parts:
-        raise HTTPException(400, "Keine QR-Split-Marker gefunden — Regex oder Scan prüfen")
+        raise HTTPException(
+            400,
+            "Keine QR-Split-Marker gefunden — Dokument hat keine passenden "
+            f"Metadaten-QR-Codes (Regex: {regex}, Scan 600 DPI)",
+        )
 
     return {
         "ok": True,
