@@ -7,9 +7,86 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("brillenpass_runner")
+
+_jobs_lock = threading.Lock()
+_jobs: dict[int, dict] = {}
+
+
+def _job_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def brillenpass_job_set(document_id: int, **fields) -> None:
+    with _jobs_lock:
+        prev = _jobs.get(document_id, {})
+        _jobs[document_id] = {
+            **prev,
+            **fields,
+            "document_id": document_id,
+            "updated_at": _job_now(),
+        }
+
+
+def brillenpass_job_get(document_id: int) -> dict | None:
+    with _jobs_lock:
+        job = _jobs.get(document_id)
+        return dict(job) if job else None
+
+
+def _doc_in_pending_brillenpass(document_id: int) -> dict | None:
+    import post_consume as pc  # noqa: WPS433
+
+    path = pc.PENDING_BRILLENPASS_PATH
+    if not path.exists():
+        return None
+    for ln in path.read_text(encoding="utf-8").split("\n"):
+        if not ln.strip():
+            continue
+        try:
+            e = json.loads(ln)
+            if e.get("status") == "pending" and e.get("document_id") == document_id:
+                return e
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def brillenpass_job_run(
+    document_id: int,
+    *,
+    force: bool = False,
+    parser_override: str = "",
+) -> None:
+    """Hintergrund-Pipeline mit Job-Status für UI-Polling."""
+    brillenpass_job_set(
+        document_id,
+        status="running",
+        message="Parser + Vision laufen (~1–2 Min)…",
+    )
+    try:
+        result = reprocess_brillenpass_document(
+            document_id, force=force, parser_override=parser_override,
+        )
+        if result.get("ok"):
+            brillenpass_job_set(
+                document_id,
+                status="done",
+                message=result.get("message", "Review eingereiht"),
+                person_id=result.get("person_id"),
+            )
+            log.info("Brillenpass trigger #%s: %s", document_id, result.get("message"))
+        else:
+            err = result.get("error", "Unbekannter Fehler")
+            brillenpass_job_set(document_id, status="error", error=err, message=err)
+            log.error("Brillenpass trigger #%s: %s", document_id, err)
+    except Exception as e:
+        log.exception("Brillenpass trigger #%s failed", document_id)
+        brillenpass_job_set(document_id, status="error", error=str(e), message=str(e))
 
 
 def _validate_brillenpass_trigger(
@@ -124,8 +201,19 @@ def preflight_brillenpass_document(
     force: bool = False,
     parser_override: str = "",
 ) -> dict:
-    """Schnelle Checks vor async Vision (~1 Min). force wird ignoriert (nur für API-Signatur)."""
-    _ = force
+    """Schnelle Checks vor async Vision (~1 Min)."""
+    if not force:
+        existing = _doc_in_pending_brillenpass(document_id)
+        if existing:
+            name = existing.get("anzeigename") or existing.get("person_id") or "?"
+            return {
+                "ok": False,
+                "error": (
+                    f"Dok #{document_id} ist bereits in der Review-Liste ({name}) — "
+                    f"oben prüfen/freigeben, oder «Erneut» ankreuzen zum Neuverarbeiten"
+                ),
+                "already_pending": True,
+            }
     v = _validate_brillenpass_trigger(document_id, parser_override=parser_override)
     if not v.get("ok"):
         return v
