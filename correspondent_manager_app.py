@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.40"  # 2.40: brillenpass_parser SyntaxFix — Service startet wieder
-UI_VERSION = "2.78"
+__version__ = "2.41"  # 2.41: needs_add Schleife — IndentationError behoben
+UI_VERSION = "2.79"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body

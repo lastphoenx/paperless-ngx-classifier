@@ -434,14 +434,15 @@ def diagnose_brillenpass_extraction(
     """Wo klemmt's: Stufe 1 vs. Stufe 2 vs. Merge — Lücken, Konflikte, Confidence."""
     gaps: list[str] = []
     conflicts: list[str] = []
-    needs_add = any(
-        _plausible_reading_add(
-            ((merged or {}).get(dist) or {}).get(side) or {}).get("add"),
-            parser_data,
-        )
-        for dist in ("fern", "naehe")
-        for side in ("rechts", "links")
-    )
+    needs_add = False
+    for _dist in ("fern", "naehe"):
+        for _side in ("rechts", "links"):
+            _add = (((merged or {}).get(_dist) or {}).get(_side) or {}).get("add")
+            if _plausible_reading_add(_add, parser_data):
+                needs_add = True
+                break
+        if needs_add:
+            break
     for dist in ("fern", "naehe"):
         for side in ("rechts", "links"):
             eye = ((merged or {}).get(dist) or {}).get(side) or {}
