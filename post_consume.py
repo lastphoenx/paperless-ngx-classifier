@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.51"  # 12.51: TSV JPEG 300dpi, Text/Positional-Fallback
+POST_CONSUME_VERSION = "12.52"  # 12.52: Fix TSV-Text-Fallback (parser_names)
 import re
 import sys
 import json
@@ -1957,7 +1957,7 @@ def run_brillenpass_extraction_stages(
     tsv_meta: dict = {"enabled": BRILLENPASS_TESSERACT, "header_anchors": 0, "confidence": "keine_extraktion"}
     if BRILLENPASS_TESSERACT and pdf_path:
         log.info("Brillenpass Stufe 1a: Tesseract TSV (Dok #%s)", document_id)
-        tsv_data, _tsv_conf, tsv_meta = extract_brillenpass_from_image(pdf_path)
+        tsv_data, _tsv_conf, tsv_meta = extract_brillenpass_from_image(pdf_path, parser_names)
         tsv_meta["enabled"] = True
     elif not BRILLENPASS_TESSERACT:
         log.info("Brillenpass Stufe 1a: Tesseract deaktiviert (BRILLENPASS_TESSERACT=0)")
