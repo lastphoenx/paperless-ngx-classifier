@@ -812,6 +812,19 @@
       </div>
       <div id="bp-trigger-status" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
     </div>
+    <div class="card" style="margin-top:20px;padding:14px 16px">
+      <div class="card-title" style="font-size:13px;margin-bottom:8px">Legacy QR-Split</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        Mehrseiten-Scan an QR-Codes splitten (Regex <code>^[0-9]{6}_…$</code>) und Teile nach
+        <code>consume/</code> legen — volle Pipeline wie bei neuem Scan.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="number" id="bp-lsplit-id" placeholder="Dok-ID" min="1" style="max-width:120px;font-size:13px">
+        <button class="btn btn-secondary" onclick="triggerLegacySplit(true)">Vorschau</button>
+        <button class="btn btn-primary" onclick="triggerLegacySplit(false)">▶ Splitten → consume</button>
+      </div>
+      <div id="bp-lsplit-status" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
+    </div>
   </div>
 
 </main>
@@ -859,7 +872,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.44';
+const UI_VERSION = '2.45';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2177,7 +2190,7 @@ function renderCorrMap(eintraege) {
           ${(e.nicht_verwechseln_mit).map(t=>`<span class="badge" style="background:rgba(245,158,11,.12);color:#fbbf24">${t}</span>`).join('')}
         </div>` : ''}
         ${(e.brillenpass||{}).aktiv ? `<div style="margin-bottom:6px">
-          <span class="badge" style="background:rgba(16,185,129,.15);color:#34d399">👓 Brillenpass (${(e.brillenpass||{}).parser||'?'})</span>
+          <span class="badge" style="background:rgba(16,185,129,.15);color:#34d399">👓 Brillenpass (${((e.brillenpass||{}).parsers||[]).join('+') || (e.brillenpass||{}).parser || '?'})</span>
         </div>` : ''}
         <div style="margin-bottom:8px">
           <span style="color:var(--muted);font-size:11px">VARIANTEN: </span>
@@ -2408,11 +2421,14 @@ function toggleCorrEdit(idx, entry) {
           Brillenpass aktiv
         </label>
         <div class="field-group" style="margin-bottom:8px">
-          <label style="font-size:11px">Parser</label>
-          <select id="ce-bp-parser-${idx}" style="max-width:200px">
-            <option value="">— keiner —</option>
-            ${_bpParserOptionsHtml((entry.brillenpass||{}).parser)}
-          </select>
+          <label style="font-size:11px">Parser (mehrere möglich — Rechnung + Pass)</label>
+          <div class="tags-input" id="ce-bp-parsers-${idx}" data-tags='${JSON.stringify((entry.brillenpass||{}).parsers || ((entry.brillenpass||{}).parser ? [(entry.brillenpass||{}).parser] : []))}'>
+            ${((entry.brillenpass||{}).parsers || ((entry.brillenpass||{}).parser ? [(entry.brillenpass||{}).parser] : [])).map(v => tagChip(v, `ce-bp-parsers-${idx}`)).join('')}
+            <select onchange="addTagDirect('ce-bp-parsers-${idx}',this.value);this.value=''">
+              <option value="">+ Parser hinzufügen</option>
+              ${_bpParserOptionsHtml('')}
+            </select>
+          </div>
         </div>
         <label style="font-size:11px">Typische Begriffe (OCR-Hinweise, Enter)</label>
         <div class="tags-input" id="ce-bp-begriffe-${idx}" data-tags='${JSON.stringify((entry.brillenpass||{}).typische_begriffe||[])}'>
@@ -2662,7 +2678,8 @@ async function saveCorrEdit(idx, nameParam) {
     },
     brillenpass: {
       aktiv: document.getElementById(`ce-bp-aktiv-${idx}`)?.checked || false,
-      parser: document.getElementById(`ce-bp-parser-${idx}`)?.value || '',
+      parsers: getTagsFromContainer(`ce-bp-parsers-${idx}`),
+      parser: (getTagsFromContainer(`ce-bp-parsers-${idx}`)[0] || ''),
       typische_begriffe: getTagsFromContainer(`ce-bp-begriffe-${idx}`),
     },
   };
@@ -4754,7 +4771,8 @@ let _bpSelectedReview = null;
 let _bpParsers = [
   {id:'fielmann', label:'Fielmann Rechnung'},
   {id:'fielmann_pass', label:'Fielmann Brillenpass (Karte)'},
-  {id:'mcoptic_pass', label:'McOptic Brillenpass'},
+  {id:'mcoptic_pass', label:'McOptic Brillenpass (Karte)'},
+  {id:'mcoptic_rechnung', label:'McOptic Rechnung/Quittung'},
   {id:'augenarzt', label:'Augenarzt-Verordnung'},
   {id:'optik_meyer_moehlin', label:'Optik Meyer Möhlin'},
 ];
@@ -5090,7 +5108,7 @@ async function approveBrillenpassReview(index) {
   });
   const d = await r.json();
   if (!r.ok) { showToast(d.detail || 'Fehler', 'error'); return; }
-  showToast('Brillenpass freigegeben', 'success');
+  showToast(d.deduped ? 'Brillenpass zusammengeführt (gleiche Periode)' : 'Brillenpass freigegeben', 'success');
   await loadBrillenpassView();
 }
 
@@ -5129,6 +5147,34 @@ async function loadBrillenpassView() {
     if (_bpReview.length) selectBrillenpassReview(_bpReview[0].index);
   } catch (e) {
     showToast('Brillenpass laden fehlgeschlagen', 'error');
+  }
+}
+
+async function triggerLegacySplit(dryRun) {
+  const id = parseInt(document.getElementById('bp-lsplit-id')?.value || '', 10);
+  const status = document.getElementById('bp-lsplit-status');
+  if (!id) { showToast('Dokument-ID eingeben', 'error'); return; }
+  if (status) status.textContent = dryRun ? 'Analysiere…' : 'Splitte (kann pro Seite ~2s dauern)…';
+  try {
+    const r = await fetch(`${API_BASE}/legacy-split/trigger/${id}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dry_run: dryRun}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || r.statusText);
+    if (dryRun) {
+      const lines = (d.splits || []).map(s =>
+        `S.${s.from_page}–${s.to_page}: ${s.barcode}`).join(' · ');
+      if (status) status.textContent = `${d.pages} Seiten → ${(d.splits||[]).length} Teile: ${lines}`;
+      showToast('Split-Vorschau OK', 'success');
+    } else {
+      if (status) status.textContent = d.message || 'OK';
+      showToast(d.message || 'Split eingereiht', 'success');
+    }
+  } catch (e) {
+    if (status) status.textContent = String(e.message || e);
+    showToast('QR-Split: ' + (e.message || e), 'error');
   }
 }
 

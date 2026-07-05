@@ -294,7 +294,8 @@ def has_brillenpass_values(data: dict) -> bool:
 PARSER_LABELS: dict[str, str] = {
     "fielmann": "Fielmann Rechnung",
     "fielmann_pass": "Fielmann Brillenpass (Karte)",
-    "mcoptic_pass": "McOptic Brillenpass",
+    "mcoptic_pass": "McOptic Brillenpass (Karte)",
+    "mcoptic_rechnung": "McOptic Rechnung/Quittung",
     "augenarzt": "Augenarzt-Verordnung",
     "optik_meyer_moehlin": "Optik Meyer Möhlin",
 }
@@ -302,17 +303,120 @@ PARSER_LABELS: dict[str, str] = {
 PARSER_NAMES = list(PARSER_LABELS.keys())
 
 
-def corr_supports_brillenpass(corr_entry: dict | None) -> tuple[bool, str]:
-    """(aktiv, parser_name) aus correspondents.json brillenpass-Block."""
+def corr_brillenpass_parsers(corr_entry: dict | None) -> list[str]:
+    """Alle aktiven Parser aus correspondents.json (parsers[] oder legacy parser)."""
     if not corr_entry:
-        return False, ""
+        return []
     bp = corr_entry.get("brillenpass") or {}
-    if bp.get("aktiv"):
-        parser = (bp.get("parser") or "fielmann").lower()
-        if parser not in PARSER_NAMES:
-            parser = "fielmann"
-        return True, parser
+    if not bp.get("aktiv"):
+        return []
+    raw = bp.get("parsers") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not raw and bp.get("parser"):
+        raw = [bp.get("parser")]
+    out: list[str] = []
+    for p in raw:
+        name = str(p or "").strip().lower()
+        if name in PARSER_NAMES and name not in out:
+            out.append(name)
+    return out
+
+
+def corr_supports_brillenpass(corr_entry: dict | None) -> tuple[bool, str]:
+    """(aktiv, erster_parser) — Abwärtskompatibilität."""
+    parsers = corr_brillenpass_parsers(corr_entry)
+    if parsers:
+        return True, parsers[0]
     return False, ""
+
+
+def looks_like_brillenpass_any(
+    ocr_text: str, parser_names: list[str], dokumenttyp_visuell: str = "",
+) -> bool:
+    return any(
+        looks_like_brillenpass_document(ocr_text, p, dokumenttyp_visuell)
+        for p in parser_names
+    )
+
+
+def parse_brillenpass_with_parsers(ocr_text: str, parser_names: list[str]) -> dict | None:
+    """Mehrere Parser anwenden und Ergebnisse mergen (Rechnung + Pass)."""
+    merged: dict | None = None
+    used: list[str] = []
+    for name in parser_names:
+        data = parse_by_parser(name, ocr_text)
+        if not data or not has_brillenpass_values(data):
+            continue
+        merged = merge_brillenpass(merged, data) if merged else data
+        used.append(name)
+    if not merged:
+        return None
+    ext = merged.setdefault("extraktion", {})
+    ext["parsers_used"] = used
+    ext["quelle"] = "+".join(used) if used else ext.get("quelle", "")
+    return merged
+
+
+def brillenpass_dates_close(d1: str | None, d2: str | None, max_days: int = 21) -> bool:
+    """Gleiche Brillenpass-Periode (Rechnung + Pass wenige Tage auseinander)."""
+    if not d1 or not d2:
+        return False
+    try:
+        from datetime import date
+        a = date.fromisoformat(str(d1)[:10])
+        b = date.fromisoformat(str(d2)[:10])
+        return abs((a - b).days) <= max_days
+    except ValueError:
+        return False
+
+
+def find_brillenpass_period_duplicate(
+    versionen: list[dict],
+    gueltig_ab: str,
+    korrespondent: str,
+    *,
+    max_days: int = 21,
+) -> int | None:
+    """Index einer Version gleicher Periode — zum Ersetzen statt Duplikat."""
+    for i in range(len(versionen) - 1, -1, -1):
+        v = versionen[i]
+        if (v.get("korrespondent") or "").lower() != (korrespondent or "").lower():
+            continue
+        if brillenpass_dates_close(v.get("gueltig_ab"), gueltig_ab, max_days):
+            return i
+    return None
+
+
+def merge_brillenpass_version(existing: dict, incoming: dict) -> dict:
+    """Bestehende freigegebene Version mit neuem Vorschlag anreichern (Dedup)."""
+    out = dict(existing)
+    for key in ("auftrag", "rechnung", "gueltig_ab"):
+        if not out.get(key) and incoming.get(key):
+            out[key] = incoming[key]
+    for dist in ("fern", "naehe"):
+        out.setdefault(dist, {"rechts": None, "links": None})
+        inc_dist = incoming.get(dist) or {}
+        for side in ("rechts", "links"):
+            if not out[dist].get(side) and inc_dist.get(side):
+                out[dist][side] = inc_dist[side]
+            elif out[dist].get(side) and inc_dist.get(side):
+                out[dist][side] = _merge_eye(out[dist][side], inc_dist[side])
+    g_out = out.setdefault("glas", {})
+    g_inc = incoming.get("glas") or {}
+    for k in ("beschreibung", "index", "durchmesser", "beschichtungen"):
+        if not g_out.get(k) and g_inc.get(k):
+            g_out[k] = g_inc[k]
+    if incoming.get("document_id") and not out.get("document_id"):
+        out["document_id"] = incoming["document_id"]
+    ext = out.setdefault("extraktion", {})
+    inc_ext = incoming.get("extraktion") or {}
+    prev_src = ext.get("quelle", "")
+    new_src = inc_ext.get("quelle", "")
+    if new_src and new_src not in prev_src:
+        ext["quelle"] = f"{prev_src}+{new_src}" if prev_src else new_src
+    ext["dedup_merged"] = True
+    return out
 
 
 def build_version_id(gueltig_ab: str, korrespondent: str) -> str:
@@ -474,6 +578,50 @@ def parse_mcoptic_pass(ocr_text: str) -> dict:
     )
 
 
+_MCOPTIC_RECHNUNG_RL = re.compile(
+    r"(?:^|\n)\s*(R|L|Rechts|Links)\s*[:.]?\s*"
+    r"(?:Sph\.?\s*)?"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(?:Cyl\.?|Zyl\.?)\s*"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(?:A°?|Achse|Axis)\s*"
+    r"(\d+)"
+    r"(?:\s+(?:Add\.?|Addition)\s*([+\-]?\s*[\d.,]+))?",
+    re.IGNORECASE,
+)
+
+
+def parse_mcoptic_rechnung(ocr_text: str) -> dict:
+    """McOptic Quittung / Krankenkassenexemplar (Messungstabelle)."""
+    text = ocr_text or ""
+    fern = _fill_naehe_from_matches(text, _MCOPTIC_RECHNUNG_RL)
+
+    glas_desc = ""
+    for pat in [
+        r"Optische Sonnengläser\s+(.+?)(?:\n|Upgrade)",
+        r"Upgrade\s+(.+?)(?:\n|Verlaufend|Brillenschutz)",
+        r"Ralph\s+[\w\d\s\-]+(\d{2}-\d{2})",
+    ]:
+        gm = re.search(pat, text, re.IGNORECASE)
+        if gm:
+            glas_desc = re.sub(r"\s+", " ", gm.group(0).strip())[:500]
+            break
+
+    rechnung = ""
+    rm = re.search(r"Quittung\s*No:?\s*([\w\-]+)", text, re.IGNORECASE)
+    if rm:
+        rechnung = rm.group(1).strip()
+
+    return _bp_base(
+        "mcoptic_rechnung",
+        gueltig_ab=_parse_pass_date(text),
+        fern=fern,
+        naehe={"rechts": None, "links": None},
+        rechnung=rechnung,
+        glas={"beschreibung": glas_desc, "index": None, "durchmesser": None, "beschichtungen": []},
+    )
+
+
 def parse_augenarzt(ocr_text: str) -> dict:
     """Augenarzt-Verordnung (Rechts/Links mit Sph, Cyl, Achse, Add)."""
     text = ocr_text or ""
@@ -537,6 +685,7 @@ _PARSERS: dict[str, Any] = {
     "fielmann": parse_fielmann_brillenpass,
     "fielmann_pass": parse_fielmann_pass,
     "mcoptic_pass": parse_mcoptic_pass,
+    "mcoptic_rechnung": parse_mcoptic_rechnung,
     "augenarzt": parse_augenarzt,
     "optik_meyer_moehlin": parse_optik_meyer_moehlin,
 }
@@ -581,6 +730,19 @@ def _detect_mcoptic_pass(text: str) -> int:
         score += 2
     if _MCOPTIC_RL.search(text):
         score += 3
+    if re.search(r"Quittung|Krankenkassenexemplar", text, re.I):
+        score -= 2
+    return max(0, score)
+
+
+def _detect_mcoptic_rechnung(text: str) -> int:
+    score = 0
+    if re.search(r"Mc\s*Optic|McOptic", text, re.I):
+        score += 3
+    if re.search(r"Quittung|Krankenkassenexemplar|Messungsart", text, re.I):
+        score += 2
+    if _MCOPTIC_RECHNUNG_RL.search(text):
+        score += 3
     return score
 
 
@@ -614,6 +776,7 @@ _DETECTORS: dict[str, Any] = {
     "fielmann": _detect_fielmann,
     "fielmann_pass": _detect_fielmann_pass,
     "mcoptic_pass": _detect_mcoptic_pass,
+    "mcoptic_rechnung": _detect_mcoptic_rechnung,
     "augenarzt": _detect_augenarzt,
     "optik_meyer_moehlin": _detect_optik_meyer,
 }
