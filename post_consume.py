@@ -1340,42 +1340,25 @@ def pdf_to_base64_image(pdf_path: str) -> Optional[str]:
 
 
 def find_pdf(doc_id: str) -> Optional[str]:
-    """PDF-Pfad ermitteln.
-    Paperless speichert intern immer als 7-stellige ID flach in originals/.
-    Kein glob — deterministisch, O(1).
-    """
-    # 1. DOCUMENT_SOURCE_PATH (direkt von Paperless übergeben — zuverlässigste Quelle)
-    if DOCUMENT_SOURCE_PATH and Path(DOCUMENT_SOURCE_PATH).exists():
-        return DOCUMENT_SOURCE_PATH
-
+    """Legacy: flache ID-Pfade unter MEDIA_ROOT (Fallback)."""
     doc_id_padded = str(doc_id).zfill(7)
-
-    # 2. Interner Originals-Pfad (flach, immer so bei Paperless)
     originals = Path(MEDIA_ROOT) / "documents" / "originals" / f"{doc_id_padded}.pdf"
     if originals.exists():
         return str(originals)
-
-    # 3. Archiv-Kopie (falls Paperless archiviert hat)
     archive = Path(MEDIA_ROOT) / "documents" / "archive" / f"{doc_id_padded}.pdf"
     if archive.exists():
         return str(archive)
-
-    log.warning("PDF für Dok #%s nicht gefunden (gesucht: %s)", doc_id, originals)
     return None
 
 
-def resolve_document_pdf(document_id: int | str) -> Optional[str]:
-    """PDF für Vision: Dateisystem (Host oder Container) oder Paperless-API-Download."""
-    path = find_pdf(str(document_id))
-    if path:
-        return path
+def _download_pdf_via_api(document_id: int) -> Optional[str]:
+    """PDF von Paperless-API laden — funktioniert unabhängig vom Dateisystem-Pfad."""
     if not PAPERLESS_TOKEN:
-        log.warning("PDF für Dok #%s: weder Datei noch Token für API-Download", document_id)
+        log.warning("PDF für Dok #%s: kein PAPERLESS_TOKEN für API-Download", document_id)
         return None
     try:
-        did = int(document_id)
         r = requests.get(
-            f"{PAPERLESS_URL.rstrip('/')}/api/documents/{did}/download/",
+            f"{PAPERLESS_URL.rstrip('/')}/api/documents/{document_id}/download/",
             headers={"Authorization": f"Token {PAPERLESS_TOKEN}"},
             timeout=120,
         )
@@ -1383,11 +1366,88 @@ def resolve_document_pdf(document_id: int | str) -> Optional[str]:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(r.content)
             tmp_path = tmp.name
-        log.info("PDF für Dok #%s via API geladen (%d bytes)", did, len(r.content))
+        log.info("PDF für Dok #%s via API geladen (%d bytes)", document_id, len(r.content))
         return tmp_path
     except Exception as e:
         log.warning("PDF API-Download für Dok #%s fehlgeschlagen: %s", document_id, e)
         return None
+
+
+def _pdf_path_from_paperless_meta(document_id: int) -> Optional[str]:
+    """Dateisystem: Speicherpfad + Dateiname aus Paperless-API (wie in der UI)."""
+    try:
+        doc = paperless_get(f"/documents/{document_id}/")
+    except Exception as e:
+        log.warning("Dok #%s: API-Metadaten für PDF-Pfad: %s", document_id, e)
+        return None
+
+    media = Path(MEDIA_ROOT) / "documents" / "originals"
+    fn = (doc.get("original_file_name") or "").strip()
+    if not fn:
+        title = (doc.get("title") or "").strip()
+        if title:
+            fn = title if title.lower().endswith(".pdf") else f"{title}.pdf"
+    archive_fn = (doc.get("archive_filename") or "").strip()
+    sp_subpath = ""
+    sp_id = doc.get("storage_path")
+    if sp_id:
+        try:
+            sp = paperless_get(f"/storage_paths/{sp_id}/")
+            sp_subpath = (sp.get("path") or sp.get("name") or "").strip().strip("/\\")
+        except Exception as e:
+            log.warning("Dok #%s: storage_path #%s: %s", document_id, sp_id, e)
+
+    candidates: list[Path] = []
+    padded = f"{document_id:07d}.pdf"
+    for name in (fn, archive_fn):
+        if not name:
+            continue
+        if sp_subpath:
+            candidates.append(media / sp_subpath / name)
+        candidates.append(media / name)
+    if sp_subpath:
+        candidates.append(media / sp_subpath / padded)
+    candidates.append(media / padded)
+    candidates.append(media / f"{document_id}.pdf")
+
+    seen: set[str] = set()
+    for c in candidates:
+        key = str(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        if c.is_file():
+            log.info("PDF für Dok #%s auf Dateisystem: %s", document_id, c)
+            return str(c)
+
+    if fn:
+        base = os.path.basename(fn)
+        try:
+            for p in media.rglob(base):
+                if p.is_file():
+                    log.info("PDF für Dok #%s via Suche (%s): %s", document_id, base, p)
+                    return str(p)
+        except OSError as e:
+            log.warning("Dok #%s: rglob(%s): %s", document_id, base, e)
+    return None
+
+
+def resolve_document_pdf(document_id: int | str) -> Optional[str]:
+    """PDF für Vision: Pipeline-Pfad → API-Metadaten → Legacy-ID → API-Download."""
+    did = int(document_id)
+
+    if DOCUMENT_SOURCE_PATH and Path(DOCUMENT_SOURCE_PATH).exists():
+        return DOCUMENT_SOURCE_PATH
+
+    path = _pdf_path_from_paperless_meta(did)
+    if path:
+        return path
+
+    path = find_pdf(str(did))
+    if path:
+        return path
+
+    return _download_pdf_via_api(did)
 
 
 # ─── Manifest laden ───────────────────────────────────────────────────────────
@@ -1795,6 +1855,12 @@ def vision_brillenpass_analyze(
     image_b64: Optional[str], ocr_text: str, parser_hint: dict | None = None,
 ) -> dict:
     """Stufe 2: gezielter Vision-Call nur für Brillenpass-Kacheln (nicht ganzes Dokument)."""
+    if not image_b64:
+        log.warning(
+            "Brillenpass Stufe 2 übersprungen — kein PDF-Bild "
+            "(Vision ohne Bild erzeugt erfundene Werte)"
+        )
+        return {}
     hint = ""
     if parser_hint:
         hint = (
@@ -1817,11 +1883,10 @@ def vision_brillenpass_analyze(
         f"{hint}"
         f"OCR-Text (Stufe 1):\n{(ocr_text or '')[:2000]}"
     )
-    if image_b64:
-        messages = [{"role": "user", "content": user_content, "images": [image_b64]}]
-    else:
-        messages = [{"role": "user", "content": user_content}]
+    messages = [{"role": "user", "content": user_content, "images": [image_b64]}]
     try:
+        from brillenpass_parser import normalize_vision_brillenpass  # noqa: WPS433
+
         resp = ollama_post(
             "api/chat",
             {
@@ -1836,7 +1901,9 @@ def vision_brillenpass_analyze(
         )
         raw = resp.get("message", {}).get("content", "")
         data = extract_json_from_response(raw)
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        return normalize_vision_brillenpass(data, parser_hint=parser_hint)
     except Exception as e:
         log.warning("Vision Brillenpass fehlgeschlagen: %s", e)
         return {}
@@ -1975,7 +2042,11 @@ def maybe_queue_brillenpass(
     })
 
     if not image_b64:
-        log.warning("Brillenpass Stufe 2: kein PDF-Bild — Vision nur mit OCR-Text (Dok #%s)", document_id)
+        pdf_path = resolve_document_pdf(document_id)
+        if pdf_path:
+            image_b64 = pdf_to_base64_image(pdf_path)
+    if not image_b64:
+        log.warning("Brillenpass Stufe 2: kein PDF-Bild — Vision übersprungen (Dok #%s)", document_id)
     else:
         log.info("Brillenpass Stufe 2: Vision-Verifikation (%s) Dok #%s", MODEL_VISION, document_id)
     vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
@@ -3576,11 +3647,11 @@ def main():
         log.info("OCR-Text gekürzt: %d → 3000 Zeichen", len(ocr_text_full))
 
     # ── PDF finden ────────────────────────────────────────────────────────────
-    pdf_path = find_pdf(DOCUMENT_ID)
+    pdf_path = resolve_document_pdf(DOCUMENT_ID) if DOCUMENT_ID else None
     if pdf_path:
         log.info("PDF: %s", pdf_path)
     else:
-        log.warning("PDF nicht gefunden: %s", DOCUMENT_FILE_NAME)
+        log.warning("PDF nicht gefunden: %s (Dok #%s)", DOCUMENT_FILE_NAME, DOCUMENT_ID)
 
     # ── QR-Meta aus pre_consume_qr.py lesen ──────────────────────────────────
     qr_meta = read_qr_meta(DOCUMENT_SOURCE_PATH)

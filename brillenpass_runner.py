@@ -80,7 +80,7 @@ def reprocess_brillenpass_document(
     image_b64 = pc.pdf_to_base64_image(pdf_path) if pdf_path else None
     if not image_b64:
         log.warning(
-            "Brillenpass Trigger #%s: kein PDF-Bild (MEDIA_ROOT=%s) — Vision nur OCR",
+            "Brillenpass Trigger #%s: kein PDF-Bild (MEDIA_ROOT=%s) — Stufe 2 übersprungen",
             document_id, pc.MEDIA_ROOT,
         )
 
