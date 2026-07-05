@@ -1952,7 +1952,11 @@ def api_brillenpass_trigger(
     body: dict = Body(default={}),
 ):
     """Bestehendes Dokument nachträglich durch Brillenpass-Pipeline (async, Vision ~1–2 Min)."""
-    from brillenpass_runner import preflight_brillenpass_document, reprocess_brillenpass_document
+    from brillenpass_runner import (
+        brillenpass_job_run,
+        brillenpass_job_set,
+        preflight_brillenpass_document,
+    )
 
     force = bool(body.get("force", False))
     parser_override = (body.get("parser") or "").strip()
@@ -1968,32 +1972,43 @@ def api_brillenpass_trigger(
     if not pre.get("ok"):
         raise HTTPException(400, pre.get("error", "Brillenpass-Trigger fehlgeschlagen"))
 
-    def _run_brillenpass_trigger() -> None:
-        try:
-            result = reprocess_brillenpass_document(
-                doc_id, force=force, parser_override=parser_override,
-            )
-            if result.get("ok"):
-                log.info("Brillenpass trigger #%s: %s", doc_id, result.get("message"))
-            else:
-                log.error("Brillenpass trigger #%s: %s", doc_id, result.get("error"))
-        except Exception:
-            log.exception("Brillenpass trigger #%s failed", doc_id)
-
-    background_tasks.add_task(_run_brillenpass_trigger)
-
     img = "mit Vision" if pre.get("has_image") else "nur Parser (kein PDF-Bild)"
     person = pre.get("anzeigename") or pre.get("person_id") or "?"
+    start_msg = f"Brillenpass für {person} ({img}) — Vision ~1–2 Min…"
+    brillenpass_job_set(doc_id, status="running", message=start_msg)
+    background_tasks.add_task(
+        brillenpass_job_run, doc_id, force=force, parser_override=parser_override,
+    )
+
     return {
         "ok": True,
         "async": True,
         "document_id": doc_id,
-        "message": (
-            f"Brillenpass für {person} gestartet ({img}) — "
-            f"~1–2 Min warten, dann Review-Liste aktualisieren"
-        ),
+        "message": start_msg,
         "person_id": pre.get("person_id"),
         "person_match": pre.get("person_match"),
+    }
+
+
+@app.get("/api/brillenpass/trigger-status/{doc_id}")
+def api_brillenpass_trigger_status(doc_id: int):
+    """Status eines laufenden/kürzlich beendeten Brillenpass-Triggers (UI-Polling)."""
+    from brillenpass_runner import _doc_in_pending_brillenpass, brillenpass_job_get
+
+    job = brillenpass_job_get(doc_id)
+    if job:
+        return job
+    pending = _doc_in_pending_brillenpass(doc_id)
+    if pending:
+        return {
+            "status": "done",
+            "document_id": doc_id,
+            "message": f"In Review-Liste ({pending.get('anzeigename', '?')})",
+        }
+    return {
+        "status": "unknown",
+        "document_id": doc_id,
+        "message": "Kein aktueller Lauf — Review-Liste oder Log prüfen",
     }
 
 

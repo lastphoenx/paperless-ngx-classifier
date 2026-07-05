@@ -5339,6 +5339,34 @@ async function loadBrillenpassView() {
   }
 }
 
+async function _pollBrillenpassTrigger(docId, statusEl) {
+  for (let n = 0; n < 50; n++) {
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      const j = await _fetchJson(`${API_BASE}/brillenpass/trigger-status/${docId}`);
+      if (j.status === 'running') {
+        if (statusEl) statusEl.textContent = j.message || `Läuft… (${n * 3}s)`;
+        continue;
+      }
+      if (j.status === 'done') {
+        if (statusEl) statusEl.textContent = j.message || 'Fertig — siehe Review oben';
+        showToast(j.message || 'In Review-Liste', 'success');
+        await loadBrillenpassView();
+        await loadBrillenpassBadge();
+        return;
+      }
+      if (j.status === 'error') {
+        const msg = j.error || j.message || 'Fehler';
+        if (statusEl) statusEl.textContent = msg;
+        showToast('Brillenpass: ' + msg, 'error');
+        return;
+      }
+    } catch (e) { /* transient */ }
+  }
+  if (statusEl) statusEl.textContent = 'Nach 2,5 Min kein Ergebnis — Log auf CT121 prüfen';
+  showToast('Brillenpass: Timeout — journalctl -u correspondent-manager', 'error');
+}
+
 async function triggerBrillenpass() {
   const id = parseInt(document.getElementById('bp-trigger-id')?.value || '', 10);
   const force = document.getElementById('bp-trigger-force')?.checked || false;
@@ -5356,12 +5384,8 @@ async function triggerBrillenpass() {
       body: JSON.stringify({force, parser: parser || undefined}),
     });
     if (d.async) {
-      showToast(d.message || 'Pipeline gestartet', 'success');
-      if (status) status.textContent = d.message || 'Läuft im Hintergrund…';
-      [45000, 90000, 150000].forEach(ms => setTimeout(() => {
-        loadBrillenpassBadge();
-        loadBrillenpassView();
-      }, ms));
+      if (status) status.textContent = d.message || 'Vision läuft…';
+      _pollBrillenpassTrigger(id, status);
       return;
     }
     showToast(d.message || 'Brillenpass eingereiht', 'success');
