@@ -4832,10 +4832,24 @@ function _bpParserOptionsHtml(selected) {
   ).join('');
 }
 
+async function _fetchJson(url, options) {
+  const r = await fetch(url, options);
+  const text = await r.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch {
+      const hint = text.trim().slice(0, 160) || r.statusText;
+      throw new Error(r.ok ? 'Ungültige Server-Antwort (kein JSON)' : `HTTP ${r.status}: ${hint}`);
+    }
+  }
+  if (!r.ok) throw new Error(data.detail || data.error || data.message || `HTTP ${r.status}`);
+  return data;
+}
+
 async function _loadBpParsers() {
   try {
-    const r = await fetch(`${API_BASE}/brillenpass/parsers`);
-    const d = await r.json();
+    const d = await _fetchJson(`${API_BASE}/brillenpass/parsers`);
     if (d.parsers && d.parsers.length) _bpParsers = d.parsers;
     if (d.vendors && d.vendors.length) _bpVendors = d.vendors;
   } catch (e) {}
@@ -4878,12 +4892,10 @@ async function parseBrillenpassManual() {
   if (!docId) { showToast('Dok-ID für Parsen eingeben', 'error'); return; }
   if (status) status.textContent = 'Parse…';
   try {
-    const r = await fetch(`${API_BASE}/brillenpass/parse`, {
+    const d = await _fetchJson(`${API_BASE}/brillenpass/parse`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({document_id: docId, parser: parser || undefined}),
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || d.message || r.statusText);
     if (!d.ok) throw new Error(d.message || 'Keine Werte erkannt');
     if (d.parser) {
       const ps = document.getElementById('bp-man-parser');
@@ -4926,12 +4938,10 @@ async function submitBrillenpassManual() {
   };
   if (status) status.textContent = 'Speichere…';
   try {
-    const r = await fetch(`${API_BASE}/brillenpass/manual`, {
+    const d = await _fetchJson(`${API_BASE}/brillenpass/manual`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify(body),
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || r.statusText);
     showToast(d.message || 'Zur Review eingereiht', 'success');
     if (status) status.textContent = d.message || 'OK';
     await loadBrillenpassView();
@@ -4943,8 +4953,7 @@ async function submitBrillenpassManual() {
 
 async function loadBrillenpassBadge() {
   try {
-    const r = await fetch(`${API_BASE}/brillenpass-review`);
-    const d = await r.json();
+    const d = await _fetchJson(`${API_BASE}/brillenpass-review`);
     const el = document.getElementById('brillenpass-count');
     if (el) el.textContent = d.count || 0;
   } catch (e) {}
@@ -5276,26 +5285,31 @@ function _bpCollectVorschlag(entry) {
 async function approveBrillenpassReview(index) {
   if (!_bpSelectedReview) return;
   const vorschlag = _bpCollectVorschlag(_bpSelectedReview);
-  const r = await fetch(`${API_BASE}/brillenpass-review/${index}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ action: 'approve', vorschlag }),
-  });
-  const d = await r.json();
-  if (!r.ok) { showToast(d.detail || 'Fehler', 'error'); return; }
-  showToast(d.deduped ? 'Brillenpass zusammengeführt (≤21 Tage, gleicher Optiker)' : 'Brillenpass-Version gespeichert', 'success');
-  await loadBrillenpassView();
+  try {
+    const d = await _fetchJson(`${API_BASE}/brillenpass-review/${index}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ action: 'approve', vorschlag }),
+    });
+    showToast(d.deduped ? 'Brillenpass zusammengeführt (≤21 Tage, gleicher Optiker)' : 'Brillenpass-Version gespeichert', 'success');
+    await loadBrillenpassView();
+  } catch (e) {
+    showToast('Freigabe: ' + (e.message || e), 'error');
+  }
 }
 
 async function rejectBrillenpassReview(index) {
-  const r = await fetch(`${API_BASE}/brillenpass-review/${index}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ action: 'reject' }),
-  });
-  if (!r.ok) { showToast('Ablehnen fehlgeschlagen', 'error'); return; }
-  showToast('Abgelehnt', 'success');
-  await loadBrillenpassView();
+  try {
+    await _fetchJson(`${API_BASE}/brillenpass-review/${index}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ action: 'reject' }),
+    });
+    showToast('Abgelehnt', 'success');
+    await loadBrillenpassView();
+  } catch (e) {
+    showToast('Ablehnen: ' + (e.message || e), 'error');
+  }
 }
 
 async function loadBrillenpassView() {
@@ -5310,8 +5324,8 @@ async function loadBrillenpassView() {
       ).join('');
     }
     const [ov, rv] = await Promise.all([
-      fetch(`${API_BASE}/brillenpass`).then(r => r.json()),
-      fetch(`${API_BASE}/brillenpass-review`).then(r => r.json()),
+      _fetchJson(`${API_BASE}/brillenpass`),
+      _fetchJson(`${API_BASE}/brillenpass-review`),
     ]);
     _bpOverview = ov.eintraege || [];
     _bpReview = rv.entries || [];
@@ -5321,20 +5335,43 @@ async function loadBrillenpassView() {
     _bpRenderReviewList();
     if (_bpReview.length) selectBrillenpassReview(_bpReview[0].index);
   } catch (e) {
-    showToast('Brillenpass laden fehlgeschlagen', 'error');
+    showToast('Brillenpass laden fehlgeschlagen: ' + (e.message || e), 'error');
   }
 }
 
-async function _fetchJson(url, options) {
-  const r = await fetch(url, options);
-  const text = await r.text();
-  let data = {};
-  if (text) {
-    try { data = JSON.parse(text); }
-    catch { throw new Error(r.ok ? 'Ungültige Server-Antwort (kein JSON)' : (text.slice(0, 160) || r.statusText)); }
+async function triggerBrillenpass() {
+  const id = parseInt(document.getElementById('bp-trigger-id')?.value || '', 10);
+  const force = document.getElementById('bp-trigger-force')?.checked || false;
+  const status = document.getElementById('bp-trigger-status');
+  if (!id) {
+    showToast('Dokument-ID eingeben', 'error');
+    return;
   }
-  if (!r.ok) throw new Error(data.detail || data.error || data.message || r.statusText);
-  return data;
+  if (status) status.textContent = 'Starte Pipeline…';
+  try {
+    const parser = document.getElementById('bp-trigger-parser')?.value || '';
+    const d = await _fetchJson(`${API_BASE}/brillenpass/trigger/${id}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({force, parser: parser || undefined}),
+    });
+    if (d.async) {
+      showToast(d.message || 'Pipeline gestartet', 'success');
+      if (status) status.textContent = d.message || 'Läuft im Hintergrund…';
+      [45000, 90000, 150000].forEach(ms => setTimeout(() => {
+        loadBrillenpassBadge();
+        loadBrillenpassView();
+      }, ms));
+      return;
+    }
+    showToast(d.message || 'Brillenpass eingereiht', 'success');
+    if (status) status.textContent = d.message || 'OK';
+    await loadBrillenpassView();
+    await loadBrillenpassBadge();
+  } catch (e) {
+    if (status) status.textContent = String(e.message || e);
+    showToast('Brillenpass: ' + (e.message || e), 'error');
+  }
 }
 
 async function triggerLegacySplit(dryRun) {
@@ -5374,34 +5411,6 @@ async function triggerLegacySplit(dryRun) {
   } catch (e) {
     if (status) status.textContent = String(e.message || e);
     showToast('QR-Split: ' + (e.message || e), 'error');
-  }
-}
-
-async function triggerBrillenpass() {
-  const id = parseInt(document.getElementById('bp-trigger-id')?.value || '', 10);
-  const force = document.getElementById('bp-trigger-force')?.checked || false;
-  const status = document.getElementById('bp-trigger-status');
-  if (!id) {
-    showToast('Dokument-ID eingeben', 'error');
-    return;
-  }
-  if (status) status.textContent = 'Verarbeite… (Vision kann ~1 Min dauern)';
-  try {
-    const parser = document.getElementById('bp-trigger-parser')?.value || '';
-    const r = await fetch(`${API_BASE}/brillenpass/trigger/${id}`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({force, parser: parser || undefined}),
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || d.error || r.statusText);
-    showToast(d.message || 'Brillenpass eingereiht', 'success');
-    if (status) status.textContent = d.message || 'OK';
-    await loadBrillenpassView();
-    await loadBrillenpassBadge();
-  } catch (e) {
-    if (status) status.textContent = String(e.message || e);
-    showToast('Brillenpass: ' + (e.message || e), 'error');
   }
 }
 

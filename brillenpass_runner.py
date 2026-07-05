@@ -12,15 +12,14 @@ from pathlib import Path
 log = logging.getLogger("brillenpass_runner")
 
 
-def reprocess_brillenpass_document(
+def _validate_brillenpass_trigger(
     document_id: int,
     *,
-    force: bool = False,
     parser_override: str = "",
 ) -> dict:
     """
-    Bestehendes Dokument durch Brillenpass-Parser + Vision schicken.
-    Returns: {ok, message, document_id, person_id?, ...}
+    Schnelle Validierung + Kontext für Pipeline (ohne Vision/Merge).
+    Returns {ok: True, ...ctx} oder {ok: False, error}.
     """
     script_dir = Path(__file__).resolve().parent
     if str(script_dir) not in sys.path:
@@ -103,6 +102,58 @@ def reprocess_brillenpass_document(
     person_id = pc._resolve_person_id(direct_name)
     anzeigename = pc._resolve_person_anzeigename(person_id) or direct_name
 
+    return {
+        "ok": True,
+        "document_id": document_id,
+        "doc": doc,
+        "ocr_text": ocr_text,
+        "corr_entry": corr_entry,
+        "parser_names": parser_names,
+        "person_id": person_id,
+        "anzeigename": anzeigename,
+        "person_match": direct_reason,
+        "image_b64": image_b64,
+        "vision_meta": vision_meta,
+        "dt_vis": dt_vis,
+    }
+
+
+def preflight_brillenpass_document(
+    document_id: int,
+    *,
+    force: bool = False,
+    parser_override: str = "",
+) -> dict:
+    """Schnelle Checks vor async Vision (~1 Min). force wird ignoriert (nur für API-Signatur)."""
+    _ = force
+    v = _validate_brillenpass_trigger(document_id, parser_override=parser_override)
+    if not v.get("ok"):
+        return v
+    return {
+        "ok": True,
+        "document_id": document_id,
+        "person_id": v["person_id"],
+        "anzeigename": v["anzeigename"],
+        "person_match": v["person_match"],
+        "has_image": bool(v.get("image_b64")),
+    }
+
+
+def _run_brillenpass_pipeline(ctx: dict, *, force: bool = False) -> dict:
+    import post_consume as pc  # noqa: WPS433
+
+    document_id = ctx["document_id"]
+    doc = ctx["doc"]
+    ocr_text = ctx["ocr_text"]
+    corr_entry = ctx["corr_entry"]
+    parser_names = ctx["parser_names"]
+    person_id = ctx["person_id"]
+    anzeigename = ctx["anzeigename"]
+    direct_reason = ctx["person_match"]
+    image_b64 = ctx.get("image_b64")
+    dt_vis = ctx["dt_vis"]
+    vision_meta = ctx["vision_meta"]
+
     parser_data = pc.parse_brillenpass_with_parsers(
         ocr_text, parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
     )
@@ -177,6 +228,22 @@ def reprocess_brillenpass_document(
         "parser": parser_names,
         "person_match": direct_reason,
     }
+
+
+def reprocess_brillenpass_document(
+    document_id: int,
+    *,
+    force: bool = False,
+    parser_override: str = "",
+) -> dict:
+    """
+    Bestehendes Dokument durch Brillenpass-Parser + Vision schicken.
+    Returns: {ok, message, document_id, person_id?, ...}
+    """
+    v = _validate_brillenpass_trigger(document_id, parser_override=parser_override)
+    if not v.get("ok"):
+        return v
+    return _run_brillenpass_pipeline(v, force=force)
 
 
 def _remove_pending_brillenpass(document_id: int, path: Path) -> None:
