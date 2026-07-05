@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.38"  # 2.38: BG-Executor + UI-Cache — GET / während Vision
-UI_VERSION = "2.76"
+__version__ = "2.39"  # 2.39: GET / ohne Auth-Middleware, Session in _AUTH_EXECUTOR
+UI_VERSION = "2.77"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -122,11 +122,71 @@ app = FastAPI(title="paper.manager", version="2.0.0")
 
 # Lange Jobs (Brillenpass Vision ~120s) — eigener Pool, nicht Starlette-Default
 _BG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pm-bg")
+# Session-Prüfung — eigener Pool (nicht asyncio.to_thread / Default-Pool)
+_AUTH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pm-auth")
 
 # Session-Cache — reduziert Paperless-Profile-Calls bei init()-API-Burst
 _SESSION_CACHE: dict[str, tuple[bool, float]] = {}
 _SESSION_CACHE_TTL = 30.0
 _session_cache_lock = threading.Lock()
+
+
+def _validate_paperless_session(
+    session_cookie: str,
+    csrf: str,
+    paperless_base: str,
+    paperless_internal: str,
+) -> bool:
+    """Paperless-Session prüfen — nur in _AUTH_EXECUTOR aufrufen."""
+    if not session_cookie:
+        return False
+    cache_key = f"{session_cookie}:{csrf}"
+    now = time.monotonic()
+    with _session_cache_lock:
+        cached = _SESSION_CACHE.get(cache_key)
+        if cached and cached[1] > now:
+            return cached[0]
+    cookie_hdr = f"sessionid={session_cookie}"
+    if csrf:
+        cookie_hdr += f"; csrftoken={csrf}"
+    headers = {"Cookie": cookie_hdr}
+    valid = False
+    for base in (paperless_base, paperless_internal):
+        if not base:
+            continue
+        try:
+            r = requests.get(
+                f"{base.rstrip('/')}/api/profile/",
+                headers=headers,
+                timeout=(2, 3),
+            )
+            if r.status_code == 200:
+                valid = True
+                break
+        except Exception:
+            continue
+    with _session_cache_lock:
+        _SESSION_CACHE[cache_key] = (valid, time.monotonic() + _SESSION_CACHE_TTL)
+    return valid
+
+
+async def _session_valid_for_request(request: Request, paperless_internal: str) -> bool:
+    session_cookie = request.cookies.get("sessionid")
+    if not session_cookie:
+        return False
+    csrf = request.cookies.get("csrftoken") or ""
+    paperless_base = _effective_paperless_url(request)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _AUTH_EXECUTOR,
+        functools.partial(
+            _validate_paperless_session,
+            session_cookie,
+            csrf,
+            paperless_base,
+            paperless_internal,
+        ),
+    )
 
 
 def _effective_paperless_url(request: Request | None = None) -> str:
@@ -186,45 +246,9 @@ async def require_paperless_session(request: Request, call_next):
     paperless_internal = os.environ.get("PAPERLESS_INTERNAL_URL",
                          os.environ.get("PAPERLESS_URL", "http://localhost:8000"))
 
-    # Health ohne Auth — Service-Check auch wenn Paperless/Ollama hängt
-    if path == "/health":
+    # Health + HTML-Shell ohne Auth — APIs bleiben geschützt
+    if path == "/health" or path in ("/", ""):
         return await call_next(request)
-
-    def _session_valid() -> bool:
-        session_cookie = request.cookies.get("sessionid")
-        if not session_cookie:
-            return False
-        csrf = request.cookies.get("csrftoken") or ""
-        cache_key = f"{session_cookie}:{csrf}"
-        now = time.monotonic()
-        with _session_cache_lock:
-            cached = _SESSION_CACHE.get(cache_key)
-            if cached and cached[1] > now:
-                return cached[0]
-        import urllib.request as _ur
-        # Gleiche Logik wie Login-Redirect: IP → :8000 auf Host, Domain → gleicher Host
-        paperless_base = _effective_paperless_url(request)
-        cookie_hdr = f"sessionid={session_cookie}"
-        if csrf:
-            cookie_hdr += f"; csrftoken={csrf}"
-        valid = False
-        for base in (paperless_base, paperless_internal):
-            if not base:
-                continue
-            try:
-                req = _ur.Request(
-                    f"{base.rstrip('/')}/api/profile/",
-                    headers={"Cookie": cookie_hdr},
-                )
-                with _ur.urlopen(req, timeout=3) as r:
-                    if r.status == 200:
-                        valid = True
-                        break
-            except Exception:
-                continue
-        with _session_cache_lock:
-            _SESSION_CACHE[cache_key] = (valid, now + _SESSION_CACHE_TTL)
-        return valid
 
     # Proxy-Endpoints: kein Auth nötig — Backend holt Daten selbst mit Token
     if path.startswith("/api/proxy/"):
@@ -239,13 +263,13 @@ async def require_paperless_session(request: Request, call_next):
             )
             if token == _INTERNAL_TOKEN:
                 return await call_next(request)
-        if await asyncio.to_thread(_session_valid):
+        if await _session_valid_for_request(request, paperless_internal):
             return await call_next(request)
         from fastapi.responses import JSONResponse as _JR
         return _JR(status_code=401, content={"detail": "Nicht authentifiziert"})
 
-    # Browser-Requests: kein Cookie → Login-Redirect
-    if await asyncio.to_thread(_session_valid):
+    # Browser-Requests (z. B. /corr-manager/): Session oder Login-Redirect
+    if await _session_valid_for_request(request, paperless_internal):
         return await call_next(request)
 
     host = request.headers.get("host", "localhost:8100")

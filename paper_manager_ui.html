@@ -889,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.76';
+const UI_VERSION = '2.77';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -989,6 +989,14 @@ window.addEventListener('popstate', () => {
 document.addEventListener('DOMContentLoaded', () => { init(); });
 
 async function init() {
+  // Bei abgelaufener Session: Login-Redirect (GET / liefert HTML ohne Auth-Check)
+  const _checkAuth = (r) => {
+    if (r.status === 401) {
+      window.location.href = `${effectivePaperlessBase()}/accounts/login/?next=${encodeURIComponent(window.location.href)}`;
+      throw new Error('auth');
+    }
+    return r;
+  };
   // Sidebar Paperless-Link — request-aware via /api/config
   fetch(`${API_BASE}/config`).then(r=>r.json()).then(cfg => {
     window.PAPERLESS_URL_CONFIG = cfg.paperless_url_config || '';
@@ -996,7 +1004,7 @@ async function init() {
   }).catch(()=>{});
   // Config zuerst laden — pending_mode direkt in DOM schreiben
   try {
-    const cfg = await (await fetch(`${API_BASE}/config`)).json();
+    const cfg = await _checkAuth(await fetch(`${API_BASE}/config`)).json();
     window.PAPERLESS_URL_CONFIG = cfg.paperless_url_config || '';
     applyPaperlessLinks(cfg.paperless_url || effectivePaperlessBase());
     if (cfg.versions) {
@@ -1020,7 +1028,7 @@ async function init() {
         if (sub) sub.textContent = _qsModeActive ? 'Alle Dokumente → Review' : 'LLM-Fehler → Review';
       }
     }
-  } catch(e) { applyPaperlessLinks(effectivePaperlessBase()); }
+  } catch(e) { if (e.message !== 'auth') applyPaperlessLinks(effectivePaperlessBase()); }
   await loadPending();
   await loadPlCorrespondents();
   await loadCorrMap();
