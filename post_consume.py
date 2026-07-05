@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.45"  # 12.45: document_date Ort+Monatsname (Frick, den 22. März)
+POST_CONSUME_VERSION = "12.46"  # 12.46: Brillenpass Stufe 2 Vision-Verifikation + PD
 import re
 import sys
 import json
@@ -53,6 +53,7 @@ from brillenpass_parser import (
     parse_brillenpass_with_parsers,
     parse_by_parser,
     parse_fielmann_brillenpass,
+    should_trigger_brillenpass,
 )
 from document_date import (
     DATUM_PROMPT_HINT,
@@ -1762,25 +1763,28 @@ def vision_analyze(image_b64: Optional[str], ocr_text: str) -> dict:
 def vision_brillenpass_analyze(
     image_b64: Optional[str], ocr_text: str, parser_hint: dict | None = None,
 ) -> dict:
-    """Zweiter Vision-Call nur bei Brillenpass-Trigger — strukturierte Glaswerte."""
+    """Stufe 2: gezielter Vision-Call nur für Brillenpass-Kacheln (nicht ganzes Dokument)."""
     hint = ""
     if parser_hint:
         hint = (
-            "\nOCR-Parser hat bereits extrahiert (Tabellenzeilen haben Vorrang):\n"
+            "\nOCR-Parser (Stufe 1) hat bereits extrahiert — mit Bild verifizieren und Lücken füllen:\n"
             f"{json.dumps(parser_hint, ensure_ascii=False)[:1200]}\n"
         )
     user_content = (
-        "Extrahiere Brillenpass-Daten aus dieser Optiker-Rechnung als JSON.\n"
+        "Extrahiere NUR die Brillenpass-/Refraktions-Tabelle aus diesem Optiker-Dokument als JSON.\n"
+        "Fokus: Messwerte-Tabelle (SPH, ZYL/CYL, ACHSE, ADD, PD) — nicht Rechnungstext/Footer.\n"
         '{"fern":{"rechts":{"sph","cyl","achse","prisma","basis","add"},"links":{...}},'
         '"naehe":{"rechts":{...},"links":{...}},'
+        '"pd":{"rechts":"mm oder null","links":"mm oder null"},'
         '"glas":{"beschreibung","index","durchmesser","beschichtungen":[]},'
         '"auftrag":"...","rechnung":"...","gueltig_ab":"YYYY-MM-DD oder null"}\n'
         "Nur JSON. null für fehlende Werte. "
-        "Vorzeichen von Sph/Cyl/Add exakt vom Dokument übernehmen (+ oder -). "
+        "Vorzeichen von Sph/Cyl/Add exakt vom Dokument (+ oder -). "
+        "PD pro Auge in mm (typisch 25–35), Spalte PD oder unter R/L. "
         "R/L sind Augenseiten — nicht als basis eintragen. "
-        "McOptic-Karte (SPH ZYL ACHSE ADD PD): Einstärke ohne Lesewert → fern, nicht naehe.\n"
+        "McOptic-Karte (SPH ZYL ACHSE … PD): Einstärke ohne Lesewert → fern, nicht naehe.\n"
         f"{hint}"
-        f"OCR-Text:\n{(ocr_text or '')[:2000]}"
+        f"OCR-Text (Stufe 1):\n{(ocr_text or '')[:2000]}"
     )
     if image_b64:
         messages = [{"role": "user", "content": user_content, "images": [image_b64]}]
@@ -1795,7 +1799,7 @@ def vision_brillenpass_analyze(
                 "system": VISION_SYSTEM,
                 "stream": False,
                 "format": "json",
-                "options": {"temperature": 0.1, "num_predict": 400},
+                "options": {"temperature": 0.1, "num_predict": 500},
             },
             timeout=VISION_TIMEOUT,
         )
@@ -1897,7 +1901,7 @@ def maybe_queue_brillenpass(
     corr_entry: dict | None,
     image_b64: Optional[str] = None,
 ) -> None:
-    """Optiker-Rechnung → Parser + Vision → Review-Queue."""
+    """Optiker mit brillenpass.aktiv → Stufe 1 Parser + Stufe 2 Vision → Review-Queue."""
     if not corr_entry:
         return
     aktiv, _ = corr_supports_brillenpass(corr_entry)
@@ -1906,8 +1910,8 @@ def maybe_queue_brillenpass(
     parser_names = corr_brillenpass_parsers(corr_entry)
 
     dt_vis = (vision_meta or {}).get("dokumenttyp_visuell", "")
-    if not looks_like_brillenpass_any(ocr_text, parser_names, dt_vis, vision_meta):
-        log.debug("Brillenpass: kein Parser-Treffer für %s", parser_names)
+    if not should_trigger_brillenpass(ocr_text, parser_names, dt_vis, vision_meta):
+        log.debug("Brillenpass: kein Optiker-/Glas-Trigger für %s", parser_names)
         return
 
     direct_name, direct_reason = _match_person_direct(ocr_text, vision_meta)
@@ -1924,13 +1928,19 @@ def maybe_queue_brillenpass(
         person_id, direct_reason, parser_names, chosen,
     )
 
+    log.info("Brillenpass Stufe 1: OCR-Parser")
     parser_data = parse_brillenpass_with_parsers(
         ocr_text, parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
     )
     if not parser_data and "fielmann_rechnung" in parser_names:
         parser_data = parse_fielmann_brillenpass(ocr_text)
+
+    if not image_b64:
+        log.warning("Brillenpass Stufe 2: kein PDF-Bild — Vision nur mit OCR-Text")
+    else:
+        log.info("Brillenpass Stufe 2: Vision-Verifikation (%s)", MODEL_VISION)
     vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
-    merged = merge_brillenpass(parser_data, vision_bp)
+    merged = merge_brillenpass(parser_data, vision_bp, prefer_vision=bool(image_b64))
     merged["korrespondent"] = corr_entry.get("name", "")
     if not merged.get("gueltig_ab") and vision_meta:
         merged["gueltig_ab"] = vision_meta.get("datum")

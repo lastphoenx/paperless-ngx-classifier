@@ -23,6 +23,7 @@ from brillenpass_parser import (  # noqa: E402
     parse_mcoptic_pass,
     parse_optik_meyer_moehlin,
     find_brillenpass_period_duplicate,
+    should_trigger_brillenpass,
 )
 
 FIELMANN_PASS_OCR = """
@@ -61,6 +62,16 @@ R -1.00 -0.50 90 0.00 30.0
 L -1.25 -0.75 85 0.00 31.0
 Gültig ab 15.03.2022
 Comfort SV Demo Glas
+"""
+
+MCOPTIC_PASS_2012_OCR = """
+Patientin Beispiel
+26.04.2012
+ORGA 150 HMC MAX
+SPH ZYL ACHSE PRISMA BAS ADD PD
+R -3.00 -1.00 176 0 0 0 29.5
+L -1.00 -1.25 6 0 0 0 31.5
+MCOPTIK (SCHWEIZ) AG / LIESTAL
 """
 
 AUGENARZT_OCR = """
@@ -126,6 +137,44 @@ def test_mcoptic_pass_fern_einstaerke():
     assert r["pd"]["links"] == "31.0"
     assert r["gueltig_ab"] == "2022-03-15"
     assert "Comfort" in r["glas"]["beschreibung"]
+
+
+def test_mcoptic_pass_2012_pd_with_empty_columns():
+    r = parse_mcoptic_pass(MCOPTIC_PASS_2012_OCR)
+    assert r["fern"]["rechts"]["sph"] == "-3.00"
+    assert r["fern"]["rechts"]["cyl"] == "-1.00"
+    assert r["fern"]["rechts"]["achse"] == "176"
+    assert r["fern"]["links"]["cyl"] == "-1.25"
+    assert r["pd"]["rechts"] == "29.5"
+    assert r["pd"]["links"] == "31.5"
+    assert r["gueltig_ab"] == "2012-04-26"
+
+
+def test_merge_prefer_vision_fills_cyl_and_pd():
+    parser = {
+        "fern": {"rechts": {"sph": "-2.00", "cyl": None, "achse": "176"}, "links": None},
+        "naehe": {"rechts": None, "links": None},
+        "pd": {"rechts": None, "links": None},
+    }
+    vision = {
+        "fern": {
+            "rechts": {"sph": "-3.00", "cyl": "-1.00", "achse": "176"},
+            "links": {"sph": "-1.00", "cyl": "-1.25", "achse": "6"},
+        },
+        "pd": {"rechts": "29.5", "links": "31.5"},
+    }
+    m = merge_brillenpass(parser, vision, prefer_vision=True)
+    assert m["fern"]["rechts"]["cyl"] == "-1.00"
+    assert m["fern"]["rechts"]["sph"] == "-3.00"
+    assert m["pd"]["rechts"] == "29.5"
+    assert m["pd"]["links"] == "31.5"
+
+
+def test_should_trigger_brillenpass_optiker_keywords():
+    entry = {"brillenpass": {"aktiv": True, "vendor": "mcoptic"}}
+    names = corr_brillenpass_parsers(entry)
+    assert should_trigger_brillenpass("Messungsart: Brillenkorrektur Ferne\nR Sph -1.00", names)
+    assert not should_trigger_brillenpass("Steuerbescheid 2024", names)
 
 
 def test_merge_mcoptic_split_vision():
