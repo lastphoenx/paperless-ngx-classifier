@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.46"  # 12.46: Brillenpass Stufe 2 Vision-Verifikation + PD
+POST_CONSUME_VERSION = "12.47"  # 12.47: Brillenpass-Diagnose-Log + McOptic-Rechnungstabellen-Fix
 import re
 import sys
 import json
@@ -54,6 +54,8 @@ from brillenpass_parser import (
     parse_by_parser,
     parse_fielmann_brillenpass,
     should_trigger_brillenpass,
+    diagnose_brillenpass_extraction,
+    snapshot_brillenpass,
 )
 from document_date import (
     DATUM_PROMPT_HINT,
@@ -1911,12 +1913,16 @@ def maybe_queue_brillenpass(
 
     dt_vis = (vision_meta or {}).get("dokumenttyp_visuell", "")
     if not should_trigger_brillenpass(ocr_text, parser_names, dt_vis, vision_meta):
-        log.debug("Brillenpass: kein Optiker-/Glas-Trigger für %s", parser_names)
+        log.info("Brillenpass: kein Trigger für Dok #%s (Korr=%s)", document_id, corr_entry.get("name"))
+        write_audit_entry(document_id, "brillenpass_skip", {
+            "reason": "no_trigger", "parser_names": parser_names,
+        })
         return
 
     direct_name, direct_reason = _match_person_direct(ocr_text, vision_meta)
     if not direct_name:
-        log.info("Brillenpass: Person nicht eindeutig — übersprungen")
+        log.info("Brillenpass: Person nicht eindeutig — Dok #%s übersprungen", document_id)
+        write_audit_entry(document_id, "brillenpass_skip", {"reason": "person_ambiguous"})
         return
     person_id = _resolve_person_id(direct_name)
     anzeigename = _resolve_person_anzeigename(person_id) or direct_name
@@ -1934,19 +1940,49 @@ def maybe_queue_brillenpass(
     )
     if not parser_data and "fielmann_rechnung" in parser_names:
         parser_data = parse_fielmann_brillenpass(ocr_text)
+    write_audit_entry(document_id, "brillenpass_s1", {
+        "parser": chosen,
+        "snapshot": snapshot_brillenpass(parser_data),
+    })
 
     if not image_b64:
-        log.warning("Brillenpass Stufe 2: kein PDF-Bild — Vision nur mit OCR-Text")
+        log.warning("Brillenpass Stufe 2: kein PDF-Bild — Vision nur mit OCR-Text (Dok #%s)", document_id)
     else:
-        log.info("Brillenpass Stufe 2: Vision-Verifikation (%s)", MODEL_VISION)
+        log.info("Brillenpass Stufe 2: Vision-Verifikation (%s) Dok #%s", MODEL_VISION, document_id)
     vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
-    merged = merge_brillenpass(parser_data, vision_bp, prefer_vision=bool(image_b64))
+    write_audit_entry(document_id, "brillenpass_s2", {
+        "has_image": bool(image_b64),
+        "snapshot": snapshot_brillenpass(vision_bp),
+        "vision_empty": not vision_bp,
+    })
+
+    prefer_vis = bool(image_b64)
+    merged = merge_brillenpass(parser_data, vision_bp, prefer_vision=prefer_vis)
     merged["korrespondent"] = corr_entry.get("name", "")
     if not merged.get("gueltig_ab") and vision_meta:
         merged["gueltig_ab"] = vision_meta.get("datum")
 
+    diagnose = diagnose_brillenpass_extraction(
+        parser_data, vision_bp, merged,
+        parser_detected=chosen,
+        has_image=bool(image_b64),
+        prefer_vision=prefer_vis,
+    )
+    merged.setdefault("extraktion", {})["diagnose"] = diagnose
+    write_audit_entry(document_id, "brillenpass_merged", diagnose)
+    if diagnose.get("gaps"):
+        log.warning(
+            "Brillenpass Lücken Dok #%s: %s | S1=%s S2=%s",
+            document_id, ", ".join(diagnose["gaps"]),
+            "ok" if diagnose.get("stufe1_ok") else "leer/teil",
+            "ok" if diagnose.get("stufe2_ok") else "leer/teil",
+        )
+    else:
+        log.info("Brillenpass vollständig Dok #%s (Parser=%s)", document_id, chosen)
+
     if not has_brillenpass_values(merged):
-        log.info("Brillenpass: keine verwertbaren Werte — übersprungen")
+        log.info("Brillenpass: keine verwertbaren Werte — Dok #%s übersprungen", document_id)
+        write_audit_entry(document_id, "brillenpass_skip", {"reason": "no_values", "diagnose": diagnose})
         return
 
     if not write_pending_brillenpass(

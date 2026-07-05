@@ -21,7 +21,9 @@ from brillenpass_parser import (  # noqa: E402
     parse_brillenpass_auto,
     parse_fielmann_pass,
     parse_mcoptic_pass,
+    parse_mcoptic_rechnung,
     parse_optik_meyer_moehlin,
+    diagnose_brillenpass_extraction,
     find_brillenpass_period_duplicate,
     should_trigger_brillenpass,
 )
@@ -72,6 +74,16 @@ SPH ZYL ACHSE PRISMA BAS ADD PD
 R -3.00 -1.00 176 0 0 0 29.5
 L -1.00 -1.25 6 0 0 0 31.5
 MCOPTIK (SCHWEIZ) AG / LIESTAL
+"""
+
+MCOPTIC_RECHNUNG_TABLE_OCR = """
+McOptic Frick
+Thomas Beispiel
+14.10.2023
+SPH ZYL ACHSE ADD PD
+R +0.25 -0.25 57 1.50 31.5
+L 0.00 -0.25 110 1.50 31.5
+Quittung No: Q-TEST-2023
 """
 
 AUGENARZT_OCR = """
@@ -175,6 +187,27 @@ def test_should_trigger_brillenpass_optiker_keywords():
     names = corr_brillenpass_parsers(entry)
     assert should_trigger_brillenpass("Messungsart: Brillenkorrektur Ferne\nR Sph -1.00", names)
     assert not should_trigger_brillenpass("Steuerbescheid 2024", names)
+
+
+def test_mcoptic_rechnung_table_naehe_both_eyes():
+    """Rechnung mit Pass-Tabelle (ADD) → beide Augen Nähe."""
+    r = parse_mcoptic_rechnung(MCOPTIC_RECHNUNG_TABLE_OCR)
+    assert r["parser"] == "mcoptic_rechnung"
+    assert r["naehe"]["rechts"]["sph"] == "+0.25"
+    assert r["naehe"]["rechts"]["cyl"] == "-0.25"
+    assert r["naehe"]["rechts"]["achse"] == "57"
+    assert r["naehe"]["links"]["sph"] == "+0.00"
+    assert r["naehe"]["links"]["achse"] == "110"
+    assert r["pd"]["rechts"] == "31.5"
+    assert r["pd"]["links"] == "31.5"
+
+
+def test_diagnose_brillenpass_gaps():
+    parser = parse_mcoptic_pass(MCOPTIC_PASS_2012_OCR)
+    vision = {"fern": {"rechts": {"sph": "-3.00", "achse": "176"}, "links": None}, "naehe": {"rechts": None, "links": None}}
+    merged = merge_brillenpass(parser, vision, prefer_vision=True)
+    d = diagnose_brillenpass_extraction(parser, vision, merged, parser_detected="mcoptic_brillenpass", has_image=True)
+    assert "fern.rechts.cyl" in d["gaps"] or "naehe.rechts.cyl" in d["gaps"]
 
 
 def test_merge_mcoptic_split_vision():
