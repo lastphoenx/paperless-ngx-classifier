@@ -2,7 +2,7 @@
 
 Kurzüberblick für Fortsetzung in neuem Chat. Repo: `paperless-ngx-classifier`, Deploy CT121 `/opt/paperless-scripts/`, UI `http://192.168.131.31:8100`.
 
-**Stand Git `main`:** bis Commit `3342511` (2026-07-05).
+**Stand Git `main`:** bis Commit mit Fix `_BG_EXECUTOR` + UI-Cache (UI `2.76`, be `2.38`, 2026-07-05).
 
 ---
 
@@ -21,7 +21,7 @@ Kurzüberblick für Fortsetzung in neuem Chat. Repo: `paperless-ngx-classifier`,
 1. **Review-Eintrag erscheint nicht** trotz grüner/positiver UI-Meldung (früher).
 2. **`JSON.parse: unexpected character`** beim Trigger (Proxy-Timeout bei sync Vision) — behoben durch async Trigger.
 3. **`'bool' object has no attribute 'get'`** nach s1+s2 — Crash in `diagnose_brillenpass_extraction` (behoben `57de419`).
-4. **Web-UI hängt / GET `/` = 0 Bytes** während Vision läuft — Uvicorn-Worker blockiert (Fix `3342511`: Vision in Thread). **User meldet: keine Verbesserung nach Deploy.**
+4. **Web-UI hängt / GET `/` = 0 Bytes** während Vision läuft — **Ursache:** Vision in `asyncio.to_thread` teilte Default-Thread-Pool mit allen sync-API-Routes. **Fix:** `_BG_EXECUTOR` (eigener Pool) + `_UI_HTML`-Cache + Session-TTL-Cache.
 
 ---
 
@@ -51,6 +51,7 @@ Beobachtungen:
 | `c854093` | Job-Status + Polling, Meldung wenn Dok schon in Review |
 | `57de419` | **Fix:** `diagnose_brillenpass_extraction` — `.get()` auf bool |
 | `3342511` | Vision in `asyncio.to_thread`, `/health` ohne Auth, Session-Check non-blocking |
+| (neu) | `_BG_EXECUTOR` statt Default-Pool, UI-HTML-Cache, Session-Cache 30s — UI `2.76` / be `2.38` |
 
 Frühere Session (bereits auf main): PDF per API, Parser-Merge, Gültig-ab, Diagnose-Konflikte, IndentationError-Hotfix `75699ba`.
 
@@ -73,7 +74,7 @@ GET /api/brillenpass/trigger-status/{id}   # UI pollt alle 3s
 
 ## Offene Punkte (Priorität)
 
-1. **UI/Service auf CT121 diagnostizieren** — trotz Thread-Fix keine Verbesserung:
+1. **UI/Service auf CT121 verifizieren** nach Deploy `_BG_EXECUTOR`-Fix:
    - `systemctl status correspondent-manager`
    - `journalctl -u correspondent-manager -n 100 --no-pager`
    - `curl -s http://127.0.0.1:8100/health`

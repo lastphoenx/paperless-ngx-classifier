@@ -20,15 +20,19 @@ import json
 import os
 import re
 import asyncio
-
-__version__ = "2.37"  # 2.37: Brillenpass Multi-Version, PD, aktuell-Fix
-UI_VERSION = "2.51"
+import functools
 import fcntl
-from contextlib import contextmanager
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+__version__ = "2.38"  # 2.38: BG-Executor + UI-Cache — GET / während Vision
+UI_VERSION = "2.76"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -116,6 +120,14 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="paper.manager", version="2.0.0")
 
+# Lange Jobs (Brillenpass Vision ~120s) — eigener Pool, nicht Starlette-Default
+_BG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pm-bg")
+
+# Session-Cache — reduziert Paperless-Profile-Calls bei init()-API-Burst
+_SESSION_CACHE: dict[str, tuple[bool, float]] = {}
+_SESSION_CACHE_TTL = 30.0
+_session_cache_lock = threading.Lock()
+
 
 def _effective_paperless_url(request: Request | None = None) -> str:
     """Request-host-aware Paperless-URL für Links und Login-Redirect."""
@@ -182,13 +194,20 @@ async def require_paperless_session(request: Request, call_next):
         session_cookie = request.cookies.get("sessionid")
         if not session_cookie:
             return False
+        csrf = request.cookies.get("csrftoken") or ""
+        cache_key = f"{session_cookie}:{csrf}"
+        now = time.monotonic()
+        with _session_cache_lock:
+            cached = _SESSION_CACHE.get(cache_key)
+            if cached and cached[1] > now:
+                return cached[0]
         import urllib.request as _ur
         # Gleiche Logik wie Login-Redirect: IP → :8000 auf Host, Domain → gleicher Host
         paperless_base = _effective_paperless_url(request)
         cookie_hdr = f"sessionid={session_cookie}"
-        csrf = request.cookies.get("csrftoken")
         if csrf:
             cookie_hdr += f"; csrftoken={csrf}"
+        valid = False
         for base in (paperless_base, paperless_internal):
             if not base:
                 continue
@@ -199,10 +218,13 @@ async def require_paperless_session(request: Request, call_next):
                 )
                 with _ur.urlopen(req, timeout=3) as r:
                     if r.status == 200:
-                        return True
+                        valid = True
+                        break
             except Exception:
                 continue
-        return False
+        with _session_cache_lock:
+            _SESSION_CACHE[cache_key] = (valid, now + _SESSION_CACHE_TTL)
+        return valid
 
     # Proxy-Endpoints: kein Auth nötig — Backend holt Daten selbst mit Token
     if path.startswith("/api/proxy/"):
@@ -1951,11 +1973,13 @@ def api_brillenpass_manual(body: dict = Body(...)):
 
 
 async def _run_brillenpass_bg(doc_id: int, force: bool, parser_override: str) -> None:
-    """Vision/Ollama blockiert — in Thread, damit Uvicorn weiter antwortet."""
+    """Vision/Ollama in eigenem Thread-Pool — Default-Pool bleibt für HTTP frei."""
     from brillenpass_runner import brillenpass_job_run
-    await asyncio.to_thread(
+    loop = asyncio.get_running_loop()
+    fn = functools.partial(
         brillenpass_job_run, doc_id, force=force, parser_override=parser_override,
     )
+    await loop.run_in_executor(_BG_EXECUTOR, fn)
 
 
 @app.post("/api/brillenpass/trigger/{doc_id}")
@@ -3608,9 +3632,29 @@ def api_korr_typen():
 # HTML UI (Single-Page mit Vanilla JS + Fetch)
 # ══════════════════════════════════════════════
 
-# HTML UI wird aus separater Datei geladen
+# HTML UI wird aus separater Datei geladen (beim Start gecacht — Deploy = Service-Restart)
 _UI_FILE = Path(__file__).parent / "paper_manager_ui.html"
+_UI_FALLBACK = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>paper.manager</title>
+<style>body{background:#0f1117;color:#e2e8f0;font-family:sans-serif;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{text-align:center;padding:40px;border:1px solid #334155;border-radius:8px}
+h2{color:#f87171}code{background:#1e293b;padding:4px 8px;border-radius:4px}
+</style></head><body><div class="box">
+<h2>paper_manager_ui.html nicht gefunden</h2>
+<p>Datei fehlt auf dem Server:</p>
+<code>/opt/paperless-scripts/paper_manager_ui.html</code>
+<p>Bitte deployen und Service neu starten.</p>
+</div></body></html>"""
 
+
+def _load_ui_html() -> str:
+    if _UI_FILE.exists():
+        return _UI_FILE.read_text(encoding="utf-8")
+    return _UI_FALLBACK
+
+
+_UI_HTML = _load_ui_html()
 
 
 @app.get("/api/proxy/document/{doc_id}/preview/")
@@ -3669,20 +3713,6 @@ def proxy_document_thumb(doc_id: int):
 
 
 @app.get("/", response_class=HTMLResponse)
-def root():
-    """HTML UI laden — per-request damit Deploy ohne Restart wirkt."""
-    if _UI_FILE.exists():
-        return HTMLResponse(content=_UI_FILE.read_text(encoding="utf-8"))
-    # Fallback: eingebettetes Minimal-UI
-    return HTMLResponse(content="""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>paper.manager</title>
-<style>body{background:#0f1117;color:#e2e8f0;font-family:sans-serif;
-display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.box{text-align:center;padding:40px;border:1px solid #334155;border-radius:8px}
-h2{color:#f87171}code{background:#1e293b;padding:4px 8px;border-radius:4px}
-</style></head><body><div class="box">
-<h2>paper_manager_ui.html nicht gefunden</h2>
-<p>Datei fehlt auf dem Server:</p>
-<code>/opt/paperless-scripts/paper_manager_ui.html</code>
-<p>Bitte deployen und Service neu starten.</p>
-</div></body></html>""")
+async def root():
+    """HTML UI aus Speicher — kein Thread-Pool, sofortige Antwort auch während Vision."""
+    return HTMLResponse(content=_UI_HTML)
