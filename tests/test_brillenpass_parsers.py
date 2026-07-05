@@ -178,7 +178,7 @@ def test_merge_prefer_vision_fills_cyl_and_pd():
     }
     m = merge_brillenpass(parser, vision, prefer_vision=True)
     assert m["fern"]["rechts"]["cyl"] == "-1.00"
-    assert m["fern"]["rechts"]["sph"] == "-3.00"
+    assert m["fern"]["rechts"]["sph"] == "-2.00"
     assert m["pd"]["rechts"] == "29.5"
     assert m["pd"]["links"] == "31.5"
 
@@ -352,6 +352,19 @@ def test_normalize_vision_moves_pd_from_prisma():
     assert norm["pd"]["links"] is None
     assert norm["fern"]["rechts"].get("add") is None
     assert norm["fern"]["rechts"].get("basis") is None
+
+
+def test_normalize_vision_moves_pd_from_basis():
+    raw = {
+        "fern": {
+            "rechts": {"sph": "+0.25", "cyl": "-0.25", "achse": "57", "prisma": "1.50"},
+            "links": {"sph": "0.00", "cyl": "-0.25", "achse": "110", "prisma": "1.50", "basis": "31.5"},
+        },
+        "pd": {"rechts": None, "links": None},
+    }
+    norm = normalize_vision_brillenpass(raw)
+    assert norm["fern"]["rechts"].get("add") == "+1.50"
+    assert norm["pd"]["links"] == "31.5"
 
 
 def test_consolidate_ignores_hallucinated_integer_add():

@@ -1903,7 +1903,7 @@ def vision_brillenpass_analyze(
         data = extract_json_from_response(raw)
         if not isinstance(data, dict):
             return {}
-        return normalize_vision_brillenpass(data, parser_hint=parser_hint)
+        return normalize_vision_brillenpass(data, parser_hint=parser_hint, ocr_text=ocr_text)
     except Exception as e:
         log.warning("Vision Brillenpass fehlgeschlagen: %s", e)
         return {}

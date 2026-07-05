@@ -169,10 +169,9 @@ def _merge_eye(
     if prefer_vision and v_eye:
         merged = dict(p_eye) if p_eye else {}
         for k, val in v_eye.items():
-            if not val:
+            if not val or merged.get(k):
                 continue
-            if k in _OPTICAL_VERIFY_FIELDS or not merged.get(k):
-                merged[k] = val
+            merged[k] = val
         _prefer_parser_sph_sign(p_eye, v_eye, merged)
         return _sanitize_eye(merged)
     merged = dict(p_eye)
@@ -317,8 +316,9 @@ def normalize_vision_brillenpass(
     data: dict | None,
     *,
     parser_hint: dict | None = None,
+    ocr_text: str = "",
 ) -> dict:
-    """Vision-JSON bereinigen: null-Strings, PD aus Prisma, erfundene ADD-Werte."""
+    """Vision-JSON bereinigen: null-Strings, PD aus Prisma/Basis, erfundene ADD-Werte."""
     if not data:
         return {}
     out = deepcopy(data)
@@ -332,6 +332,15 @@ def normalize_vision_brillenpass(
             eye = block.get(side)
             if not eye:
                 continue
+            basis = eye.get("basis")
+            if basis and not pd_out.get(side):
+                try:
+                    bf = abs(float(str(basis).replace(",", ".").lstrip("+")))
+                    if 15 <= bf <= 40:
+                        pd_out[side] = str(basis).replace(",", ".")
+                        eye["basis"] = None
+                except ValueError:
+                    pass
             prisma = eye.get("prisma")
             if prisma and not pd_out.get(side):
                 try:
@@ -347,6 +356,45 @@ def normalize_vision_brillenpass(
                 if (eye.get("basis") or "").upper() == "ADD":
                     eye["basis"] = None
             block[side] = _sanitize_eye(eye)
+    if ocr_text:
+        out = apply_ocr_brillenpass_crosscheck(ocr_text, out)
+    return out
+
+
+def apply_ocr_brillenpass_crosscheck(ocr_text: str, data: dict) -> dict:
+    """OCR-Zeilen (R/L) gegen Vision: Cyl/Achse/PD pro Auge aus Text wenn erkennbar."""
+    eyes, pd_map = _fill_mcoptic_pass_rows(ocr_text)
+    labeled = _fill_naehe_from_matches(ocr_text, _MCOPTIC_RECHNUNG_RL)
+    for side in ("rechts", "links"):
+        le = labeled.get(side)
+        if le and le.get("sph"):
+            eyes[side] = _merge_eye(eyes.get(side), le) if eyes.get(side) else le
+    if not any((eyes.get(s) or {}).get("sph") for s in ("rechts", "links")):
+        return data
+    out = deepcopy(data)
+    for side in ("rechts", "links"):
+        ref = eyes.get(side)
+        if not ref or not ref.get("sph"):
+            continue
+        target_dist = None
+        for dist in ("fern", "naehe"):
+            eye = (out.get(dist) or {}).get(side)
+            if eye and eye.get("sph"):
+                target_dist = dist
+                break
+        if not target_dist:
+            add_near = _plausible_reading_add(ref.get("add"), None)
+            target_dist = "naehe" if add_near else "fern"
+            out.setdefault(target_dist, _empty_eye_block())[side] = {}
+        eye = out[target_dist][side]
+        for field in ("sph", "cyl", "achse", "add"):
+            if ref.get(field):
+                eye[field] = ref[field]
+        out[target_dist][side] = _sanitize_eye(eye)
+        if pd_map.get(side):
+            out.setdefault("pd", {"rechts": None, "links": None})[side] = str(
+                pd_map[side]
+            ).replace(",", ".")
     return out
 
 
@@ -756,6 +804,27 @@ def parse_brillenpass_auto(
     return data
 
 
+def _parser_completeness_score(data: dict) -> int:
+    score = 0
+    for dist in ("fern", "naehe"):
+        for side in ("rechts", "links"):
+            eye = (data.get(dist) or {}).get(side) or {}
+            if eye.get("sph"):
+                score += 10
+            if eye.get("cyl"):
+                score += 2
+            if eye.get("achse"):
+                score += 1
+            if eye.get("add"):
+                score += 1
+    pd = data.get("pd") or {}
+    if pd.get("rechts"):
+        score += 3
+    if pd.get("links"):
+        score += 3
+    return score
+
+
 def parse_brillenpass_with_parsers(
     ocr_text: str,
     parser_names: list[str],
@@ -763,13 +832,32 @@ def parse_brillenpass_with_parsers(
     dokumenttyp_visuell: str = "",
     vision_meta: dict | None = None,
 ) -> dict | None:
-    """Alias — wählt einen Parser per Auto-Erkennung (kein Merge mehr)."""
-    return parse_brillenpass_auto(
-        ocr_text,
-        parser_names,
-        dokumenttyp_visuell=dokumenttyp_visuell,
-        vision_meta=vision_meta,
-    )
+    """Alle erlaubten Parser probieren — vollständigstes Ergebnis gewinnt."""
+    allowed = [normalize_parser_name(p) for p in parser_names if normalize_parser_name(p) in _PARSERS]
+    if not allowed:
+        return parse_brillenpass_auto(
+            ocr_text, parser_names,
+            dokumenttyp_visuell=dokumenttyp_visuell, vision_meta=vision_meta,
+        )
+    best: dict | None = None
+    best_score = -1
+    best_name = ""
+    for name in allowed:
+        data = parse_by_parser(name, ocr_text)
+        if not data or not has_brillenpass_values(data):
+            continue
+        score = _parser_completeness_score(data)
+        if score > best_score:
+            best_score = score
+            best = data
+            best_name = name
+    if not best:
+        return None
+    ext = best.setdefault("extraktion", {})
+    ext["parser_detected"] = best_name
+    ext["parser_format"] = PARSER_FORMAT.get(best_name, "")
+    ext["parsers_allowed"] = allowed
+    return best
 
 
 def _parse_gueltig_date(gueltig_ab: str | None):
@@ -1122,6 +1210,15 @@ _MCOPTIC_RL = re.compile(
     re.IGNORECASE,
 )
 
+_MCOPTIC_RL_LABELED = re.compile(
+    r"(?:^|\n)\s*(R|L|Rechts|Links)\b\s+"
+    r"(?:SPH\s*)?([+\-]?\s*[\d.,]+)\s+"
+    r"(?:(?:ZYL|CYL)\s*)?([+\-]?\s*[\d.,]+)\s+"
+    r"(?:(?:ACHSE|AXIS|A)\s*)?(\d+)\s*°?"
+    r"(.*?)(?:\n|$)",
+    re.IGNORECASE,
+)
+
 
 def _pd_or_add(raw: str | None) -> tuple[str | None, str | None]:
     """Zahl in ADD (<5 dpt) oder PD (15–40 mm) einordnen."""
@@ -1142,21 +1239,24 @@ def _fill_mcoptic_pass_rows(text: str) -> tuple[dict[str, dict | None], dict[str
     """McOptic-Karte: SPH/ZYL/ACHSE + optionale Spalten (PRISMA/BAS/ADD/PD)."""
     eyes: dict[str, dict | None] = {"rechts": None, "links": None}
     pd: dict[str, str | None] = {"rechts": None, "links": None}
-    for m in _MCOPTIC_RL.finditer(text):
-        side = _side_key(m.group(1))
-        add_v, pd_v = None, None
-        tail = (m.group(5) or "").strip()
-        for raw in re.findall(r"[+\-]?\s*[\d.,]+", tail):
-            a, p = _pd_or_add(raw)
-            if a and not add_v:
-                add_v = a
-            if p and not pd_v:
-                pd_v = p
-        eye = _eye_from_parts(m.group(2), m.group(3), m.group(4), add_v)
-        if eye:
-            eyes[side] = eye
-        if pd_v:
-            pd[side] = pd_v
+    for pattern in (_MCOPTIC_RL, _MCOPTIC_RL_LABELED):
+        for m in pattern.finditer(text):
+            side = _side_key(m.group(1))
+            if eyes.get(side) and eyes[side].get("sph"):
+                continue
+            add_v, pd_v = None, None
+            tail = (m.group(5) or "").strip()
+            for raw in re.findall(r"[+\-]?\s*[\d.,]+", tail):
+                a, p = _pd_or_add(raw)
+                if a and not add_v:
+                    add_v = a
+                if p and not pd_v:
+                    pd_v = p
+            eye = _eye_from_parts(m.group(2), m.group(3), m.group(4), add_v)
+            if eye:
+                eyes[side] = eye
+            if pd_v:
+                pd[side] = pd_v
     return eyes, pd
 
 _AUGENARZT_RL = re.compile(
@@ -1431,8 +1531,8 @@ def _detect_mcoptic_brillenpass(text: str) -> int:
         score += 2
     if _MCOPTIC_RL.search(text):
         score += 3
-    if re.search(r"Quittung|Krankenkassenexemplar|Gesamtbetrag|TOTAL\s+inkl", text, re.I):
-        score -= 4
+    if re.search(r"Quittung|Krankenkassenexemplar|Gesamtbetrag|TOTAL\s+inkl|Messungsart", text, re.I):
+        score -= 6
     return max(0, score)
 
 
