@@ -175,6 +175,12 @@ def test_brillenpass_version_chronology():
     assert find_brillenpass_period_duplicate(vers, "2012-04-26", "McOptic") is None
 
 
+def test_gueltig_ab_ch_format():
+    from brillenpass_parser import _parse_gueltig_date, normalize_gueltig_ab_iso
+    assert _parse_gueltig_date("22.03.2022").isoformat() == "2022-03-22"
+    assert normalize_gueltig_ab_iso("22.03.2022") == "2022-03-22"
+
+
 def test_merge_brillenpass_version_collects_document_ids():
     existing = {
         "gueltig_ab": "2022-03-15",

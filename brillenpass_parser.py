@@ -569,14 +569,33 @@ def parse_brillenpass_with_parsers(
 
 
 def _parse_gueltig_date(gueltig_ab: str | None):
-    """ISO-Datum parsen — für Sortierung / aktuell."""
+    """ISO oder CH (DD.MM.YYYY) — für Sortierung / aktuell."""
     if not gueltig_ab:
         return None
+    from datetime import date
+    s = str(gueltig_ab).strip()
     try:
-        from datetime import date
-        return date.fromisoformat(str(gueltig_ab)[:10])
+        return date.fromisoformat(s[:10])
     except ValueError:
-        return None
+        pass
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y = 2000 + y if y < 70 else 1900 + y
+        try:
+            return date(y, mo, d)
+        except ValueError:
+            return None
+    return None
+
+
+def normalize_gueltig_ab_iso(gueltig_ab: str | None) -> str | None:
+    """gueltig_ab → YYYY-MM-DD (falls parsebar)."""
+    d = _parse_gueltig_date(gueltig_ab)
+    if d:
+        return d.isoformat()
+    return (str(gueltig_ab).strip() or None) if gueltig_ab else None
 
 
 def sort_brillenpass_versions(versionen: list[dict]) -> list[dict]:
