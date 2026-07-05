@@ -96,16 +96,6 @@ def _sanitize_eye(eye: dict | None) -> dict | None:
     basis = (out.get("basis") or "").strip()
     if basis.upper() in ("R", "L") or basis.replace("°", "").upper() in ("A", "A°"):
         out["basis"] = None
-    # Fehlendes Minus bei Sph (häufig Vision): Cyl negativ, Sph positiv → Kurzsichtigkeit
-    sph, cyl = out.get("sph"), out.get("cyl")
-    if sph and cyl:
-        try:
-            sf = float(str(sph).replace(",", ".").lstrip("+"))
-            cf = float(str(cyl).replace(",", ".").lstrip("+"))
-            if sf > 0 and cf < -0.01 and sf >= 0.25:
-                out["sph"] = f"-{sf:g}"
-        except ValueError:
-            pass
     # Add 0.00 bei Ferngläsern → leer
     if out.get("add") is not None:
         try:
@@ -125,6 +115,26 @@ def _vals_close(a, b) -> bool:
         return str(a).strip() == str(b).strip()
 
 
+def _prefer_parser_sph_sign(parser_eye: dict, vision_eye: dict, merged: dict) -> None:
+    """
+    Sph-Vorzeichen nur bei Widerspruch Parser vs. Vision (gleicher Betrag).
+    Kein pauschales Minus bei negativem Cyl — echte Plus-Sph bleiben erhalten.
+    """
+    p_sph, v_sph = parser_eye.get("sph"), vision_eye.get("sph")
+    if not p_sph or not v_sph:
+        return
+    try:
+        pf = float(str(p_sph).replace(",", ".").lstrip("+"))
+        vf = float(str(v_sph).replace(",", ".").lstrip("+"))
+        if pf * vf >= 0:
+            return
+        if not _vals_close(abs(pf), abs(vf)):
+            return
+        merged["sph"] = _norm_val(p_sph)
+    except ValueError:
+        pass
+
+
 def _merge_eye(p_eye: dict | None, v_eye: dict | None) -> dict | None:
     if p_eye and not v_eye:
         return _sanitize_eye(p_eye)
@@ -141,6 +151,7 @@ def _merge_eye(p_eye: dict | None, v_eye: dict | None) -> dict | None:
         if k == "add" and merged.get("prisma") and _vals_close(val, merged["prisma"]):
             continue
         merged[k] = val
+    _prefer_parser_sph_sign(p_eye, v_eye, merged)
     return _sanitize_eye(merged)
 
 
