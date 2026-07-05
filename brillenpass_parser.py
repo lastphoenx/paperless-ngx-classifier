@@ -92,6 +92,27 @@ def _sanitize_eye(eye: dict | None) -> dict | None:
                 out["basis"] = None
         except ValueError:
             pass
+    # Vision setzt Augen-Label (R/L) oder Achsen-Symbol (A°) fälschlich als Prisma-Basis
+    basis = (out.get("basis") or "").strip()
+    if basis.upper() in ("R", "L") or basis.replace("°", "").upper() in ("A", "A°"):
+        out["basis"] = None
+    # Fehlendes Minus bei Sph (häufig Vision): Cyl negativ, Sph positiv → Kurzsichtigkeit
+    sph, cyl = out.get("sph"), out.get("cyl")
+    if sph and cyl:
+        try:
+            sf = float(str(sph).replace(",", ".").lstrip("+"))
+            cf = float(str(cyl).replace(",", ".").lstrip("+"))
+            if sf > 0 and cf < -0.01 and sf >= 0.25:
+                out["sph"] = f"-{sf:g}"
+        except ValueError:
+            pass
+    # Add 0.00 bei Ferngläsern → leer
+    if out.get("add") is not None:
+        try:
+            if abs(float(str(out["add"]).replace(",", ".").lstrip("+"))) < 0.25:
+                out["add"] = None
+        except ValueError:
+            pass
     return out
 
 
@@ -268,6 +289,8 @@ def merge_brillenpass(parser_data: dict | None, vision_data: dict | None) -> dic
     for k in ("auftrag", "rechnung", "gueltig_ab"):
         if not base.get(k) and vision_data.get(k):
             base[k] = vision_data[k]
+
+    base = _reconcile_split_eyes(base, parser_data)
 
     sources = [base.get("extraktion", {}).get("quelle", "")]
     if vision_data:
@@ -632,8 +655,80 @@ def _eye_from_parts(sph, cyl, achse, add=None) -> dict | None:
     })
 
 
+def _add_is_near(add_val: str | None) -> bool:
+    if not add_val:
+        return False
+    try:
+        return abs(float(str(add_val).replace(",", ".").lstrip("+"))) >= 0.25
+    except ValueError:
+        return False
+
+
+def _reconcile_split_eyes(data: dict, parser_data: dict | None) -> dict:
+    """
+    Parser+Vision-Mix: z. B. R nur in fern, L nur in naehe → einen Block.
+    McOptic-Pass mit Add≈0 gehört in fern.
+    """
+    fern = dict(data.get("fern") or _empty_eye_block())
+    naehe = dict(data.get("naehe") or _empty_eye_block())
+    f_sides = {s for s in ("rechts", "links") if (fern.get(s) or {}).get("sph")}
+    n_sides = {s for s in ("rechts", "links") if (naehe.get(s) or {}).get("sph")}
+
+    if f_sides and n_sides and not (f_sides & n_sides):
+        target = "fern"
+        if parser_data:
+            pf = sum(
+                1 for s in ("rechts", "links")
+                if ((parser_data.get("fern") or {}).get(s) or {}).get("sph")
+            )
+            pn = sum(
+                1 for s in ("rechts", "links")
+                if ((parser_data.get("naehe") or {}).get(s) or {}).get("sph")
+            )
+            if pn > pf:
+                target = "naehe"
+        merged_block = _empty_eye_block()
+        for side in ("rechts", "links"):
+            if target == "fern":
+                e1, e2 = fern.get(side), naehe.get(side)
+            else:
+                e1, e2 = naehe.get(side), fern.get(side)
+            eye = _merge_eye(e1, e2)
+            if eye:
+                merged_block[side] = eye
+        if target == "fern":
+            data["fern"], data["naehe"] = merged_block, _empty_eye_block()
+        else:
+            data["fern"], data["naehe"] = _empty_eye_block(), merged_block
+        return data
+
+    # Parser hatte alles in einem Block, Vision verteilte — Parser-Bucket bevorzugen
+    if parser_data and f_sides and n_sides:
+        pf = parser_data.get("fern") or {}
+        pn = parser_data.get("naehe") or {}
+        p_f = sum(1 for s in ("rechts", "links") if (pf.get(s) or {}).get("sph"))
+        p_n = sum(1 for s in ("rechts", "links") if (pn.get(s) or {}).get("sph"))
+        if p_f >= 2 and p_n == 0:
+            for side in ("rechts", "links"):
+                pe = pf.get(side)
+                if pe and pe.get("sph"):
+                    fern[side] = _merge_eye(pe, fern.get(side))
+                    naehe[side] = None
+            data["fern"], data["naehe"] = fern, naehe
+        elif p_n >= 2 and p_f == 0:
+            for side in ("rechts", "links"):
+                pe = pn.get(side)
+                if pe and pe.get("sph"):
+                    naehe[side] = _merge_eye(pe, naehe.get(side))
+                    fern[side] = None
+            data["fern"], data["naehe"] = fern, naehe
+
+    return data
+
+
 def _parse_pass_date(text: str) -> str | None:
     for pat in [
+        r"(?:Gültig|Gueltig|gültig)\s+ab\s*[:.]?\s*(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
         r"Datum:\s*(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
         r"Verordnung\s+vom\s+(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
         r"ausgestellt\s+(?:am\s+)?(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
@@ -695,15 +790,26 @@ _AUGENARZT_RL = re.compile(
 )
 
 
-def _fill_naehe_from_matches(text: str, pattern: re.Pattern) -> dict[str, dict | None]:
-    naehe: dict[str, dict | None] = {"rechts": None, "links": None}
+def _fill_eye_block_from_matches(text: str, pattern: re.Pattern) -> dict[str, dict | None]:
+    block: dict[str, dict | None] = {"rechts": None, "links": None}
     for m in pattern.finditer(text):
         side = _side_key(m.group(1))
         add = m.group(5) if m.lastindex and m.lastindex >= 5 else None
         eye = _eye_from_parts(m.group(2), m.group(3), m.group(4), add)
         if eye:
-            naehe[side] = eye
-    return naehe
+            block[side] = eye
+    return block
+
+
+def _fill_naehe_from_matches(text: str, pattern: re.Pattern) -> dict[str, dict | None]:
+    return _fill_eye_block_from_matches(text, pattern)
+
+
+def _mcoptic_pass_buckets(eyes: dict[str, dict | None]) -> tuple[dict, dict]:
+    """McOptic-Karte: Einstärke/Ferne wenn Add≈0, sonst Nähe (Lesewert)."""
+    if any(_add_is_near((eyes.get(s) or {}).get("add")) for s in ("rechts", "links")):
+        return _empty_eye_block(), eyes
+    return eyes, _empty_eye_block()
 
 
 def parse_fielmann_pass(ocr_text: str) -> dict:
@@ -734,12 +840,14 @@ def parse_fielmann_pass(ocr_text: str) -> dict:
 def parse_mcoptic_pass(ocr_text: str) -> dict:
     """McOptic Brillenpass-Karte (SPH ZYL ACHSE ADD PD)."""
     text = ocr_text or ""
-    naehe = _fill_naehe_from_matches(text, _MCOPTIC_RL)
+    eyes = _fill_eye_block_from_matches(text, _MCOPTIC_RL)
+    fern, naehe = _mcoptic_pass_buckets(eyes)
 
     glas_desc = ""
     for pat in [
         r"(?:Glas|Lens|Brille)\s*[:.]?\s*(.+?)(?:\n|R\s*:|Rechts)",
-        r"(Inside|Desk|Progressive|Office)\s+[\w\s]+",
+        r"(\d{4}RX\s+[\w\s]+)",
+        r"(Inside|Desk|Progressive|Office|Comfort\s+SV)\s+[\w\s\d]+",
     ]:
         gm = re.search(pat, text, re.IGNORECASE | re.DOTALL)
         if gm:
@@ -749,6 +857,7 @@ def parse_mcoptic_pass(ocr_text: str) -> dict:
     return _bp_base(
         "mcoptic_brillenpass",
         gueltig_ab=_parse_pass_date(text),
+        fern=fern,
         naehe=naehe,
         glas={"beschreibung": glas_desc, "index": None, "durchmesser": None, "beschichtungen": []},
     )

@@ -1775,7 +1775,10 @@ def vision_brillenpass_analyze(
         '"naehe":{"rechts":{...},"links":{...}},'
         '"glas":{"beschreibung","index","durchmesser","beschichtungen":[]},'
         '"auftrag":"...","rechnung":"...","gueltig_ab":"YYYY-MM-DD oder null"}\n'
-        "Nur JSON. null für fehlende Werte.\n"
+        "Nur JSON. null für fehlende Werte. "
+        "R/L sind Augenseiten — nicht als basis eintragen. "
+        "McOptic-Karte (SPH ZYL ACHSE ADD PD): Einstärke ohne Lesewert → fern, nicht naehe. "
+        "Sph-Vorzeichen beachten (-2.50 nicht 2.50).\n"
         f"{hint}"
         f"OCR-Text:\n{(ocr_text or '')[:2000]}"
     )

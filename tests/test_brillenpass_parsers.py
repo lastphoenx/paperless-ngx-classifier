@@ -8,6 +8,7 @@ from brillenpass_parser import (  # noqa: E402
     corr_brillenpass_parsers,
     detect_parser,
     has_brillenpass_values,
+    merge_brillenpass,
     normalize_parser_name,
     parse_augenarzt,
     parse_by_parser,
@@ -43,6 +44,16 @@ TOTAL inkl. MwSt. 440.00 CHF
 Messungsart: Brillenkorrektur Ferne
 R Sph. -2.50 Cyl. -1.25 A° 178
 L Sph. -0.75 Cyl. -1.50 A° 177
+"""
+
+MCOPTIC_PASS_FERN = """
+McOptic Basel
+Patientin Beispiel
+SPH ZYL ACHSE ADD PD
+R -2.50 -1.25 178 0.00 29.0
+L -0.75 -1.50 177 0.00 32.5
+Gültig ab 15.03.2022
+0120RX Comfort SV 160
 """
 
 AUGENARZT_OCR = """
@@ -93,6 +104,37 @@ def test_mcoptic_pass():
     assert r["naehe"]["links"]["cyl"] == "-0.50"
     assert r["gueltig_ab"] == "2023-10-15"
     assert has_brillenpass_values(r)
+
+
+def test_mcoptic_pass_fern_einstaerke():
+    r = parse_mcoptic_pass(MCOPTIC_PASS_FERN)
+    assert r["fern"]["rechts"]["sph"] == "-2.50"
+    assert r["fern"]["rechts"]["cyl"] == "-1.25"
+    assert r["fern"]["rechts"]["achse"] == "178"
+    assert r["fern"]["links"]["sph"] == "-0.75"
+    assert r["naehe"]["rechts"] is None
+    assert r["gueltig_ab"] == "2022-03-15"
+    assert "0120RX" in r["glas"]["beschreibung"]
+
+
+def test_merge_mcoptic_split_vision():
+    """Vision verteilt R→fern, L→naehe; Parser hat beides in fern."""
+    parser = parse_mcoptic_pass(MCOPTIC_PASS_FERN)
+    vision = {
+        "fern": {
+            "rechts": {"sph": "2.50", "cyl": "-1.25", "achse": "178", "basis": "R", "add": None},
+            "links": None,
+        },
+        "naehe": {
+            "rechts": None,
+            "links": {"sph": "-0.75", "cyl": "-1.50", "achse": "177", "basis": "L", "add": None},
+        },
+    }
+    m = merge_brillenpass(parser, vision)
+    assert m["fern"]["rechts"]["sph"] == "-2.50"
+    assert m["fern"]["links"]["sph"] == "-0.75"
+    assert m["fern"]["rechts"].get("basis") is None
+    assert m["naehe"]["links"] is None
 
 
 def test_augenarzt():
