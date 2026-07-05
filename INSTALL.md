@@ -428,7 +428,7 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | Ollama Timeout | Modell nicht geladen oder falsche URL | `ollama list` + OLLAMA_BASE_URL prüfen |
 | Custom Fields werden nicht gesetzt | CF_*_ID falsch | IDs in Paperless Admin prüfen |
 | paper.manager nicht erreichbar | Service nicht gestartet | `systemctl status correspondent-manager` |
-| 401 bei API-Calls | PAPER_MANAGER_TOKEN nicht gesetzt | .env prüfen, Service neu starten |
+| 401 bei API-Calls | Session/URL-Mismatch oder Token | Ab BE 2.35: Zugriff per IP → Session gegen `http://<IP>:8000`. Sonst `PAPER_MANAGER_TOKEN` oder Paperless neu einloggen. `.env`: `PAPERLESS_URL` + `PAPERLESS_INTERNAL_URL` prüfen |
 | Thumbnail/PDF leer im Dokument-Review (IP-Zugriff) | Direkte Paperless-URLs ohne Session | ab v2.8: Proxy-Endpoints; `PAPERLESS_TOKEN` in `.env` und Service-Env |
 | Titel-Kollisionen / falscher Ordner im Dateinamen | Bug in `_make_unique_titel` (bis pipe 12.14) | `post_consume.py` ≥ 12.15 deployen |
 | Routing funktioniert nicht (Kennzeichen/Arbeitgeber/Bank) | family.json leer oder Beziehung fehlt | paper.manager → Familie → Fahrzeuge / Beziehungen prüfen |

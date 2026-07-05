@@ -30,7 +30,7 @@ Drei Classifier-Versionsnummern — in der Sidebar und auf dem Home-Tab sichtbar
 1. Konstante **und** Kurzkommentar in derselben Zeile aktualisieren (`# 2.10: …`).
 2. `UI_VERSION` in **beiden** Dateien identisch halten.
 3. Bei Pipeline: ersten Docstring-Zeilen in `post_consume.py` (`v12.x`) mitziehen.
-4. Bei nutzerrelevanten Änderungen: `docs/Benutzerhandbuch_paper_manager.md` + README (`.de` / EN) prüfen.
+4. Bei nutzerrelevanten Änderungen: `docs/Benutzerhandbuch_paper_manager.md` + `docs/DEVELOPER.md` + README (`.de` / EN) prüfen.
 5. Commit-Message kann Versionen erwähnen, muss aber nicht.
 
 ## Prüfen nach Deploy
@@ -44,10 +44,10 @@ grep -m1 POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
 
 Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Refresh (`Ctrl+Shift+R`).
 
-## Aktuell (Stand Juni 2026)
+## Aktuell (Stand Juli 2026)
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 2.29 | Doc Review: Tags bei Freigeben, alle CFs editierbar |
-| BE | 2.16 | Doc Review: tag_ids bei approve |
-| Pipe | 12.29 | Legacy-Import: Pipeline skip + NAS-Batch-Script |
+| UI | 2.47 | Legacy QR-Split Menü, Brillenpass Vendor/Auto-Parser |
+| BE | 2.35 | Session host-aware, Legacy-Split API |
+| Pipe | 12.44 | Brillenpass Auto-Parser, Format-Erkennung |

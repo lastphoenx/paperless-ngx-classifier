@@ -1,6 +1,8 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 2.24 | Juni 2026** (Pipeline `12.23`, Backend `2.12`)
+**Version 2.47 | Juli 2026** (Pipeline `12.44`, Backend `2.35`)
+
+> Entwickler-Details: [`DEVELOPER.md`](DEVELOPER.md) · Legacy-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
 
 ---
 
@@ -17,9 +19,11 @@ Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständi
 | Zugang | URL | Auth |
 |---|---|---|
 | Via Domain (empfohlen) | https://paperless.example.com/corr-manager/ | Authentik SSO |
-| Via interne IP | http://ipadresse_paperless_server:8100 | Paperless lokaler Login |
+| Via interne IP | `http://<IP-des-Servers>:8100` | Paperless-Login auf **derselben IP** (`:8000`) — Session-Cookie wird host-aware geprüft |
 
-> **PDF-Vorschau per IP (ab v2.8):** Thumbnail und PDF im Dokument-Review laufen über
+> **Auth (ab BE 2.35):** API-Calls prüfen die Paperless-Session gegen die **gleiche Basis-URL wie der Browser-Zugriff** — per IP also `http://<IP>:8000`, per Domain die externe URL. Zuvor konnte `PAPERLESS_URL` (Domain) und IP-Zugriff kollidieren → `401 Nicht authentifiziert` trotz Login.
+
+> **PDF-Vorschau per IP:** Thumbnail und PDF im Dokument-Review laufen über
 > `/api/proxy/document/{id}/thumb/` bzw. `/preview/` — das Backend holt die Datei mit
 > `PAPERLESS_TOKEN` aus der Paperless-API. Ohne Proxy scheitert die Vorschau per IP oft
 > (kein Authentik-/Session-Cookie für direkte Paperless-URLs).
@@ -28,7 +32,7 @@ Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständi
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v2.24 | be v2.12 | pipe v12.23
+UI v2.47 | be v2.35 | pipe v12.44
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
@@ -43,9 +47,11 @@ Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochz
 | T Dokumenttypen | `#doctypes` | Synonyme + Ausschluss-Keywords |
 | ~ Tags | `#tags` | Tags + Ausschluss-Keywords |
 | M Manifest | `#manifest` | Ordner konfigurieren |
-| 👪 Familie | `#family` | Haushalt, Personen, Referenzen (Kennzeichen) |
+| 👪 Familie | `#family` | Haushalt, Personen, Referenzen (Kennzeichen), Beziehungen |
+| ✂ Legacy QR-Split | `#legacy-split` | Mehrseiten-Scans nachträglich an QR splitten → `consume/` |
+| 👓 Brillenpass | `#brillenpass` | Optiker-Dokumente parsen, Review, versionierter Pass pro Person |
 
-Alle Tabs haben ein **Suchfeld** für live Filterung.
+Alle Tabs haben ein **Suchfeld** für live Filterung (wo vorhanden).
 
 ---
 
@@ -112,6 +118,27 @@ Unbekannte Absender → Warteschlange (roter Badge).
 ## 5. Korrespondenten verwalten
 
 Edit-Button beim Eintrag. Felder: Standard-Dokumenttyp, Varianten, Match-Strings, Typische Ordner, Notiz.
+
+### Brillenpass am Korrespondenten (Optiker)
+
+Für Optiker, Augenärzte und ähnliche Absender, deren Dokumente Brillenwerte enthalten:
+
+| Feld | Bedeutung |
+|---|---|
+| **Brillenpass aktiv** | Pipeline versucht automatisch Glaswerte zu extrahieren |
+| **Optiker (Vendor)** | z. B. `fielmann`, `mcoptic`, `optik_meyer`, `augenarzt` — System erkennt **automatisch** ob Rechnung (A4) oder Brillenpass-Karte |
+| **Typische Begriffe** | OCR-Hilfen für Erkennung (optional) |
+| **Erweitert: Parser** | Nur bei Bedarf manuell einschränken (sonst leer lassen) |
+
+Beispiel McOptic in `correspondents.json`:
+
+```json
+"brillenpass": {
+  "aktiv": true,
+  "vendor": "mcoptic",
+  "typische_begriffe": ["McOptic", "Quittung", "SPH ZYL"]
+}
+```
 
 **Merge:** ⇔ Mit anderem zusammenführen → alle Dokumente umgeschrieben, Duplikat gelöscht.
 
@@ -288,6 +315,118 @@ Pro Korrespondent in **Familie → Beziehungen** (gespeichert in `correspondents
 5. **Korrespondenten Review** → freigeben oder ablehnen
 6. **Dokument-Review** → bestätigen oder korrigieren
 7. **Manifest** → neue pending-Ordner ergänzen
+
+7. **Manifest** → neue pending-Ordner ergänzen
+
+---
+
+## 13. Brillenpass
+
+Optiker-Rechnungen, Quittungen, Brillenpass-Karten und Augenarzt-Verordnungen werden in **Brillenwerte** (Fern/Nähe, Glas) übersetzt und pro Person versioniert in `brillenpaesse.json` gespeichert — **immer nach Review**.
+
+### Automatischer Workflow (neue Scans)
+
+Voraussetzungen:
+
+1. Korrespondent mit `brillenpass.aktiv` + **Vendor** (siehe Abschnitt 5)
+2. Person eindeutig (`family.json` / OCR / Vision)
+3. Dokument enthält erkennbare Glaswerte
+
+Ablauf:
+
+```
+Scan → post_consume erkennt Optiker-Dokument
+  → Auto-Parser wählt Format (Rechnung A4 vs. Karte vs. Verordnung)
+  → Vision ergänzt Lücken
+  → pending_brillenpass.jsonl + Tag pending_brillenpass
+  → Tab Brillenpass → Review → Freigabe → brillenpaesse.json
+```
+
+### Format-Erkennung (Auto-Parser)
+
+Pro Vendor werden **Kandidaten-Parser** geladen; das System wählt **einen** passenden Parser:
+
+| Dokument | Parser-Beispiel |
+|---|---|
+| Fielmann A4-Rechnung | `fielmann_rechnung` |
+| Fielmann Brillenpass-Karte | `fielmann_brillenpass` |
+| McOptic Quittung/Krankenkassenexemplar | `mcoptic_rechnung` |
+| McOptic Karte (SPH/ZYL/ACHSE) | `mcoptic_brillenpass` |
+| Augenarzt-Verordnung | `augenarzt_verordnung` |
+| Optik Meyer Rechnung/Verordnung | `optik_meyer_rechnung` |
+
+Erkennung über OCR-Heuristik + Vision (`dokumenttyp_visuell`, Layout). Du musst **nicht** manuell zwischen Rechnung und Pass wählen.
+
+### Dedup (gleiche Periode)
+
+Wenn innerhalb von **21 Tagen** (`BRILLENPASS_DEDUP_DAYS`) ein zweites Dokument derselben Person vom gleichen Optiker freigegeben wird (z. B. Rechnung + Pass wenige Tage auseinander), wird die **bestehende Version angereichert** statt ein Duplikat angelegt.
+
+Neue Brille ~12 Monate später → neuer Eintrag mit Diff zur Vorversion.
+
+### Tab Brillenpass — Bereiche
+
+**Übersicht** — alle Personen mit gespeicherten Versionen und offenen Reviews (Badge in Sidebar).
+
+**Manuelle Erfassung** — Werte ohne Scan eintragen (Person, Korrespondent, Datum, Parser optional).
+
+**Aus Dokument parsen** — Paperless-Dok-ID + optional Parser → Felder vorfüllen (ohne Review-Queue).
+
+**Nachträglich verarbeiten** — bestehendes Paperless-Dokument durch Pipeline schicken (Dok-ID, optional Parser-Override, «Erneut» mit force).
+
+**Review-Panel** — Vorschlag prüfen, Diff zur letzten Version, Freigeben oder Ablehnen.
+
+### Unterstützte Optiker (Stand pipe 12.44)
+
+| Vendor | Formate |
+|---|---|
+| `fielmann` | Rechnung + Brillenpass-Karte |
+| `mcoptic` | Rechnung/Quittung + Brillenpass-Karte |
+| `optik_meyer` | Rechnung/Verordnung |
+| `augenarzt` | Verordnung |
+
+---
+
+## 14. Legacy QR-Split
+
+Für **alte NAS-Mehrseiten-Scans** mit QR-Codes auf Trennseiten (nicht Swiss QR-Bill, nicht Paperless-PATCHT).
+
+Typischer QR-Inhalt: `060102_Gesundheit_Monika` (Regex: `^[0-9]{6}_[^\s]+$`).
+
+### Wann nutzen?
+
+- Ein Paperless-Dokument enthält **viele Einzeldokumente** in einem PDF
+- Jede Trennseite hat einen **Metadaten-QR** aus der alten Scan-Pipeline
+- Dokument ist bereits in Paperless (Legacy-Import oder falsch zusammengeführt)
+
+### Ablauf in paper.manager
+
+Menü **✂ Legacy QR-Split**:
+
+1. **Paperless Dok-ID** eingeben (z. B. `651`)
+2. **Vorschau** — zeigt Seitenbereiche und erkannte Barcodes (dry-run, schreibt nichts)
+3. **Splitten → consume** — PDF wird von Paperless geladen, gesplittet, Teile nach `PAPERLESS_CONSUME_DIR` gelegt
+4. Paperless Consumer startet die **normale Pipeline** pro Teil (OCR, Vision, Klassifizierung)
+
+> Das **Original-Dokument** in Paperless bleibt unverändert. Nach erfolgreichem Split ggf. manuell archivieren oder taggen.
+
+### `.env` auf CT 121
+
+```bash
+PAPERLESS_CONSUME_DIR=/mnt/paperless-data/consume
+LEGACY_SPLIT_QR_REGEX=^[0-9]{6}_[^\s]+$
+```
+
+Optional: `BRILLENPASS_DEDUP_DAYS=21` (Achtung Schreibweise — nicht `RILLENPASS_…`).
+
+### Abgrenzung
+
+| Mechanismus | Zweck |
+|---|---|
+| `pre_consume_qr.py` | Swiss **QR-Rechnung** (SPC) beim **neuen** Scan |
+| `legacy_split_by_qr.py` | **Metadaten-QR** auf Trennseiten — nachträglich per Dok-ID |
+| `legacy-import-batch.sh` | NAS-Bulk ohne OCR/Pipeline (nur Index) |
+
+Details Bulk-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
 
 ---
 

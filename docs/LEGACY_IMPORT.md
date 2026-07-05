@@ -121,3 +121,35 @@ Logs: `Legacy-Import — Pipeline übersprungen` — kein Vision/Ollama.
 | Permission denied auf NAS | Export `no_root_squash` für `/srv/nas` ro |
 
 Neue Scans in `consume/` (ohne `legacy/`) → volle Pipeline unverändert.
+
+---
+
+## QR-Split nachträglich
+
+Wenn ein **einzelnes Paperless-Dokument** viele Legacy-Einzeldokumente enthält (QR auf jeder Trennseite, z. B. `060102_Gesundheit_Monika`), aber **nicht** beim Bulk-Import gesplittet wurde:
+
+### paper.manager (ab UI 2.47)
+
+Menü **✂ Legacy QR-Split** → Dok-ID → **Vorschau** → **Splitten → consume**
+
+### API
+
+```bash
+curl -X POST "http://localhost:8100/api/legacy-split/trigger/651" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: sessionid=..." \
+  -d '{"dry_run": true}'
+```
+
+### `.env`
+
+```bash
+PAPERLESS_CONSUME_DIR=/mnt/paperless-data/consume
+LEGACY_SPLIT_QR_REGEX=^[0-9]{6}_[^\s]+$
+```
+
+Modul: `legacy_split_by_qr.py` — Port des früheren `tsa_barcode_split_function.sh`.
+
+**Hinweis:** Original-Dokument in Paperless bleibt bestehen. Teile durchlaufen danach die normale Pipeline (OCR, Vision, Klassifizierung) — **nicht** den Legacy-Index-Modus (`consume/legacy/`).
+
+Benutzer-Doku: [`Benutzerhandbuch_paper_manager.md`](Benutzerhandbuch_paper_manager.md#14-legacy-qr-split) · Entwickler: [`DEVELOPER.md`](DEVELOPER.md#6-legacy-qr-split--entwickler)
