@@ -48,13 +48,32 @@ def _parse_numeric(m: re.Match) -> str | None:
     return _to_iso(d, mo, y)
 
 
-def _parse_month_name(m: re.Match) -> str | None:
-    d = int(m.group(1))
-    mo = _MONTH_MAP.get(m.group(2).lower().replace("é", "e").replace("û", "u"))
+def _parse_month_name(m: re.Match, *, day_grp: int = 1, month_grp: int = 2, year_grp: int = 3) -> str | None:
+    d = int(m.group(day_grp))
+    mo = _MONTH_MAP.get(m.group(month_grp).lower().replace("é", "e").replace("û", "u"))
     if not mo:
         return None
-    y = int(m.group(3))
+    y = int(m.group(year_grp))
     return _to_iso(d, mo, y)
+
+
+def _parse_numeric_groups(m: re.Match, *, day_grp: int = 1, month_grp: int = 2, year_grp: int = 3) -> str | None:
+    d, mo, y = int(m.group(day_grp)), int(m.group(month_grp)), int(m.group(year_grp))
+    return _to_iso(d, mo, y)
+
+
+def _parse_numeric_after_city(m: re.Match) -> str | None:
+    """«Frick, den 22.03.2022» — Gruppe 1 = Ort, 2–4 = Datum."""
+    if m.lastindex and m.lastindex >= 4:
+        return _parse_numeric_groups(m, day_grp=2, month_grp=3, year_grp=4)
+    return _parse_numeric(m)
+
+
+def _parse_month_name_after_city(m: re.Match) -> str | None:
+    """«Frick, den 22. März 2022» — Gruppe 1 = Ort, 2–4 = Datum."""
+    if m.lastindex and m.lastindex >= 4:
+        return _parse_month_name(m, day_grp=2, month_grp=3, year_grp=4)
+    return _parse_month_name(m)
 
 
 def _find_date_after(text: str, start: int, window: int = 120) -> tuple[str | None, str]:
@@ -123,7 +142,7 @@ def extract_document_issue_date(
         r"([A-ZÀ-Ü][A-Za-zÀ-ÿ\-\.]+),\s*(?:den\s+)?" + _DATE_NUMERIC,
         text,
     ):
-        iso = _parse_numeric(m)
+        iso = _parse_numeric_after_city(m)
         if iso and iso not in exclude:
             return iso, "signal:ort_komma_datum"
 
@@ -133,7 +152,7 @@ def extract_document_issue_date(
         text,
         re.IGNORECASE,
     ):
-        iso = _parse_month_name(m)
+        iso = _parse_month_name_after_city(m)
         if iso and iso not in exclude:
             return iso, "signal:ort_komma_monat"
 
