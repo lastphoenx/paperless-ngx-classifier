@@ -191,7 +191,7 @@ grep '"document_id": 3563' /opt/paperless-scripts/training/audit_log.jsonl | gre
 |---|---|
 | `JSON.parse` / HTTP 502 | Sync Vision > Proxy-Timeout (alt, vor async) |
 | `'bool' object has no attribute 'get'` | Bug in `diagnose_brillenpass_extraction` (fix `57de419`) |
-| GET `/` hängt, 0 Bytes | Session-Check im Default-Thread-Pool — Fix: `GET /` ohne Middleware-Auth, `_AUTH_EXECUTOR` (`2.39`/`2.77`) |
+| GET `/` hängt, 0 Bytes | SyntaxError in `brillenpass_parser` ab `57de419` — Import scheitert, Service tot; danach `2.40` |
 | s1 leer, s2 ok | McOptic-OCR-Parser trifft nicht — nur Vision liefert Werte |
 | Kein Review trotz merged | `write_pending` Dedup oder Crash nach s2 |
 
