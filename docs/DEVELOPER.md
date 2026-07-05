@@ -173,7 +173,7 @@ CLI: `python brillenpass_runner.py <doc_id> [--parser mcoptic_brillenpass] [--fo
 ### 5.8 Nachträglicher Trigger & Betrieb
 
 - **Preflight (sync):** Dokument, OCR, Korrespondent, Person; ohne `force` Abbruch wenn Dok bereits in `pending_brillenpass.jsonl`.
-- **Vision (async):** läuft in `asyncio.to_thread` — blockiert Uvicorn nicht (`correspondent_manager_app._run_brillenpass_bg`).
+- **Vision (async):** läuft in `_BG_EXECUTOR` (eigener Thread-Pool) — blockiert HTTP-Thread-Pool nicht (`_run_brillenpass_bg`).
 - **UI:** pollt `trigger-status` alle 3s, max. ~2,5 Min; zeigt echte Fehler statt sofortigem Erfolg.
 
 **Diagnose auf CT121:**
@@ -191,7 +191,7 @@ grep '"document_id": 3563' /opt/paperless-scripts/training/audit_log.jsonl | gre
 |---|---|
 | `JSON.parse` / HTTP 502 | Sync Vision > Proxy-Timeout (alt, vor async) |
 | `'bool' object has no attribute 'get'` | Bug in `diagnose_brillenpass_extraction` (fix `57de419`) |
-| GET `/` hängt, 0 Bytes | Vision blockierte Worker (Fix Thread `3342511` — Verifikation auf CT121) |
+| GET `/` hängt, 0 Bytes | Default-Thread-Pool erschöpft (Vision + sync Routes) — Fix: `_BG_EXECUTOR` + UI-Cache (`2.38`/`2.76`) |
 | s1 leer, s2 ok | McOptic-OCR-Parser trifft nicht — nur Vision liefert Werte |
 | Kein Review trotz merged | `write_pending` Dedup oder Crash nach s2 |
 
