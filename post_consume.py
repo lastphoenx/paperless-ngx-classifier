@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.50"  # 12.50: Brillenpass Tesseract-TSV Stufe 1, Vision Fallback per Flag
+POST_CONSUME_VERSION = "12.51"  # 12.51: TSV JPEG 300dpi, Text/Positional-Fallback
 import re
 import sys
 import json
@@ -1967,6 +1967,8 @@ def run_brillenpass_extraction_stages(
     if document_id:
         write_audit_entry(document_id, "brillenpass_s1_tsv", {
             "header_anchors": tsv_meta.get("header_anchors", 0),
+            "header_fields": tsv_meta.get("header_fields", []),
+            "method": tsv_meta.get("method"),
             "word_count": tsv_meta.get("word_count", 0),
             "confidence": tsv_meta.get("confidence"),
             "snapshot": snapshot_brillenpass(tsv_data),

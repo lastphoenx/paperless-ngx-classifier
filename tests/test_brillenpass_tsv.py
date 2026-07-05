@@ -65,6 +65,45 @@ def test_merge_tsv_wins_over_regex():
     assert merged["pd"]["links"] == "+31.0"
 
 
+def test_parse_positional_without_full_header():
+    words = [
+        {"text": "R", "left": 80, "top": 130},
+        {"text": "-2.75", "left": 200, "top": 130},
+        {"text": "-1.25", "left": 280, "top": 130},
+        {"text": "179", "left": 360, "top": 130},
+        {"text": "29.5", "left": 480, "top": 130},
+        {"text": "L", "left": 80, "top": 160},
+        {"text": "-1.00", "left": 200, "top": 160},
+        {"text": "-1.50", "left": 280, "top": 160},
+        {"text": "0", "left": 360, "top": 160},
+        {"text": "31.0", "left": 480, "top": 160},
+    ]
+    from brillenpass_tsv import gruppiere_nach_top, _parse_rl_rows_positional
+    r = _parse_rl_rows_positional(gruppiere_nach_top(words))
+    assert r is not None
+    assert r["pd"]["rechts"] == "+29.5"
+    assert r["pd"]["links"] == "+31.0"
+
+
+def test_tsv_text_fallback_mcoptic():
+    from brillenpass_tsv import _parse_tsv_text_fallback
+    words = [
+        {"text": "R", "left": 0, "top": 10},
+        {"text": "-2.75", "left": 10, "top": 10},
+        {"text": "-1.25", "left": 20, "top": 10},
+        {"text": "179", "left": 30, "top": 10},
+        {"text": "29.5", "left": 40, "top": 10},
+        {"text": "L", "left": 0, "top": 20},
+        {"text": "-1.00", "left": 10, "top": 20},
+        {"text": "-1.50", "left": 20, "top": 20},
+        {"text": "0", "left": 30, "top": 20},
+        {"text": "31.0", "left": 40, "top": 20},
+    ]
+    r = _parse_tsv_text_fallback(words)
+    assert r is not None
+    assert r["pd"]["links"] == "+31.0"
+
+
 def test_parse_by_anchors_insufficient_headers():
     words = [{"text": "SPH", "left": 10, "top": 10, "conf": 90}]
     assert parse_by_anchors(words) is None
