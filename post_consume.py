@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.48"  # 12.48: Brillenpass PDF via API + ADD→Nähe-Konsolidierung
+POST_CONSUME_VERSION = "12.49"  # 12.49: Brillenpass Vision-Schema, McOptic-PD-Fix, Parser-prior Merge
 import re
 import sys
 import json
@@ -42,12 +42,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from brillenpass_parser import (
+    REFRAKTION_JSON_SCHEMA,
+    build_brillenpass_vision_prompt,
     corr_brillenpass_parsers,
     corr_supports_brillenpass,
     detect_parser,
     has_brillenpass_values,
     looks_like_brillenpass_any,
     looks_like_brillenpass_document,
+    prefer_vision_for_brillenpass_merge,
     looks_like_optiker_rechnung,
     merge_brillenpass,
     parse_brillenpass_with_parsers,
@@ -1861,28 +1864,7 @@ def vision_brillenpass_analyze(
             "(Vision ohne Bild erzeugt erfundene Werte)"
         )
         return {}
-    hint = ""
-    if parser_hint:
-        hint = (
-            "\nOCR-Parser (Stufe 1) hat bereits extrahiert — mit Bild verifizieren und Lücken füllen:\n"
-            f"{json.dumps(parser_hint, ensure_ascii=False)[:1200]}\n"
-        )
-    user_content = (
-        "Extrahiere NUR die Brillenpass-/Refraktions-Tabelle aus diesem Optiker-Dokument als JSON.\n"
-        "Fokus: Messwerte-Tabelle (SPH, ZYL/CYL, ACHSE, ADD, PD) — nicht Rechnungstext/Footer.\n"
-        '{"fern":{"rechts":{"sph","cyl","achse","prisma","basis","add"},"links":{...}},'
-        '"naehe":{"rechts":{...},"links":{...}},'
-        '"pd":{"rechts":"mm oder null","links":"mm oder null"},'
-        '"glas":{"beschreibung","index","durchmesser","beschichtungen":[]},'
-        '"auftrag":"...","rechnung":"...","gueltig_ab":"YYYY-MM-DD oder null"}\n'
-        "Nur JSON. null für fehlende Werte. "
-        "Vorzeichen von Sph/Cyl/Add exakt vom Dokument (+ oder -). "
-        "PD pro Auge in mm (typisch 25–35), Spalte PD oder unter R/L. "
-        "R/L sind Augenseiten — nicht als basis eintragen. "
-        "McOptic-Karte (SPH ZYL ACHSE … PD): Einstärke ohne Lesewert → fern, nicht naehe.\n"
-        f"{hint}"
-        f"OCR-Text (Stufe 1):\n{(ocr_text or '')[:2000]}"
-    )
+    user_content = build_brillenpass_vision_prompt(ocr_text, parser_hint)
     messages = [{"role": "user", "content": user_content, "images": [image_b64]}]
     try:
         from brillenpass_parser import normalize_vision_brillenpass  # noqa: WPS433
@@ -1894,8 +1876,8 @@ def vision_brillenpass_analyze(
                 "messages": messages,
                 "system": VISION_SYSTEM,
                 "stream": False,
-                "format": "json",
-                "options": {"temperature": 0.1, "num_predict": 500},
+                "format": REFRAKTION_JSON_SCHEMA,
+                "options": {"temperature": 0, "seed": 42, "num_predict": 500},
             },
             timeout=VISION_TIMEOUT,
         )
@@ -2056,7 +2038,9 @@ def maybe_queue_brillenpass(
         "vision_empty": not vision_bp,
     })
 
-    prefer_vis = bool(image_b64)
+    prefer_vis = prefer_vision_for_brillenpass_merge(
+        parser_data, vision_bp, has_image=bool(image_b64),
+    )
     merged = merge_brillenpass(parser_data, vision_bp, prefer_vision=prefer_vis)
     merged["korrespondent"] = corr_entry.get("name", "")
     if not merged.get("gueltig_ab"):

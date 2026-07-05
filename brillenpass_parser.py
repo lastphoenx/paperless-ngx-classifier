@@ -8,8 +8,124 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
+# Ollama structured output — kein prisma/basis (Spalten-Bleed-Halluzinationen)
+_REFRAKTION_EYE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "sph": {"type": ["number", "null"]},
+        "cyl": {"type": ["number", "null"]},
+        "achse": {"type": ["integer", "null"], "minimum": 0, "maximum": 180},
+        "add": {"type": ["number", "null"], "minimum": 0, "maximum": 4},
+    },
+    "required": ["sph", "cyl", "achse", "add"],
+}
+_REFRAKTION_EYE_PAIR = {
+    "type": "object",
+    "properties": {"rechts": _REFRAKTION_EYE_SCHEMA, "links": _REFRAKTION_EYE_SCHEMA},
+    "required": ["rechts", "links"],
+}
+REFRAKTION_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "fern": _REFRAKTION_EYE_PAIR,
+        "naehe": _REFRAKTION_EYE_PAIR,
+        "pd": {
+            "type": "object",
+            "properties": {
+                "rechts": {"type": ["number", "null"]},
+                "links": {"type": ["number", "null"]},
+            },
+            "required": ["rechts", "links"],
+        },
+        "glas": {
+            "type": "object",
+            "properties": {
+                "beschreibung": {"type": ["string", "null"]},
+                "index": {"type": ["number", "null"]},
+                "durchmesser": {"type": ["number", "null"]},
+                "beschichtungen": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "auftrag": {"type": ["string", "null"]},
+        "rechnung": {"type": ["string", "null"]},
+        "gueltig_ab": {"type": ["string", "null"]},
+    },
+    "required": ["fern", "naehe", "pd", "glas", "auftrag", "rechnung", "gueltig_ab"],
+}
 
-def _norm_val(v: str | None) -> str | None:
+
+def ocr_window(text: str, width: int = 2400) -> str:
+    """OCR um Refraktions-Keywords — nicht stumpf [:2000] vom Anfang."""
+    if not text:
+        return ""
+    m = re.search(r"(SPH|Sph\.?|ZYL|Cyl|ACHSE|Achse|A°)", text, re.IGNORECASE)
+    if not m:
+        return text[:width]
+    start = max(0, m.start() - 400)
+    return text[start:start + width]
+
+
+def prefer_vision_for_brillenpass_merge(
+    parser_data: dict | None,
+    vision_data: dict | None,
+    *,
+    has_image: bool,
+) -> bool:
+    """Vision ersetzt Stufe 1 nur wenn Parser leer — sonst Lückenfüller."""
+    if not has_image or not vision_data:
+        return False
+    if parser_data and has_brillenpass_values(parser_data):
+        return False
+    return True
+
+
+def build_brillenpass_vision_prompt(ocr_text: str, parser_hint: dict | None = None) -> str:
+    import json as _json
+
+    hint = ""
+    if parser_hint:
+        hint = (
+            "\nOCR-Parser (Stufe 1) hat bereits extrahiert — mit Bild verifizieren und Lücken füllen:\n"
+            f"{_json.dumps(parser_hint, ensure_ascii=False)[:1200]}\n"
+        )
+    skeleton = (
+        '{"fern":{"rechts":{"sph":null,"cyl":null,"achse":null,"add":null},'
+        '"links":{"sph":null,"cyl":null,"achse":null,"add":null}},'
+        '"naehe":{"rechts":{"sph":null,"cyl":null,"achse":null,"add":null},'
+        '"links":{"sph":null,"cyl":null,"achse":null,"add":null}},'
+        '"pd":{"rechts":null,"links":null},'
+        '"glas":{"beschreibung":null,"index":null,"durchmesser":null,"beschichtungen":[]},'
+        '"auftrag":null,"rechnung":null,"gueltig_ab":null}'
+    )
+    return (
+        "Du extrahierst Refraktionswerte aus einem Optiker-Dokument "
+        "(Brillenpass, Rechnung oder Brillenverordnung).\n"
+        "Antworte ausschliesslich mit einem JSON-Objekt nach exakt diesem Schema "
+        "(nicht gefundene Werte bleiben null):\n"
+        f"{skeleton}\n"
+        "Regeln:\n"
+        "1. Sph/Cyl/Add/PD als JSON-Zahlen, nicht als Strings. "
+        "Achse als ganze Zahl 0-180 ohne Gradzeichen; Achse 0 und Cyl 0.00 sind gültig.\n"
+        "2. Vorzeichen exakt übernehmen; fehlendes Vorzeichen = positiv.\n"
+        "3. Zeilen mit Ferne/Fern -> fern, Nähe/Nah -> naehe. "
+        "Nur eine Werttabelle ohne Nah-Kennzeichnung -> fern.\n"
+        "4. PD nur als Einzelwert pro Auge in mm (typisch 25-35). "
+        "Gesamt-PD (55-70) nicht aufteilen -> beide null.\n"
+        "5. R/Rechts und L/Links sind Augenseiten.\n"
+        "6. Ignoriere Produkt-/Preiszeilen, Adressen, Rabatte, MwSt.\n"
+        "7. gueltig_ab = Mess-/Refraktionsdatum falls vorhanden, sonst Dokumentdatum. "
+        "Format YYYY-MM-DD, zweistellige Jahre als 20YY.\n"
+        "8. Jede R- und L-Zeile endet mit einer eigenen PD-Zahl — bei zwei Zeilen zwei PD-Werte.\n"
+        "9. Spaltenüberschriften (SPH, ZYL, ACHSE, ADD, PD) sind keine Werte. "
+        "Erfinde keine Werte für leere Zellen.\n"
+        "10. Kein Markdown, kein Text vor oder nach dem JSON.\n"
+        f"{hint}"
+        "OCR-Text (Stufe 1):\n"
+        f"```\n{ocr_window(ocr_text)}\n```"
+    )
+
+
+def _norm_val(v: str | float | int | None) -> str | None:
     if v is None:
         return None
     s = str(v).strip().replace(",", ".")
@@ -312,19 +428,47 @@ def _nullish(val) -> None | str:
     return str(val).strip()
 
 
+def _coerce_vision_eye(eye: dict | None) -> dict | None:
+    """Vision-JSON (Zahlen) → internes String-Format; prisma/basis verwerfen."""
+    if not eye or not isinstance(eye, dict):
+        return eye
+    cleaned = {
+        "sph": _norm_val(eye.get("sph")),
+        "cyl": _norm_val(eye.get("cyl")),
+        "achse": re.sub(r"\D", "", str(eye["achse"])) if eye.get("achse") is not None else None,
+        "prisma": None,
+        "basis": None,
+        "add": _norm_val(eye.get("add")),
+    }
+    if cleaned["achse"] == "":
+        cleaned["achse"] = None
+    return _sanitize_eye(cleaned)
+
+
 def normalize_vision_brillenpass(
     data: dict | None,
     *,
     parser_hint: dict | None = None,
     ocr_text: str = "",
 ) -> dict:
-    """Vision-JSON bereinigen: null-Strings, PD aus Prisma/Basis, erfundene ADD-Werte."""
+    """Vision-JSON bereinigen: Typen, null-Strings, PD-Plausibilität, OCR-Crosscheck."""
     if not data:
         return {}
     out = deepcopy(data)
     pd_out = out.setdefault("pd", {"rechts": None, "links": None})
     for side in ("rechts", "links"):
-        pd_out[side] = _nullish(pd_out.get(side))
+        raw_pd = pd_out.get(side)
+        if isinstance(raw_pd, (int, float)):
+            pd_out[side] = _norm_val(raw_pd)
+        else:
+            pd_out[side] = _nullish(raw_pd)
+        if pd_out[side]:
+            try:
+                pf = abs(float(str(pd_out[side]).replace(",", ".").lstrip("+")))
+                if not (25 <= pf <= 35):
+                    pd_out[side] = None
+            except ValueError:
+                pd_out[side] = None
 
     for dist in ("fern", "naehe"):
         block = out.setdefault(dist, _empty_eye_block())
@@ -332,30 +476,31 @@ def normalize_vision_brillenpass(
             eye = block.get(side)
             if not eye:
                 continue
+            if not isinstance(eye, dict):
+                block[side] = None
+                continue
+            # Legacy: prisma/basis aus alten Vision-Läufen → PD retten, Felder leeren
             basis = eye.get("basis")
             if basis and not pd_out.get(side):
                 try:
                     bf = abs(float(str(basis).replace(",", ".").lstrip("+")))
-                    if 15 <= bf <= 40:
+                    if 25 <= bf <= 35:
                         pd_out[side] = str(basis).replace(",", ".")
-                        eye["basis"] = None
                 except ValueError:
                     pass
             prisma = eye.get("prisma")
             if prisma and not pd_out.get(side):
                 try:
                     f = abs(float(str(prisma).replace(",", ".").lstrip("+")))
-                    if 15 <= f <= 40:
+                    if 25 <= f <= 35:
                         pd_out[side] = str(prisma).replace(",", ".")
-                        eye["prisma"] = None
                 except ValueError:
                     pass
-            add = eye.get("add")
+            coerced = _coerce_vision_eye(eye)
+            add = (coerced or {}).get("add")
             if add and not _plausible_reading_add(add, parser_hint):
-                eye["add"] = None
-                if (eye.get("basis") or "").upper() == "ADD":
-                    eye["basis"] = None
-            block[side] = _sanitize_eye(eye)
+                coerced["add"] = None
+            block[side] = coerced
     if out.get("gueltig_ab"):
         out["gueltig_ab"] = normalize_gueltig_ab_iso(out.get("gueltig_ab"))
     if ocr_text:
@@ -1252,7 +1397,7 @@ _MCOPTIC_RL = re.compile(
     r"([+\-]?\s*[\d.,]+)\s+"
     r"([+\-]?\s*[\d.,]+)\s+"
     r"(\d+)\s*°?"
-    r"(.*?)(?:\n|$)",
+    r"([^\n]*)",
     re.IGNORECASE,
 )
 
@@ -1261,7 +1406,7 @@ _MCOPTIC_RL_LABELED = re.compile(
     r"(?:SPH\s*)?([+\-]?\s*[\d.,]+)\s+"
     r"(?:(?:ZYL|CYL)\s*)?([+\-]?\s*[\d.,]+)\s+"
     r"(?:(?:ACHSE|AXIS|A)\s*)?(\d+)\s*°?"
-    r"(.*?)(?:\n|$)",
+    r"([^\n]*)",
     re.IGNORECASE,
 )
 
@@ -1294,10 +1439,10 @@ def _fill_mcoptic_pass_rows(text: str) -> tuple[dict[str, dict | None], dict[str
             tail = (m.group(5) or "").strip()
             for raw in re.findall(r"[+\-]?\s*[\d.,]+", tail):
                 a, p = _pd_or_add(raw)
-                if a and not add_v:
+                if a:
                     add_v = a
-                if p and not pd_v:
-                    pd_v = p
+                if p:
+                    pd_v = p  # letzte PD-Zahl am Zeilenende gewinnt
             eye = _eye_from_parts(m.group(2), m.group(3), m.group(4), add_v)
             if eye:
                 eyes[side] = eye

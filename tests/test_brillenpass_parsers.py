@@ -383,6 +383,33 @@ def test_consolidate_ignores_hallucinated_integer_add():
     assert merged["pd"]["links"] == "31.0"
 
 
+def test_mcoptic_card_doc3563_both_pd():
+    """McOptic-Karte Dok #3563 — beide Augen + PD pro Seite (Regex-Tail-Fix)."""
+    text = (
+        "26-32910 / Monika Santinelli\n12.06.2015\n10.06.2015\n"
+        "SPH ZYL ACHSE PRISMA BAS ADD PD\n"
+        "R -2.75 -1.25 179 29.5\n"
+        "L -1.00 -1.50 0 31.0\n"
+        "1490LG ORGA 150 HMC MAX"
+    )
+    r = parse_mcoptic_pass(text)
+    assert r["fern"]["rechts"]["sph"] == "-2.75"
+    assert r["fern"]["links"]["sph"] == "-1.00"
+    assert r["fern"]["links"]["achse"] == "0"
+    assert r["pd"]["rechts"] == "+29.5"
+    assert r["pd"]["links"] == "+31.0"
+    assert r["gueltig_ab"] == "2015-06-10"
+
+
+def test_prefer_vision_only_when_parser_empty():
+    from brillenpass_parser import prefer_vision_for_brillenpass_merge
+    parser = parse_mcoptic_pass(
+        "R -2.75 -1.25 179 29.5\nL -1.00 -1.50 0 31.0"
+    )
+    assert prefer_vision_for_brillenpass_merge(parser, {"fern": {}}, has_image=True) is False
+    assert prefer_vision_for_brillenpass_merge(None, {"fern": {}}, has_image=True) is True
+
+
 def test_mcoptic_header_date():
     text = "26-32910 / Monika Santinelli\n12.06.2015\n10.06.2015\nSPH ZYL ACHSE\nR -2.75 -1.25 179 29.5"
     from brillenpass_parser import _parse_pass_date
