@@ -4,6 +4,7 @@
 |---|---|
 | [Benutzerhandbuch_paper_manager.md](Benutzerhandbuch_paper_manager.md) | Bedienung paper.manager (Review, Brillenpass, QR-Split) |
 | [DEVELOPER.md](DEVELOPER.md) | Architektur, APIs, Parser erweitern, Deploy |
+| [BRILLENPASS_HANDOFF.md](BRILLENPASS_HANDOFF.md) | Brillenpass-Stand / offene Punkte (Handoff) |
 | [../INSTALL.md](../INSTALL.md) | Installation CT 121 / Docker |
 | [../README.de.md](../README.de.md) | Projektüberblick |
 | [LEGACY_IMPORT.md](LEGACY_IMPORT.md) | NAS-Legacy-Bulk + QR-Split nachträglich |

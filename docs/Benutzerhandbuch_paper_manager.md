@@ -371,7 +371,11 @@ Neue Brille ~12 Monate später → neuer Eintrag mit Diff zur Vorversion.
 
 **Aus Dokument parsen** — Paperless-Dok-ID + optional Parser → Felder vorfüllen (ohne Review-Queue).
 
-**Nachträglich verarbeiten** — bestehendes Paperless-Dokument durch Pipeline schicken (Dok-ID, optional Parser-Override, «Erneut» mit force).
+**Nachträglich verarbeiten** — bestehendes Paperless-Dokument durch Pipeline (Dok-ID, optional Parser-Override).
+
+- Läuft **im Hintergrund** (~1–2 Min Vision); Statuszeile aktualisiert sich per Polling.
+- **«Erneut»** ankreuzen, wenn dasselbe Dok schon in der Review-Liste steht (ersetzt offenen Eintrag).
+- Bei Fehler: rote Meldung in der UI; Details in `journalctl -u correspondent-manager` und `audit_log.jsonl`.
 
 **Review-Panel** — Vorschlag prüfen, Diff zur letzten Version, Freigeben oder Ablehnen.
 
