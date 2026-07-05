@@ -109,7 +109,14 @@ venv/bin/pip install \
     pdf2image \
     pyzbar \
     pillow \
+    pypdf \
     python-dotenv
+```
+
+**System-Pakete** (für QR-Split / pre_consume_qr):
+
+```bash
+apt install -y poppler-utils libzbar0
 ```
 
 ---
