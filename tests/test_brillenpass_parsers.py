@@ -10,6 +10,7 @@ from brillenpass_parser import (  # noqa: E402
     has_brillenpass_values,
     merge_brillenpass,
     normalize_parser_name,
+    _merge_eye,
     parse_augenarzt,
     parse_by_parser,
     parse_brillenpass_auto,
@@ -135,6 +136,19 @@ def test_merge_mcoptic_split_vision():
     assert m["fern"]["links"]["sph"] == "-0.75"
     assert m["fern"]["rechts"].get("basis") is None
     assert m["naehe"]["links"] is None
+
+
+def test_vision_only_plus_sph_not_auto_negated():
+    """Kein pauschales Minus nur wegen negativem Cyl (echte Weitsicht + bleibt)."""
+    m = _merge_eye(None, {"sph": "+2.50", "cyl": "-0.50", "achse": "90"})
+    assert m["sph"] == "+2.50"
+
+
+def test_merge_sph_sign_conflict_prefers_parser():
+    p = {"sph": "-2.50", "cyl": "-1.25", "achse": "178"}
+    v = {"sph": "2.50", "cyl": "-1.25", "achse": "178"}
+    m = _merge_eye(p, v)
+    assert m["sph"] == "-2.50"
 
 
 def test_augenarzt():
