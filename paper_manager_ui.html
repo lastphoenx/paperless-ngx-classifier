@@ -751,14 +751,60 @@
       </div>
     </div>
     <div class="card" style="margin-top:20px;padding:14px 16px">
+      <div class="card-title" style="font-size:13px;margin-bottom:8px">Manuelle Erfassung</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        Werte manuell eingeben oder aus einem Dokument parsen — landet in der Review-Queue.
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div class="field-group">
+          <label>Person</label>
+          <select id="bp-man-person" style="font-size:13px"></select>
+        </div>
+        <div class="field-group">
+          <label>Korrespondent</label>
+          <input id="bp-man-korr" placeholder="z. B. McOptic" style="font-size:13px">
+        </div>
+        <div class="field-group">
+          <label>Gültig ab</label>
+          <input type="date" id="bp-man-datum" style="font-size:13px">
+        </div>
+        <div class="field-group">
+          <label>Dok-ID (optional)</label>
+          <input type="number" id="bp-man-dokid" min="1" placeholder="Paperless" style="font-size:13px">
+        </div>
+        <div class="field-group">
+          <label>Parser</label>
+          <select id="bp-man-parser" style="font-size:13px"></select>
+        </div>
+      </div>
+      <div class="bp-eye-grid" style="margin-bottom:10px">
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Rechts</div><div id="bp-man-nr"></div></div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Links</div><div id="bp-man-nl"></div></div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Rechts</div><div id="bp-man-fr"></div></div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Links</div><div id="bp-man-fl"></div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <div class="field-group"><label>Glas Index</label><input id="bp-man-glas-index" style="font-size:12px"></div>
+        <div class="field-group"><label>Glas Beschreibung</label><input id="bp-man-glas-desc" style="font-size:12px"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-secondary" onclick="parseBrillenpassManual()">📄 Aus Dokument parsen</button>
+        <button class="btn btn-primary" onclick="submitBrillenpassManual()">Zur Review einreichen</button>
+      </div>
+      <div id="bp-man-status" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
+    </div>
+    <div class="card" style="margin-top:20px;padding:14px 16px">
       <div class="card-title" style="font-size:13px;margin-bottom:8px">Nachträglich verarbeiten</div>
       <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
-        Paperless-Dokument-ID eingeben (z.&nbsp;B. Fielmann-Rechnung). Korrespondent braucht
-        <code>brillenpass.aktiv</code>, Person muss in <code>family.json</code> erkennbar sein.
+        Paperless-Dokument-ID eingeben. Korrespondent braucht
+        <code>brillenpass.aktiv</code> (oder Parser-Override wählen).
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input type="number" id="bp-trigger-id" placeholder="Dok-ID" min="1"
           style="max-width:120px;font-size:13px">
+        <select id="bp-trigger-parser" style="max-width:200px;font-size:12px" title="Parser-Override">
+          <option value="">Parser auto</option>
+        </select>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin:0">
           <input type="checkbox" id="bp-trigger-force"> Erneut (ersetzt offenen Review)
         </label>
@@ -813,7 +859,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.43';
+const UI_VERSION = '2.44';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2365,7 +2411,7 @@ function toggleCorrEdit(idx, entry) {
           <label style="font-size:11px">Parser</label>
           <select id="ce-bp-parser-${idx}" style="max-width:200px">
             <option value="">— keiner —</option>
-            <option value="fielmann" ${(entry.brillenpass||{}).parser==='fielmann'?'selected':''}>Fielmann</option>
+            ${_bpParserOptionsHtml((entry.brillenpass||{}).parser)}
           </select>
         </div>
         <label style="font-size:11px">Typische Begriffe (OCR-Hinweise, Enter)</label>
@@ -4705,6 +4751,127 @@ async function saveFamilyBeziehungen() {
 let _bpOverview = [];
 let _bpReview = [];
 let _bpSelectedReview = null;
+let _bpParsers = [
+  {id:'fielmann', label:'Fielmann Rechnung'},
+  {id:'fielmann_pass', label:'Fielmann Brillenpass (Karte)'},
+  {id:'mcoptic_pass', label:'McOptic Brillenpass'},
+  {id:'augenarzt', label:'Augenarzt-Verordnung'},
+  {id:'optik_meyer_moehlin', label:'Optik Meyer Möhlin'},
+];
+
+function _bpParserOptionsHtml(selected) {
+  return _bpParsers.map(p =>
+    `<option value="${p.id}" ${selected===p.id?'selected':''}>${p.label}</option>`
+  ).join('');
+}
+
+async function _loadBpParsers() {
+  try {
+    const r = await fetch(`${API_BASE}/brillenpass/parsers`);
+    const d = await r.json();
+    if (d.parsers && d.parsers.length) _bpParsers = d.parsers;
+  } catch (e) {}
+  ['bp-man-parser', 'bp-trigger-parser'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const isTrigger = id === 'bp-trigger-parser';
+    el.innerHTML = (isTrigger ? '<option value="">Parser auto</option>' : '')
+      + _bpParserOptionsHtml(el.value || '');
+  });
+}
+
+function _bpInitManualForm() {
+  ['bp-man-nr','bp-man-nl','bp-man-fr','bp-man-fl'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && !el.innerHTML) el.innerHTML = _bpEyeFields(id, null);
+  });
+}
+
+function _bpFillManualFromParse(result) {
+  const v = result || {};
+  const set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+  set('bp-man-datum', v.gueltig_ab || '');
+  set('bp-man-glas-index', (v.glas||{}).index || '');
+  set('bp-man-glas-desc', (v.glas||{}).beschreibung || '');
+  const pairs = [['bp-man-nr','naehe','rechts'],['bp-man-nl','naehe','links'],['bp-man-fr','fern','rechts'],['bp-man-fl','fern','links']];
+  pairs.forEach(([pfx, dist, side]) => {
+    const eye = ((v[dist]||{})[side]) || {};
+    ['sph','cyl','achse','prisma','basis','add'].forEach(k => {
+      const el = document.getElementById(`${pfx}-${k}`);
+      if (el) el.value = eye[k] || '';
+    });
+  });
+}
+
+async function parseBrillenpassManual() {
+  const status = document.getElementById('bp-man-status');
+  const docId = parseInt(document.getElementById('bp-man-dokid')?.value || '', 10);
+  const parser = document.getElementById('bp-man-parser')?.value || '';
+  if (!docId) { showToast('Dok-ID für Parsen eingeben', 'error'); return; }
+  if (status) status.textContent = 'Parse…';
+  try {
+    const r = await fetch(`${API_BASE}/brillenpass/parse`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({document_id: docId, parser: parser || undefined}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.message || r.statusText);
+    if (!d.ok) throw new Error(d.message || 'Keine Werte erkannt');
+    if (d.parser) {
+      const ps = document.getElementById('bp-man-parser');
+      if (ps) ps.value = d.parser;
+    }
+    _bpFillManualFromParse(d.result);
+    if (status) status.textContent = `Geparst (${d.parser})`;
+    showToast('Werte übernommen', 'success');
+  } catch (e) {
+    if (status) status.textContent = String(e.message || e);
+    showToast('Parse: ' + (e.message || e), 'error');
+  }
+}
+
+async function submitBrillenpassManual() {
+  const status = document.getElementById('bp-man-status');
+  const person_id = document.getElementById('bp-man-person')?.value || '';
+  const korrespondent = (document.getElementById('bp-man-korr')?.value || '').trim();
+  const gueltig_ab = document.getElementById('bp-man-datum')?.value || '';
+  const docRaw = document.getElementById('bp-man-dokid')?.value;
+  const parser = document.getElementById('bp-man-parser')?.value || '';
+  if (!person_id || !korrespondent) {
+    showToast('Person und Korrespondent erforderlich', 'error');
+    return;
+  }
+  const vorschlag = {
+    gueltig_ab: gueltig_ab || null,
+    parser,
+    fern: { rechts: _bpCollectEye('bp-man-fr'), links: _bpCollectEye('bp-man-fl') },
+    naehe: { rechts: _bpCollectEye('bp-man-nr'), links: _bpCollectEye('bp-man-nl') },
+    glas: {
+      index: document.getElementById('bp-man-glas-index')?.value || null,
+      beschreibung: document.getElementById('bp-man-glas-desc')?.value || '',
+      durchmesser: null, beschichtungen: [],
+    },
+  };
+  const body = {
+    person_id, korrespondent, gueltig_ab, parser, vorschlag,
+    document_id: docRaw ? parseInt(docRaw, 10) : null,
+  };
+  if (status) status.textContent = 'Speichere…';
+  try {
+    const r = await fetch(`${API_BASE}/brillenpass/manual`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+    showToast(d.message || 'Zur Review eingereiht', 'success');
+    if (status) status.textContent = d.message || 'OK';
+    await loadBrillenpassView();
+  } catch (e) {
+    if (status) status.textContent = String(e.message || e);
+    showToast('Manuell: ' + (e.message || e), 'error');
+  }
+}
 
 async function loadBrillenpassBadge() {
   try {
@@ -4830,10 +4997,10 @@ function renderBrillenpassReviewPanel(entry) {
     <div class="card">
       <div class="card-header">
         <span class="card-title">${entry.anzeigename} — ${entry.korrespondent}</span>
-        <a href="${docUrl}" target="_blank" rel="noopener" data-paperless-doc="${docId}"
+        ${docId ? `<a href="${docUrl}" target="_blank" rel="noopener" data-paperless-doc="${docId}"
            style="color:var(--accent);font-size:12px;text-decoration:none;font-weight:600">
           In Paperless öffnen ↗
-        </a>
+        </a>` : '<span style="font-size:11px;color:var(--muted)">Manuell / ohne Dokument</span>'}
       </div>
       <div style="display:grid;grid-template-columns:200px 1fr;gap:12px;margin-top:10px">
         ${thumb ? `<a href="${docUrl}" target="_blank" rel="noopener" data-paperless-doc="${docId}"
@@ -4883,8 +5050,9 @@ function _bpRenderReviewList() {
   el.innerHTML = _bpReview.map(e => `
     <div class="bp-card" onclick="selectBrillenpassReview(${e.index})">
       <strong>${e.anzeigename}</strong>
+      ${e.source === 'manual' ? '<span class="badge" style="background:#6366f1;margin-left:6px">manuell</span>' : ''}
       <div style="font-size:11px;color:var(--muted);margin-top:4px">
-        ${e.korrespondent} · Dok #${e.document_id} · ${e.timestamp || ''}
+        ${e.korrespondent} · ${e.document_id ? 'Dok #'+e.document_id : 'ohne Dok'} · ${e.timestamp || ''}
       </div>
     </div>`).join('');
 }
@@ -4939,6 +5107,15 @@ async function rejectBrillenpassReview(index) {
 
 async function loadBrillenpassView() {
   try {
+    await _loadBpParsers();
+    _bpInitManualForm();
+    const fam = await fetch(`${API_BASE}/family`).then(r => r.json()).catch(() => ({personen:[]}));
+    const ps = document.getElementById('bp-man-person');
+    if (ps) {
+      ps.innerHTML = (fam.personen || []).map(p =>
+        `<option value="${p.id}">${p.anzeigename || p.name || p.id}</option>`
+      ).join('');
+    }
     const [ov, rv] = await Promise.all([
       fetch(`${API_BASE}/brillenpass`).then(r => r.json()),
       fetch(`${API_BASE}/brillenpass-review`).then(r => r.json()),
@@ -4965,10 +5142,11 @@ async function triggerBrillenpass() {
   }
   if (status) status.textContent = 'Verarbeite… (Vision kann ~1 Min dauern)';
   try {
+    const parser = document.getElementById('bp-trigger-parser')?.value || '';
     const r = await fetch(`${API_BASE}/brillenpass/trigger/${id}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({force}),
+      body: JSON.stringify({force, parser: parser || undefined}),
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || d.error || r.statusText);

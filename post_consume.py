@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.41"  # 12.41: Steuerjahr-CF + Brillenpass-Nachverarbeitung
+POST_CONSUME_VERSION = "12.42"  # 12.42: Brillenpass-Parser-Registry (Pass, Augenarzt, Meyer)
 import re
 import sys
 import json
@@ -43,9 +43,12 @@ from urllib3.util.retry import Retry
 
 from brillenpass_parser import (
     corr_supports_brillenpass,
+    detect_parser,
     has_brillenpass_values,
+    looks_like_brillenpass_document,
     looks_like_optiker_rechnung,
     merge_brillenpass,
+    parse_by_parser,
     parse_fielmann_brillenpass,
 )
 from document_date import (
@@ -1818,12 +1821,13 @@ def _get_letzte_brillenpass_version(person_id: str) -> dict | None:
 
 def write_pending_brillenpass(
     vorschlag: dict,
-    document_id: int,
     person_id: str,
     anzeigename: str,
     korrespondent_name: str,
+    document_id: int | None = None,
+    source: str = "pipeline",
 ) -> bool:
-    """Brillenpass-Vorschlag in pending_brillenpass.jsonl — Dedupe pro document_id."""
+    """Brillenpass-Vorschlag in pending_brillenpass.jsonl — Dedupe pro document_id oder manuell."""
     import time as _time
     import fcntl as _fcntl
 
@@ -1833,17 +1837,31 @@ def write_pending_brillenpass(
         lines = [
             ln for ln in PENDING_BRILLENPASS_PATH.read_text(encoding="utf-8").split("\n") if ln.strip()
         ]
+        gueltig_ab = (vorschlag or {}).get("gueltig_ab")
         for ln in lines:
             try:
                 e = json.loads(ln)
-                if e.get("document_id") == document_id and e.get("status") == "pending":
+                if e.get("status") != "pending":
+                    continue
+                if document_id and e.get("document_id") == document_id:
                     log.info("Brillenpass pending bereits vorhanden für Dok #%s — übersprungen", document_id)
                     return False
+                if not document_id and source == "manual":
+                    ev = e.get("vorschlag") or {}
+                    if (
+                        e.get("source") == "manual"
+                        and e.get("person_id") == person_id
+                        and e.get("korrespondent") == korrespondent_name
+                        and ev.get("gueltig_ab") == gueltig_ab
+                    ):
+                        log.info("Brillenpass manual pending bereits vorhanden — übersprungen")
+                        return False
             except Exception:
                 continue
 
     entry = {
         "status":           "pending",
+        "source":           source,
         "timestamp":        _time.strftime("%Y-%m-%dT%H:%M:%S"),
         "document_id":      document_id,
         "person_id":        person_id,
@@ -1880,8 +1898,8 @@ def maybe_queue_brillenpass(
         return
 
     dt_vis = (vision_meta or {}).get("dokumenttyp_visuell", "")
-    if not looks_like_optiker_rechnung(ocr_text, dt_vis):
-        log.debug("Brillenpass: keine Optiker-Rechnung erkannt")
+    if not looks_like_brillenpass_document(ocr_text, parser_name, dt_vis):
+        log.debug("Brillenpass: Dokumenttyp für Parser %s nicht erkannt", parser_name)
         return
 
     direct_name, direct_reason = _match_person_direct(ocr_text, vision_meta)
@@ -1892,8 +1910,8 @@ def maybe_queue_brillenpass(
     anzeigename = _resolve_person_anzeigename(person_id) or direct_name
     log.info("Brillenpass-Trigger: person=%s (%s), parser=%s", person_id, direct_reason, parser_name)
 
-    parser_data: dict | None = None
-    if parser_name == "fielmann":
+    parser_data = parse_by_parser(parser_name, ocr_text)
+    if not parser_data and parser_name == "fielmann":
         parser_data = parse_fielmann_brillenpass(ocr_text)
     vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
     merged = merge_brillenpass(parser_data, vision_bp)
@@ -1906,7 +1924,7 @@ def maybe_queue_brillenpass(
         return
 
     if not write_pending_brillenpass(
-        merged, document_id, person_id, anzeigename, corr_entry.get("name", ""),
+        merged, person_id, anzeigename, corr_entry.get("name", ""), document_id=document_id,
     ):
         return
 
