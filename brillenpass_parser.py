@@ -598,6 +598,39 @@ def find_brillenpass_period_duplicate(
     return None
 
 
+def collect_document_ids(*sources: dict | None) -> list[int]:
+    """Alle Paperless-Dok-IDs aus Version/Vorschlag (document_ids + legacy document_id)."""
+    ids: list[int] = []
+    for src in sources:
+        if not src:
+            continue
+        for raw in src.get("document_ids") or []:
+            try:
+                n = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if n not in ids:
+                ids.append(n)
+        legacy = src.get("document_id")
+        if legacy is not None:
+            try:
+                n = int(legacy)
+            except (TypeError, ValueError):
+                continue
+            if n not in ids:
+                ids.append(n)
+    return ids
+
+
+def apply_document_ids(version: dict, *extra: dict | None) -> dict:
+    """Setzt document_ids und legacy document_id (erstes Quelldok)."""
+    ids = collect_document_ids(version, *extra)
+    if ids:
+        version["document_ids"] = ids
+        version["document_id"] = ids[0]
+    return version
+
+
 def merge_brillenpass_version(existing: dict, incoming: dict) -> dict:
     """Bestehende freigegebene Version mit neuem Vorschlag anreichern (Dedup)."""
     out = dict(existing)
@@ -617,8 +650,7 @@ def merge_brillenpass_version(existing: dict, incoming: dict) -> dict:
     for k in ("beschreibung", "index", "durchmesser", "beschichtungen"):
         if not g_out.get(k) and g_inc.get(k):
             g_out[k] = g_inc[k]
-    if incoming.get("document_id") and not out.get("document_id"):
-        out["document_id"] = incoming["document_id"]
+    apply_document_ids(out, incoming)
     ext = out.setdefault("extraktion", {})
     inc_ext = incoming.get("extraktion") or {}
     prev_src = ext.get("quelle", "")

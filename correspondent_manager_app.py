@@ -2004,6 +2004,7 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
         "gueltig_ab": gueltig_ab,
         "korrespondent": korrespondent,
         "document_id": doc_id,
+        "document_ids": [doc_id] if doc_id else [],
         "auftrag": vorschlag.get("auftrag", ""),
         "rechnung": vorschlag.get("rechnung", ""),
         "fern": vorschlag.get("fern") or {"rechts": None, "links": None},
