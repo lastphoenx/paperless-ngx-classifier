@@ -21,7 +21,7 @@ Kurzüberblick für Fortsetzung in neuem Chat. Repo: `paperless-ngx-classifier`,
 1. **Review-Eintrag erscheint nicht** trotz grüner/positiver UI-Meldung (früher).
 2. **`JSON.parse: unexpected character`** beim Trigger (Proxy-Timeout bei sync Vision) — behoben durch async Trigger.
 3. **`'bool' object has no attribute 'get'`** nach s1+s2 — Crash in `diagnose_brillenpass_extraction` (behoben `57de419`).
-4. **Web-UI hängt / GET `/` = 0 Bytes** — **Ursache:** `asyncio.to_thread(_session_valid)` im Default-Pool vor jedem Request. **Fix:** `GET /` ohne Auth-Middleware, Session in `_AUTH_EXECUTOR` mit `requests`-Timeout.
+4. **Web-UI hängt / GET `/` = 0 Bytes** — **Ursache (57de419):** SyntaxError in `brillenpass_parser.py` → `correspondent_manager` startet nicht (`from brillenpass_parser import …`). **Fix:** `needs_add` korrekt (`2.40`/`2.78`). Thread-Pool-Fixes (`3342511`+) waren Symptom-Bekämpfung.
 
 ---
 

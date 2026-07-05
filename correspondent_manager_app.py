@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.39"  # 2.39: GET / ohne Auth-Middleware, Session in _AUTH_EXECUTOR
-UI_VERSION = "2.77"
+__version__ = "2.40"  # 2.40: brillenpass_parser SyntaxFix — Service startet wieder
+UI_VERSION = "2.78"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
