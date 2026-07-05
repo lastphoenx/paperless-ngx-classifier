@@ -6,6 +6,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import post_consume as pc  # noqa: E402
 
+_HH_USER1 = "user1@example.com"
+_HH_USER2 = "user2@example.com"
+
 
 def _patch_household(monkeypatch, emails):
     monkeypatch.setattr(
@@ -16,10 +19,10 @@ def _patch_household(monkeypatch, emails):
 
 
 def test_extract_email_from_von_header(monkeypatch):
-    _patch_household(monkeypatch, ["user1@example.com"])
+    _patch_household(monkeypatch, [_HH_USER1])
     text = (
         'Von: "Hagmann, Marlene" <marlene.hagmann@ubs.com>\n'
-        'An: "user1@example.com" <user1@example.com>\n'
+        f'An: "{_HH_USER1}" <{_HH_USER1}>\n'
         "Datum: 20.05.2026"
     )
     found = pc._extract_corr_emails_from_text(text)
@@ -27,20 +30,20 @@ def test_extract_email_from_von_header(monkeypatch):
 
 
 def test_household_recipient_filtered(monkeypatch):
-    _patch_household(monkeypatch, ["user1@example.com", "monika@example.ch"])
+    _patch_household(monkeypatch, [_HH_USER1, _HH_USER2])
     text = (
-        "From: user1@example.com\n"
-        "An: monika@example.ch\n"
+        f"From: {_HH_USER1}\n"
+        f"An: {_HH_USER2}\n"
         "kontakt@ubs.com"
     )
     found = pc._extract_corr_emails_from_text(text)
-    assert "user1@example.com" not in found
-    assert "monika@example.ch" not in found
+    assert _HH_USER1 not in found
+    assert _HH_USER2 not in found
     assert "kontakt@ubs.com" in found
 
 
 def test_match_by_email(monkeypatch):
-    _patch_household(monkeypatch, ["user1@example.com"])
+    _patch_household(monkeypatch, [_HH_USER1])
     corr_map = {
         "eintraege": [
             {
@@ -66,7 +69,7 @@ def test_an_recipient_filtered_even_without_family(monkeypatch):
     monkeypatch.setattr(pc, "_load_family", lambda: {"personen": []})
     text = (
         'Von: "Hagmann, Marlene" <marlene.hagmann@ubs.com>\n'
-        'An: "user1@example.com" <user1@example.com>\n'
+        f'An: "{_HH_USER1}" <{_HH_USER1}>\n'
     )
     found = pc._extract_corr_emails_from_text(text)
     assert found == ["marlene.hagmann@ubs.com"]

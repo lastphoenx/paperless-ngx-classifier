@@ -12,7 +12,7 @@
           "gueltig_ab": "2025-06-19",
           "korrespondent": "Fielmann AG",
           "document_id": 9001,
-          "document_ids": [275],
+          "document_ids": [9001],
           "auftrag": "AUF-123456",
           "rechnung": "RE-987654321",
           "fern": { "rechts": null, "links": null },

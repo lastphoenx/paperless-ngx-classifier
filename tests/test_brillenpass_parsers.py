@@ -49,18 +49,18 @@ Frick, den 22. März 2022
 Optische Sonnengläser Einstärken Bronze
 TOTAL inkl. MwSt. 440.00 CHF
 Messungsart: Brillenkorrektur Ferne
-R Sph. -2.50 Cyl. -1.25 A° 178
-L Sph. -0.75 Cyl. -1.50 A° 177
+R Sph. -1.00 Cyl. -0.50 A° 90
+L Sph. -1.25 Cyl. -0.75 A° 85
 """
 
 MCOPTIC_PASS_FERN = """
 McOptic Basel
 Patientin Beispiel
 SPH ZYL ACHSE ADD PD
-R -2.50 -1.25 178 0.00 29.0
-L -0.75 -1.50 177 0.00 32.5
+R -1.00 -0.50 90 0.00 30.0
+L -1.25 -0.75 85 0.00 31.0
 Gültig ab 15.03.2022
-0120RX Comfort SV 160
+Comfort SV Demo Glas
 """
 
 AUGENARZT_OCR = """
@@ -117,15 +117,15 @@ def test_mcoptic_pass():
 
 def test_mcoptic_pass_fern_einstaerke():
     r = parse_mcoptic_pass(MCOPTIC_PASS_FERN)
-    assert r["fern"]["rechts"]["sph"] == "-2.50"
-    assert r["fern"]["rechts"]["cyl"] == "-1.25"
-    assert r["fern"]["rechts"]["achse"] == "178"
-    assert r["fern"]["links"]["sph"] == "-0.75"
+    assert r["fern"]["rechts"]["sph"] == "-1.00"
+    assert r["fern"]["rechts"]["cyl"] == "-0.50"
+    assert r["fern"]["rechts"]["achse"] == "90"
+    assert r["fern"]["links"]["sph"] == "-1.25"
     assert r["naehe"]["rechts"] is None
-    assert r["pd"]["rechts"] == "29.0"
-    assert r["pd"]["links"] == "32.5"
+    assert r["pd"]["rechts"] == "30.0"
+    assert r["pd"]["links"] == "31.0"
     assert r["gueltig_ab"] == "2022-03-15"
-    assert "0120RX" in r["glas"]["beschreibung"]
+    assert "Comfort" in r["glas"]["beschreibung"]
 
 
 def test_merge_mcoptic_split_vision():
@@ -133,17 +133,17 @@ def test_merge_mcoptic_split_vision():
     parser = parse_mcoptic_pass(MCOPTIC_PASS_FERN)
     vision = {
         "fern": {
-            "rechts": {"sph": "2.50", "cyl": "-1.25", "achse": "178", "basis": "R", "add": None},
+            "rechts": {"sph": "1.00", "cyl": "-0.50", "achse": "90", "basis": "R", "add": None},
             "links": None,
         },
         "naehe": {
             "rechts": None,
-            "links": {"sph": "-0.75", "cyl": "-1.50", "achse": "177", "basis": "L", "add": None},
+            "links": {"sph": "-1.25", "cyl": "-0.75", "achse": "85", "basis": "L", "add": None},
         },
     }
     m = merge_brillenpass(parser, vision)
-    assert m["fern"]["rechts"]["sph"] == "-2.50"
-    assert m["fern"]["links"]["sph"] == "-0.75"
+    assert m["fern"]["rechts"]["sph"] == "-1.00"
+    assert m["fern"]["links"]["sph"] == "-1.25"
     assert m["fern"]["rechts"].get("basis") is None
     assert m["naehe"]["links"] is None
 
@@ -186,19 +186,19 @@ def test_merge_brillenpass_version_collects_document_ids():
         "gueltig_ab": "2022-03-15",
         "document_id": 1001,
         "document_ids": [1001],
-        "fern": {"rechts": {"sph": "-2.50"}, "links": None},
+        "fern": {"rechts": {"sph": "-1.00"}, "links": None},
         "naehe": {"rechts": None, "links": None},
         "glas": {},
     }
     incoming = {
         "document_id": 1002,
         "document_ids": [1002],
-        "naehe": {"rechts": None, "links": {"sph": "-0.75"}},
-        "glas": {"beschreibung": "0120RX Comfort"},
+        "naehe": {"rechts": None, "links": {"sph": "-1.25"}},
+        "glas": {"beschreibung": "Comfort Demo"},
     }
     m = merge_brillenpass_version(existing, incoming)
     assert m["document_ids"] == [1001, 1002]
-    assert m["document_id"] == 3559
+    assert m["document_id"] == 1001
     assert m["extraktion"]["dedup_merged"] is True
 
 

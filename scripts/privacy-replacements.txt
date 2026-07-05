@@ -1,0 +1,14 @@
+literal:Patientin Beispiel==>Patientin Beispiel
+literal:user1@example.com==>user1@example.com
+literal:AUF-123456==>AUF-123456
+literal:RE-987654321==>RE-987654321
+literal:RE-9876543210==>RE-9876543210
+literal:Q-TEST-2022==>Q-TEST-2022
+literal:Q-TEST==>Q-TEST
+literal:"document_id": 1001==>"document_id": 1001
+literal:"document_ids": [1001]==>"document_ids": [1001]
+literal:"document_id": 1002==>"document_id": 1002
+literal:"document_ids": [1002]==>"document_ids": [1002]
+literal:1001, 1002==>1001, 1002
+literal:anonymes OCR-Beispiel==>anonymes OCR-Beispiel
+literal:"document_id": 9001==>"document_id": 9001

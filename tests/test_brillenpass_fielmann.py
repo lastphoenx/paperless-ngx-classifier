@@ -45,7 +45,7 @@ def test_parse_fielmann_naehe():
     assert r["glas"]["index"] == "1.6"
     assert r["glas"]["durchmesser"] == 75
     assert "Blaufilter" in r["glas"]["beschichtungen"]
-    assert "0558" in r["auftrag"]
+    assert "AUF-123456" in r["auftrag"]
     assert r["gueltig_ab"] == "2025-06-19"
     assert has_brillenpass_values(r)
 
