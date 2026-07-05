@@ -291,19 +291,352 @@ def has_brillenpass_values(data: dict) -> bool:
     return bool(glas.get("index") or glas.get("beschreibung"))
 
 
+PARSER_LABELS: dict[str, str] = {
+    "fielmann": "Fielmann Rechnung",
+    "fielmann_pass": "Fielmann Brillenpass (Karte)",
+    "mcoptic_pass": "McOptic Brillenpass",
+    "augenarzt": "Augenarzt-Verordnung",
+    "optik_meyer_moehlin": "Optik Meyer Möhlin",
+}
+
+PARSER_NAMES = list(PARSER_LABELS.keys())
+
+
 def corr_supports_brillenpass(corr_entry: dict | None) -> tuple[bool, str]:
     """(aktiv, parser_name) aus correspondents.json brillenpass-Block."""
     if not corr_entry:
         return False, ""
     bp = corr_entry.get("brillenpass") or {}
     if bp.get("aktiv"):
-        return True, (bp.get("parser") or "fielmann").lower()
+        parser = (bp.get("parser") or "fielmann").lower()
+        if parser not in PARSER_NAMES:
+            parser = "fielmann"
+        return True, parser
     return False, ""
 
 
 def build_version_id(gueltig_ab: str, korrespondent: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", korrespondent.lower()).strip("-")[:20]
     return f"bp-{gueltig_ab}-{slug}"
+
+
+def _bp_base(parser: str, **kwargs) -> dict:
+    return {
+        "parser": parser,
+        "gueltig_ab": kwargs.get("gueltig_ab"),
+        "auftrag": kwargs.get("auftrag", ""),
+        "rechnung": kwargs.get("rechnung", ""),
+        "fern": kwargs.get("fern") or _empty_eye_block(),
+        "naehe": kwargs.get("naehe") or _empty_eye_block(),
+        "glas": kwargs.get("glas") or {
+            "beschreibung": "", "index": None, "durchmesser": None, "beschichtungen": [],
+        },
+        "extraktion": {"quelle": f"{parser}_regex", "confidence": "mittel"},
+    }
+
+
+def _side_key(label: str) -> str:
+    return "rechts" if label.lower().startswith(("r", "recht")) else "links"
+
+
+def _eye_from_parts(sph, cyl, achse, add=None) -> dict | None:
+    if not sph:
+        return None
+    return _sanitize_eye({
+        "sph": _norm_val(sph),
+        "cyl": _norm_val(cyl),
+        "achse": re.sub(r"\D", "", str(achse)) if achse else None,
+        "prisma": None,
+        "basis": None,
+        "add": _norm_val(add),
+    })
+
+
+def _parse_pass_date(text: str) -> str | None:
+    for pat in [
+        r"Datum:\s*(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
+        r"Verordnung\s+vom\s+(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
+        r"ausgestellt\s+(?:am\s+)?(\d{1,2})\.(\d{1,2})\.(\d{2,4})",
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if not m:
+            continue
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y = 2000 + y if y < 70 else 1900 + y
+        try:
+            return datetime(y, mo, d).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return parse_ch_date_short(text)
+
+
+_FIELMANN_PASS_RL = re.compile(
+    r"(?:^|\n)\s*(R|L|Rechts|Links)\s*[:.]?\s*"
+    r"(?:S\s*)?"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(?:C\s*)?"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(?:A\s*)?"
+    r"(\d+)\s*°?"
+    r"(?:\s+ADD\s+([+\-]?\s*[\d.,]+))?",
+    re.IGNORECASE,
+)
+
+_FIELMANN_PASS_SIMPLE = re.compile(
+    r"(?:^|\n)\s*(R|L|Rechts|Links)\s*[:.]?\s*"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(\d+)\s+"
+    r"([+\-]?\s*[\d.,]+)\s*(?:\n|$)",
+    re.IGNORECASE,
+)
+
+_MCOPTIC_RL = re.compile(
+    r"(?:^|\n)\s*(R|L|Rechts|Links)\s*[:.]?\s*"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(\d+)\s+"
+    r"([+\-]?\s*[\d.,]+)"
+    r"(?:\s+[\d.,]+)?",
+    re.IGNORECASE,
+)
+
+_AUGENARZT_RL = re.compile(
+    r"(?:^|\n)\s*(Rechts|Links|R|L)\s*[:.]?\s*"
+    r"(?:sph\.?\s*|s\s*)?"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(?:cyl\.?|zyl\.?|c\s*)"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(?:axis|achse|a)\s*"
+    r"(\d+)\s*°?"
+    r"(?:\s+(?:add\.?|addition)\s*([+\-]?\s*[\d.,]+))?",
+    re.IGNORECASE,
+)
+
+
+def _fill_naehe_from_matches(text: str, pattern: re.Pattern) -> dict[str, dict | None]:
+    naehe: dict[str, dict | None] = {"rechts": None, "links": None}
+    for m in pattern.finditer(text):
+        side = _side_key(m.group(1))
+        add = m.group(5) if m.lastindex and m.lastindex >= 5 else None
+        eye = _eye_from_parts(m.group(2), m.group(3), m.group(4), add)
+        if eye:
+            naehe[side] = eye
+    return naehe
+
+
+def parse_fielmann_pass(ocr_text: str) -> dict:
+    """Physische Fielmann-Brillenpass-Karte (nicht Rechnung)."""
+    text = ocr_text or ""
+    naehe = _fill_naehe_from_matches(text, _FIELMANN_PASS_RL)
+    if not naehe["rechts"] and not naehe["links"]:
+        naehe = _fill_naehe_from_matches(text, _FIELMANN_PASS_SIMPLE)
+
+    glas_desc = ""
+    gm = re.search(r"Glas:\s*(.+?)(?:\n|ADD|Datum|$)", text, re.IGNORECASE | re.DOTALL)
+    if gm:
+        glas_desc = re.sub(r"\s+", " ", gm.group(1).strip())[:500]
+
+    index = None
+    im = re.search(r"Kst\.?\s*([\d.,]+)|Index\s*([\d.,]+)", text, re.IGNORECASE)
+    if im:
+        index = (im.group(1) or im.group(2) or "").replace(",", ".")
+
+    return _bp_base(
+        "fielmann_pass",
+        gueltig_ab=_parse_pass_date(text),
+        naehe=naehe,
+        glas={"beschreibung": glas_desc, "index": index, "durchmesser": None, "beschichtungen": []},
+    )
+
+
+def parse_mcoptic_pass(ocr_text: str) -> dict:
+    """McOptic Brillenpass-Karte (SPH ZYL ACHSE ADD PD)."""
+    text = ocr_text or ""
+    naehe = _fill_naehe_from_matches(text, _MCOPTIC_RL)
+
+    glas_desc = ""
+    for pat in [
+        r"(?:Glas|Lens|Brille)\s*[:.]?\s*(.+?)(?:\n|R\s*:|Rechts)",
+        r"(Inside|Desk|Progressive|Office)\s+[\w\s]+",
+    ]:
+        gm = re.search(pat, text, re.IGNORECASE | re.DOTALL)
+        if gm:
+            glas_desc = re.sub(r"\s+", " ", (gm.group(1) if gm.lastindex else gm.group(0)).strip())[:500]
+            break
+
+    return _bp_base(
+        "mcoptic_pass",
+        gueltig_ab=_parse_pass_date(text),
+        naehe=naehe,
+        glas={"beschreibung": glas_desc, "index": None, "durchmesser": None, "beschichtungen": []},
+    )
+
+
+def parse_augenarzt(ocr_text: str) -> dict:
+    """Augenarzt-Verordnung (Rechts/Links mit Sph, Cyl, Achse, Add)."""
+    text = ocr_text or ""
+    naehe = _fill_naehe_from_matches(text, _AUGENARZT_RL)
+
+    # Fern/Nähe-Tabelle: «Fern Rechts» / «Nähe Rechts» wie Fielmann-Rechnung
+    fern: dict[str, dict | None] = {"rechts": None, "links": None}
+    for m in _EYE_LINE_RE.finditer(text):
+        dist = m.group(1).lower()
+        side = "rechts" if m.group(2).lower().startswith("recht") else "links"
+        eye = _sanitize_eye(_parse_eye_values(m))
+        if dist.startswith("fern"):
+            fern[side] = eye
+        else:
+            naehe[side] = eye
+
+    if not naehe["rechts"] and not naehe["links"]:
+        naehe = _fill_naehe_from_matches(text, _FIELMANN_PASS_SIMPLE)
+    if not naehe["rechts"] and not naehe["links"]:
+        naehe = _fill_naehe_from_matches(text, _MCOPTIC_RL)
+
+    return _bp_base(
+        "augenarzt",
+        gueltig_ab=_parse_pass_date(text),
+        fern=fern,
+        naehe=naehe,
+    )
+
+
+def parse_optik_meyer_moehlin(ocr_text: str) -> dict:
+    """Optik Meyer Möhlin — Verordnung (Seite 2) oder Werte unten links auf Rechnung."""
+    text = ocr_text or ""
+    # Unteres Viertel bevorzugen (Werte «unten links» auf Rechnung)
+    tail = text[max(0, len(text) * 3 // 4):] if len(text) > 400 else text
+    base = parse_augenarzt(tail if _AUGENARZT_RL.search(tail) else text)
+    base["parser"] = "optik_meyer_moehlin"
+    base["extraktion"]["quelle"] = "optik_meyer_moehlin_regex"
+
+    if not base.get("gueltig_ab"):
+        base["gueltig_ab"] = _parse_pass_date(text)
+
+    glas_desc = ""
+    gm = re.search(
+        r"Glas(?:art)?\s*[:.]?\s*(.+?)(?:\n|Rechts|Links|R\s*:|Total|$)",
+        text, re.IGNORECASE | re.DOTALL,
+    )
+    if gm:
+        glas_desc = re.sub(r"\s+", " ", gm.group(1).strip())[:500]
+    if glas_desc:
+        base["glas"]["beschreibung"] = glas_desc
+
+    rechnung = ""
+    rm = re.search(r"Rechnung\s*(?:Nr\.?)?\s*[:.]?\s*([\d\s/\-]+)", text, re.IGNORECASE)
+    if rm:
+        rechnung = re.sub(r"\s+", "", rm.group(1).strip())
+    base["rechnung"] = rechnung
+    return base
+
+
+_PARSERS: dict[str, Any] = {
+    "fielmann": parse_fielmann_brillenpass,
+    "fielmann_pass": parse_fielmann_pass,
+    "mcoptic_pass": parse_mcoptic_pass,
+    "augenarzt": parse_augenarzt,
+    "optik_meyer_moehlin": parse_optik_meyer_moehlin,
+}
+
+
+def parse_by_parser(parser_name: str, ocr_text: str) -> dict | None:
+    fn = _PARSERS.get((parser_name or "").lower())
+    if not fn:
+        return None
+    return fn(ocr_text or "")
+
+
+def _detect_fielmann(text: str) -> int:
+    score = 0
+    if re.search(r"Nähe\s+Rechts|Naehe\s+Rechts", text, re.I):
+        score += 3
+    if re.search(r"Brillenglas|Asph\.?\s*Hochbr|Gesamtbetrag", text, re.I):
+        score += 2
+    if re.search(r"Fielmann", text, re.I):
+        score += 1
+    return score
+
+
+def _detect_fielmann_pass(text: str) -> int:
+    score = 0
+    if re.search(r"Brillenpass|ADD\s+\d", text, re.I):
+        score += 2
+    if _FIELMANN_PASS_RL.search(text) or _FIELMANN_PASS_SIMPLE.search(text):
+        score += 3
+    if re.search(r"Fielmann|Zeiss", text, re.I):
+        score += 1
+    if re.search(r"Nähe\s+Rechts|Gesamtbetrag", text, re.I):
+        score -= 2
+    return max(0, score)
+
+
+def _detect_mcoptic_pass(text: str) -> int:
+    score = 0
+    if re.search(r"Mc\s*Optic|McOptic", text, re.I):
+        score += 3
+    if re.search(r"SPH\s+ZYL|ZYL\s+ACHSE", text, re.I):
+        score += 2
+    if _MCOPTIC_RL.search(text):
+        score += 3
+    return score
+
+
+def _detect_augenarzt(text: str) -> int:
+    score = 0
+    if re.search(r"Verordnung|Augenarzt|Augenärzt|Dioptrie|Refraktion", text, re.I):
+        score += 2
+    if _AUGENARZT_RL.search(text):
+        score += 3
+    if re.search(r"Fielmann|Mc\s*Optic|Optik\s+Meyer", text, re.I):
+        score -= 1
+    return max(0, score)
+
+
+def _detect_optik_meyer(text: str) -> int:
+    score = 0
+    if re.search(r"Optik\s+Meyer", text, re.I):
+        score += 3
+    if re.search(r"Möhlin|Moehlin", text, re.I):
+        score += 2
+    if (
+        _AUGENARZT_RL.search(text)
+        or _FIELMANN_PASS_SIMPLE.search(text)
+        or _MCOPTIC_RL.search(text)
+    ):
+        score += 2
+    return score
+
+
+_DETECTORS: dict[str, Any] = {
+    "fielmann": _detect_fielmann,
+    "fielmann_pass": _detect_fielmann_pass,
+    "mcoptic_pass": _detect_mcoptic_pass,
+    "augenarzt": _detect_augenarzt,
+    "optik_meyer_moehlin": _detect_optik_meyer,
+}
+
+
+def detect_parser(ocr_text: str) -> str | None:
+    """Besten Parser anhand OCR-Heuristik wählen."""
+    text = ocr_text or ""
+    if not text.strip():
+        return None
+    scores = {name: fn(text) for name, fn in _DETECTORS.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else None
+
+
+def looks_like_brillenpass_document(
+    ocr_text: str, parser_name: str, dokumenttyp_visuell: str = "",
+) -> bool:
+    """Parser-spezifische Erkennung (Pass, Verordnung, Rechnung)."""
+    name = (parser_name or "").lower()
+    if name in _DETECTORS:
+        return _DETECTORS[name](ocr_text or "") > 0
+    return looks_like_optiker_rechnung(ocr_text, dokumenttyp_visuell)
 
 
 def compute_brillenpass_diff(old: dict | None, new: dict) -> dict:

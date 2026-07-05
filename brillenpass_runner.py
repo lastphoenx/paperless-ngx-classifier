@@ -6,19 +6,22 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 
 log = logging.getLogger("brillenpass_runner")
 
 
-def reprocess_brillenpass_document(document_id: int, *, force: bool = False) -> dict:
+def reprocess_brillenpass_document(
+    document_id: int,
+    *,
+    force: bool = False,
+    parser_override: str = "",
+) -> dict:
     """
     Bestehendes Dokument durch Brillenpass-Parser + Vision schicken.
     Returns: {ok, message, document_id, person_id?, ...}
     """
-    # post_consume nur bei Bedarf laden (schwere Abhängigkeiten)
     script_dir = Path(__file__).resolve().parent
     if str(script_dir) not in sys.path:
         sys.path.insert(0, str(script_dir))
@@ -54,7 +57,9 @@ def reprocess_brillenpass_document(document_id: int, *, force: bool = False) -> 
         return {"ok": False, "error": "Dokument hat keinen Korrespondenten"}
 
     aktiv, parser_name = pc.corr_supports_brillenpass(corr_entry)
-    if not aktiv:
+    if parser_override:
+        parser_name = parser_override.strip().lower()
+    if not aktiv and not parser_override:
         return {
             "ok": False,
             "error": (
@@ -69,8 +74,13 @@ def reprocess_brillenpass_document(document_id: int, *, force: bool = False) -> 
     image_b64 = pc.pdf_to_base64_image(pdf_path) if pdf_path else None
 
     vision_meta = {"dokumenttyp_visuell": "", "datum": (doc.get("created") or "")[:10] or None}
-    if not pc.looks_like_optiker_rechnung(ocr_text, ""):
-        return {"ok": False, "error": "Keine Optiker-Rechnung erkannt (OCR/Heuristik)"}
+    if not pc.looks_like_brillenpass_document(ocr_text, parser_name, ""):
+        detected = pc.detect_parser(ocr_text)
+        if detected and not parser_override:
+            parser_name = detected
+            log.info("Brillenpass: Parser auto-erkannt → %s", parser_name)
+        elif not parser_override:
+            return {"ok": False, "error": f"Kein Brillenpass-Dokument erkannt (Parser: {parser_name})"}
 
     direct_name, direct_reason = pc._match_person_direct(ocr_text, vision_meta)
     if not direct_name:
@@ -79,8 +89,8 @@ def reprocess_brillenpass_document(document_id: int, *, force: bool = False) -> 
     person_id = pc._resolve_person_id(direct_name)
     anzeigename = pc._resolve_person_anzeigename(person_id) or direct_name
 
-    parser_data = None
-    if parser_name == "fielmann":
+    parser_data = pc.parse_by_parser(parser_name, ocr_text)
+    if not parser_data and parser_name == "fielmann":
         parser_data = pc.parse_fielmann_brillenpass(ocr_text)
     vision_bp = pc.vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
     merged = pc.merge_brillenpass(parser_data, vision_bp)
@@ -95,7 +105,7 @@ def reprocess_brillenpass_document(document_id: int, *, force: bool = False) -> 
         _remove_pending_brillenpass(document_id, pc.PENDING_BRILLENPASS_PATH)
 
     queued = pc.write_pending_brillenpass(
-        merged, document_id, person_id, anzeigename, corr_entry.get("name", ""),
+        merged, person_id, anzeigename, corr_entry.get("name", ""), document_id=document_id,
     )
     if not queued:
         return {
@@ -148,7 +158,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Brillenpass-Pipeline für bestehendes Dokument")
     ap.add_argument("document_id", type=int)
     ap.add_argument("--force", action="store_true", help="Bestehenden pending-Eintrag ersetzen")
+    ap.add_argument("--parser", default="", help="Parser-Override (z. B. mcoptic_pass)")
     args = ap.parse_args()
-    result = reprocess_brillenpass_document(args.document_id, force=args.force)
+    result = reprocess_brillenpass_document(
+        args.document_id, force=args.force, parser_override=args.parser,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0 if result.get("ok") else 1)

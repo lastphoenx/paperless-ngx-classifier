@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.31"  # 2.31: Brillenpass-Übersichtskarte lesbarer
-UI_VERSION = "2.43"
+__version__ = "2.32"  # 2.32: Brillenpass manuell + Parser-Registry
+UI_VERSION = "2.44"
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -34,7 +34,15 @@ from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from brillenpass_parser import build_version_id, compute_brillenpass_diff, has_brillenpass_values
+from brillenpass_parser import (
+    PARSER_LABELS,
+    PARSER_NAMES,
+    build_version_id,
+    compute_brillenpass_diff,
+    detect_parser,
+    has_brillenpass_values,
+    parse_by_parser,
+)
 
 # ──────────────────────────────────────────────
 # Konfiguration
@@ -1656,6 +1664,70 @@ def _save_pending_brillenpass_lines(lines: list[str]) -> None:
     )
 
 
+def _get_letzte_brillenpass_version(person_id: str) -> dict | None:
+    data = _load_brillenpaesse()
+    for entry in data.get("eintraege", []):
+        if entry.get("person_id") == person_id:
+            vers = entry.get("versionen") or []
+            return vers[-1] if vers else None
+    return None
+
+
+def _resolve_person_anzeigename(person_id: str) -> str:
+    if FAMILY_JSON.exists():
+        data = json.loads(FAMILY_JSON.read_text(encoding="utf-8"))
+        for p in data.get("personen", []):
+            if p.get("id") == person_id:
+                return p.get("anzeigename") or p.get("name") or person_id
+    return person_id
+
+
+def _queue_brillenpass_review(
+    *,
+    vorschlag: dict,
+    person_id: str,
+    anzeigename: str,
+    korrespondent: str,
+    document_id: int | None = None,
+    source: str = "manual",
+) -> bool:
+    lines = _load_pending_brillenpass_lines()
+    gueltig_ab = (vorschlag or {}).get("gueltig_ab")
+    for ln in lines:
+        try:
+            e = json.loads(ln)
+            if e.get("status") != "pending":
+                continue
+            if document_id and e.get("document_id") == document_id:
+                return False
+            if not document_id and source == "manual":
+                ev = e.get("vorschlag") or {}
+                if (
+                    e.get("source") == "manual"
+                    and e.get("person_id") == person_id
+                    and e.get("korrespondent") == korrespondent
+                    and ev.get("gueltig_ab") == gueltig_ab
+                ):
+                    return False
+        except json.JSONDecodeError:
+            continue
+
+    entry = {
+        "status": "pending",
+        "source": source,
+        "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "document_id": document_id,
+        "person_id": person_id,
+        "anzeigename": anzeigename,
+        "korrespondent": korrespondent,
+        "vorschlag": vorschlag,
+        "letzte_version": _get_letzte_brillenpass_version(person_id),
+    }
+    lines.append(json.dumps(entry, ensure_ascii=False))
+    _save_pending_brillenpass_lines(lines)
+    return True
+
+
 def _find_brillenpass_entry(data: dict, person_id: str) -> dict | None:
     for e in data.get("eintraege", []):
         if e.get("person_id") == person_id:
@@ -1693,6 +1765,113 @@ def api_brillenpass_list():
     for r in result:
         r["pending_review"] = r["person_id"] in pending_persons
     return {"count": len(result), "eintraege": result}
+
+
+@app.get("/api/brillenpass/parsers", response_class=JSONResponse)
+def api_brillenpass_parsers():
+    """Verfügbare Brillenpass-Parser für UI-Dropdowns."""
+    return {
+        "parsers": [
+            {"id": name, "label": PARSER_LABELS.get(name, name)}
+            for name in PARSER_NAMES
+        ],
+    }
+
+
+@app.post("/api/brillenpass/parse")
+def api_brillenpass_parse(body: dict = Body(...)):
+    """OCR-Text oder Paperless-Dok-ID mit Parser parsen (ohne Review-Queue)."""
+    parser_name = (body.get("parser") or "").strip().lower()
+    text = (body.get("text") or "").strip()
+    doc_id = body.get("document_id")
+
+    if doc_id:
+        try:
+            doc = pl_get(f"/documents/{int(doc_id)}/")
+            text = (doc.get("content") or "").strip()
+        except Exception as e:
+            raise HTTPException(400, f"Dokument laden fehlgeschlagen: {e}") from e
+
+    if not text:
+        raise HTTPException(400, "text oder document_id mit OCR-Inhalt erforderlich")
+
+    if not parser_name:
+        parser_name = detect_parser(text) or "fielmann"
+
+    if parser_name not in PARSER_NAMES:
+        raise HTTPException(400, f"Unbekannter Parser: {parser_name}")
+
+    result = parse_by_parser(parser_name, text) or {}
+    if not has_brillenpass_values(result):
+        return {
+            "ok": False,
+            "parser": parser_name,
+            "detected_parser": detect_parser(text),
+            "result": result,
+            "message": "Keine verwertbaren Werte erkannt",
+        }
+    return {"ok": True, "parser": parser_name, "detected_parser": detect_parser(text), "result": result}
+
+
+@app.post("/api/brillenpass/manual")
+def api_brillenpass_manual(body: dict = Body(...)):
+    """Manuelle Brillenpass-Erfassung → Review-Queue."""
+    person_id = (body.get("person_id") or "").strip()
+    korrespondent = (body.get("korrespondent") or "").strip()
+    if not person_id:
+        raise HTTPException(400, "person_id erforderlich")
+    if not korrespondent:
+        raise HTTPException(400, "korrespondent erforderlich")
+
+    anzeigename = (body.get("anzeigename") or "").strip() or _resolve_person_anzeigename(person_id)
+    doc_id = body.get("document_id")
+    if doc_id is not None:
+        try:
+            doc_id = int(doc_id)
+        except (TypeError, ValueError):
+            doc_id = None
+
+    vorschlag = body.get("vorschlag") or {}
+    if body.get("gueltig_ab"):
+        vorschlag["gueltig_ab"] = body["gueltig_ab"]
+    vorschlag["korrespondent"] = korrespondent
+    if body.get("parser"):
+        vorschlag["parser"] = body["parser"]
+    vorschlag.setdefault("fern", {"rechts": None, "links": None})
+    vorschlag.setdefault("naehe", {"rechts": None, "links": None})
+    vorschlag.setdefault("glas", {"beschreibung": "", "index": None, "durchmesser": None, "beschichtungen": []})
+    vorschlag.setdefault("extraktion", {"quelle": "manual", "confidence": "hoch"})
+
+    if not has_brillenpass_values(vorschlag):
+        raise HTTPException(400, "Mindestens ein Auge mit Sph oder Glas-Beschreibung erforderlich")
+
+    if not _queue_brillenpass_review(
+        vorschlag=vorschlag,
+        person_id=person_id,
+        anzeigename=anzeigename,
+        korrespondent=korrespondent,
+        document_id=doc_id,
+        source="manual",
+    ):
+        raise HTTPException(409, "Bereits in Review-Queue (gleiche Person/Datum/Korrespondent)")
+
+    if doc_id:
+        add_tag_to_documents([doc_id], PENDING_BRILLENPASS_TAG)
+
+    return {"ok": True, "message": f"Manueller Brillenpass für {anzeigename} zur Review eingereiht"}
+
+
+@app.post("/api/brillenpass/trigger/{doc_id}")
+def api_brillenpass_trigger(doc_id: int, body: dict = Body(default={})):
+    """Bestehendes Dokument nachträglich durch Brillenpass-Pipeline schicken."""
+    from brillenpass_runner import reprocess_brillenpass_document
+
+    force = bool(body.get("force", False))
+    parser_override = (body.get("parser") or "").strip()
+    result = reprocess_brillenpass_document(doc_id, force=force, parser_override=parser_override)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error", "Brillenpass-Trigger fehlgeschlagen"))
+    return result
 
 
 @app.get("/api/brillenpass/{person_id}", response_class=JSONResponse)
@@ -1794,18 +1973,6 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
             log.warning("Brillenpass-Notiz fehlgeschlagen: %s", e)
 
     return {"status": "approved", "version_id": version["id"], "diff": version["diff_zu_vorher"]}
-
-
-@app.post("/api/brillenpass/trigger/{doc_id}")
-def api_brillenpass_trigger(doc_id: int, body: dict = Body(default={})):
-    """Bestehendes Dokument nachträglich durch Brillenpass-Pipeline schicken."""
-    from brillenpass_runner import reprocess_brillenpass_document
-
-    force = bool(body.get("force", False))
-    result = reprocess_brillenpass_document(doc_id, force=force)
-    if not result.get("ok"):
-        raise HTTPException(400, result.get("error", "Brillenpass-Trigger fehlgeschlagen"))
-    return result
 
 
 @app.patch("/api/brillenpass/{person_id}")
