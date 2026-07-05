@@ -340,6 +340,7 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/paperless-scripts
 EnvironmentFile=/opt/paperless/.env
+Environment=PAPERLESS_MEDIA_ROOT=/mnt/paperless-media
 ExecStart=/opt/paperless-scripts/venv/bin/uvicorn correspondent_manager_app:app \
     --host 0.0.0.0 --port 8100 --workers 1
 Restart=on-failure

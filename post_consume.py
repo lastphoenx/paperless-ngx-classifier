@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.47"  # 12.47: Brillenpass-Diagnose-Log + McOptic-Rechnungstabellen-Fix
+POST_CONSUME_VERSION = "12.48"  # 12.48: Brillenpass PDF via API + ADD→Nähe-Konsolidierung
 import re
 import sys
 import json
@@ -1077,7 +1077,10 @@ MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
 MODEL_EMBED  = "bge-m3"
 MODEL_LLM    = os.environ.get("OLLAMA_MODEL_LLM", "llama3.3:70b")
 
-MEDIA_ROOT = "/usr/src/paperless/media"
+MEDIA_ROOT = os.environ.get(
+    "PAPERLESS_MEDIA_ROOT",
+    os.environ.get("MEDIA_ROOT", "/usr/src/paperless/media"),
+)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -1359,6 +1362,32 @@ def find_pdf(doc_id: str) -> Optional[str]:
 
     log.warning("PDF für Dok #%s nicht gefunden (gesucht: %s)", doc_id, originals)
     return None
+
+
+def resolve_document_pdf(document_id: int | str) -> Optional[str]:
+    """PDF für Vision: Dateisystem (Host oder Container) oder Paperless-API-Download."""
+    path = find_pdf(str(document_id))
+    if path:
+        return path
+    if not PAPERLESS_TOKEN:
+        log.warning("PDF für Dok #%s: weder Datei noch Token für API-Download", document_id)
+        return None
+    try:
+        did = int(document_id)
+        r = requests.get(
+            f"{PAPERLESS_URL.rstrip('/')}/api/documents/{did}/download/",
+            headers={"Authorization": f"Token {PAPERLESS_TOKEN}"},
+            timeout=120,
+        )
+        r.raise_for_status()
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(r.content)
+            tmp_path = tmp.name
+        log.info("PDF für Dok #%s via API geladen (%d bytes)", did, len(r.content))
+        return tmp_path
+    except Exception as e:
+        log.warning("PDF API-Download für Dok #%s fehlgeschlagen: %s", document_id, e)
+        return None
 
 
 # ─── Manifest laden ───────────────────────────────────────────────────────────

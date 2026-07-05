@@ -76,8 +76,13 @@ def reprocess_brillenpass_document(
                 ),
             }
 
-    pdf_path = pc.find_pdf(str(document_id))
+    pdf_path = pc.resolve_document_pdf(document_id)
     image_b64 = pc.pdf_to_base64_image(pdf_path) if pdf_path else None
+    if not image_b64:
+        log.warning(
+            "Brillenpass Trigger #%s: kein PDF-Bild (MEDIA_ROOT=%s) — Vision nur OCR",
+            document_id, pc.MEDIA_ROOT,
+        )
 
     vision_meta = {"dokumenttyp_visuell": "", "datum": (doc.get("created") or "")[:10] or None}
     dt_vis = vision_meta.get("dokumenttyp_visuell", "")
@@ -106,7 +111,17 @@ def reprocess_brillenpass_document(
     chosen = pc.detect_parser(
         ocr_text, allowed=parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
     )
+    if document_id:
+        pc.write_audit_entry(document_id, "brillenpass_s1", {
+            "parser": chosen, "snapshot": pc.snapshot_brillenpass(parser_data),
+        })
     vision_bp = pc.vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
+    if document_id:
+        pc.write_audit_entry(document_id, "brillenpass_s2", {
+            "has_image": bool(image_b64),
+            "snapshot": pc.snapshot_brillenpass(vision_bp),
+            "vision_empty": not vision_bp,
+        })
     prefer_vis = bool(image_b64)
     merged = pc.merge_brillenpass(parser_data, vision_bp, prefer_vision=prefer_vis)
     from brillenpass_parser import diagnose_brillenpass_extraction  # noqa: WPS433

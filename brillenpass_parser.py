@@ -92,8 +92,15 @@ def _sanitize_eye(eye: dict | None) -> dict | None:
                 out["basis"] = None
         except ValueError:
             pass
-    # Vision setzt Augen-Label (R/L) oder Achsen-Symbol (A°) fälschlich als Prisma-Basis
+    # Vision setzt PD (mm) fälschlich in basis
     basis = (out.get("basis") or "").strip()
+    if basis:
+        try:
+            bf = abs(float(str(basis).replace(",", ".").lstrip("+")))
+            if 15 <= bf <= 40:
+                out["basis"] = None
+        except ValueError:
+            pass
     if basis.upper() in ("R", "L") or basis.replace("°", "").upper() in ("A", "A°"):
         out["basis"] = None
     # Add 0.00 bei Ferngläsern → leer
@@ -335,6 +342,15 @@ def diagnose_brillenpass_extraction(
         if (dist_eye.get("sph") or near_eye.get("sph")) and not pd.get(side):
             gaps.append(f"pd.{side}")
 
+    # Fehlendes Auge obwohl Geschwisterauge da (typisch OCR/Vision-Lücke)
+    for dist in ("fern", "naehe"):
+        block = (merged or {}).get(dist) or {}
+        r, l = block.get("rechts") or {}, block.get("links") or {}
+        if r.get("sph") and not l.get("sph"):
+            gaps.append(f"{dist}.links.sph")
+        if l.get("sph") and not r.get("sph"):
+            gaps.append(f"{dist}.rechts.sph")
+
     parser_ok = bool(parser_data and has_brillenpass_values(parser_data))
     vision_ok = bool(vision_data and has_brillenpass_values({
         "fern": vision_data.get("fern") or _empty_eye_block(),
@@ -403,6 +419,7 @@ def merge_brillenpass(
             p_out[side] = v_pd[side]
 
     base = _reconcile_split_eyes(base, parser_data)
+    base = _consolidate_near_bucket(base)
 
     sources = [base.get("extraktion", {}).get("quelle", "")]
     if vision_data:
@@ -1106,6 +1123,27 @@ def _mcoptic_pass_buckets(eyes: dict[str, dict | None]) -> tuple[dict, dict]:
     return eyes, _empty_eye_block()
 
 
+def _consolidate_near_bucket(data: dict) -> dict:
+    """Leseglas (ADD): Werte aus fern nach naehe ziehen — verhindert R→fern / L→naehe-Split."""
+    fern = dict(data.get("fern") or _empty_eye_block())
+    naehe = dict(data.get("naehe") or _empty_eye_block())
+    any_add = any(
+        _add_is_near((fern.get(s) or {}).get("add"))
+        or _add_is_near((naehe.get(s) or {}).get("add"))
+        for s in ("rechts", "links")
+    )
+    if not any_add:
+        return data
+    for side in ("rechts", "links"):
+        fe = fern.get(side)
+        if fe and fe.get("sph"):
+            naehe[side] = _merge_eye(naehe.get(side), fe)
+            fern[side] = None
+    data["fern"] = fern
+    data["naehe"] = naehe
+    return data
+
+
 def parse_fielmann_pass(ocr_text: str) -> dict:
     """Physische Fielmann-Brillenpass-Karte (nicht Rechnung)."""
     text = ocr_text or ""
@@ -1322,8 +1360,8 @@ def _detect_mcoptic_brillenpass(text: str) -> int:
         score += 2
     if _MCOPTIC_RL.search(text):
         score += 3
-    if re.search(r"Quittung|Krankenkassenexemplar", text, re.I):
-        score -= 2
+    if re.search(r"Quittung|Krankenkassenexemplar|Gesamtbetrag|TOTAL\s+inkl", text, re.I):
+        score -= 4
     return max(0, score)
 
 
@@ -1334,6 +1372,10 @@ def _detect_mcoptic_rechnung(text: str) -> int:
     if re.search(r"Quittung|Krankenkassenexemplar|Messungsart", text, re.I):
         score += 2
     if _MCOPTIC_RECHNUNG_RL.search(text):
+        score += 3
+    if _MCOPTIC_RL.search(text) and re.search(
+        r"Quittung|Rechnung|Krankenkassen|Messungsart|Gesamtbetrag", text, re.I,
+    ):
         score += 3
     return score
 

@@ -210,6 +210,17 @@ def test_diagnose_brillenpass_gaps():
     assert "fern.rechts.cyl" in d["gaps"] or "naehe.rechts.cyl" in d["gaps"]
 
 
+def test_consolidate_near_bucket_moves_fern_to_naehe():
+    merged = merge_brillenpass(
+        {"fern": {"rechts": {"sph": "+0.25", "cyl": "-0.25", "achse": "57", "add": "+1.50"}, "links": None},
+         "naehe": {"rechts": None, "links": {"sph": "+0.00", "cyl": "-0.25", "achse": "110", "add": "+1.50"}}},
+        {},
+    )
+    assert merged["naehe"]["rechts"]["sph"] == "+0.25"
+    assert merged["naehe"]["links"]["sph"] == "+0.00"
+    assert merged["fern"]["rechts"] is None
+
+
 def test_merge_mcoptic_split_vision():
     """Vision verteilt R→fern, L→naehe; Parser hat beides in fern."""
     parser = parse_mcoptic_pass(MCOPTIC_PASS_FERN)
