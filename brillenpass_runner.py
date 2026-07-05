@@ -156,7 +156,7 @@ def _validate_brillenpass_trigger(
     image_b64 = pc.pdf_to_base64_image(pdf_path) if pdf_path else None
     if not image_b64:
         log.warning(
-            "Brillenpass Trigger #%s: kein PDF-Bild (MEDIA_ROOT=%s) — Stufe 2 übersprungen",
+            "Brillenpass Trigger #%s: kein PDF-Bild (MEDIA_ROOT=%s) — Vision-Fallback ggf. übersprungen",
             document_id, pc.MEDIA_ROOT,
         )
 
@@ -190,6 +190,7 @@ def _validate_brillenpass_trigger(
         "anzeigename": anzeigename,
         "person_match": direct_reason,
         "image_b64": image_b64,
+        "pdf_path": pdf_path,
         "vision_meta": vision_meta,
         "dt_vis": dt_vis,
     }
@@ -201,7 +202,7 @@ def preflight_brillenpass_document(
     force: bool = False,
     parser_override: str = "",
 ) -> dict:
-    """Schnelle Checks vor async Vision (~1 Min)."""
+    """Schnelle Checks vor async Extraktion."""
     if not force:
         existing = _doc_in_pending_brillenpass(document_id)
         if existing:
@@ -239,36 +240,28 @@ def _run_brillenpass_pipeline(ctx: dict, *, force: bool = False) -> dict:
     anzeigename = ctx["anzeigename"]
     direct_reason = ctx["person_match"]
     image_b64 = ctx.get("image_b64")
+    pdf_path = ctx.get("pdf_path")
     dt_vis = ctx["dt_vis"]
     vision_meta = ctx["vision_meta"]
 
-    parser_data = pc.parse_brillenpass_with_parsers(
-        ocr_text, parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
+    stages = pc.run_brillenpass_extraction_stages(
+        document_id,
+        ocr_text,
+        parser_names,
+        dt_vis,
+        vision_meta,
+        pdf_path=pdf_path,
+        image_b64=image_b64,
     )
-    if not parser_data and "fielmann_rechnung" in parser_names:
-        parser_data = pc.parse_fielmann_brillenpass(ocr_text)
-    chosen = pc.detect_parser(
-        ocr_text, allowed=parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
-    )
-    if document_id:
-        pc.write_audit_entry(document_id, "brillenpass_s1", {
-            "parser": chosen, "snapshot": pc.snapshot_brillenpass(parser_data),
-        })
-    vision_bp = pc.vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
-    if document_id:
-        pc.write_audit_entry(document_id, "brillenpass_s2", {
-            "has_image": bool(image_b64),
-            "snapshot": pc.snapshot_brillenpass(vision_bp),
-            "vision_empty": not vision_bp,
-        })
-    prefer_vis = pc.prefer_vision_for_brillenpass_merge(
-        parser_data, vision_bp, has_image=bool(image_b64),
-    )
-    merged = pc.merge_brillenpass(parser_data, vision_bp, prefer_vision=prefer_vis)
+    chosen = stages["chosen"]
+    parser_data = stages["parser_data"]
+    vision_bp = stages["vision_bp"]
+    prefer_vis = stages["prefer_vis"]
+    merged = stages["merged"]
     from brillenpass_parser import diagnose_brillenpass_extraction  # noqa: WPS433
     diagnose = diagnose_brillenpass_extraction(
         parser_data, vision_bp, merged,
-        parser_detected=chosen, has_image=bool(image_b64), prefer_vision=prefer_vis,
+        parser_detected=chosen, has_image=bool(image_b64 or pdf_path), prefer_vision=prefer_vis,
     )
     merged.setdefault("extraktion", {})["diagnose"] = diagnose
     if document_id:

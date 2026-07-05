@@ -2,7 +2,19 @@
 
 Kurzüberblick für Fortsetzung in neuem Chat. Repo: `paperless-ngx-classifier`, Deploy CT121 `/opt/paperless-scripts/`, UI `http://192.168.131.31:8100`.
 
-**Stand Git `main`:** bis Commit mit Fix `_BG_EXECUTOR` + UI-Cache (UI `2.76`, be `2.38`, 2026-07-05).
+**Stand Git `main`:** Pipeline **v12.50** — Tesseract-TSV Stufe 1a, Regex Stufe 1b, Vision nur mit `BRILLENPASS_VISION_FALLBACK=1` (Default aus).
+
+---
+
+## Architektur v12.50
+
+| Stufe | Quelle | Default |
+|---|---|---|
+| **1a** | Tesseract `--psm 6` TSV → Anker/X-Y (`brillenpass_tsv.py`) | an (`BRILLENPASS_TESSERACT=1`) |
+| **1b** | Paperless-OCR + Regex-Parser | an |
+| **2** | Vision (`qwen2.5vl:7b`) | **aus** — Notnagel nur bei `BRILLENPASS_VISION_FALLBACK=1` und `< 3` Header-Ankern |
+
+Audit: `brillenpass_s1_tsv`, `brillenpass_s1` (Regex), `brillenpass_s2` (Vision, falls genutzt).
 
 ---
 
