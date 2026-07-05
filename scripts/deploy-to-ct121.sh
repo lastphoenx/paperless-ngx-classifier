@@ -47,6 +47,7 @@ FILES=(
   scripts/legacy-media-orphans.sh
   scripts/legacy-nas-sha256.sh
   scripts/legacy-prepare-pdf.sh
+  scripts/backfill_dok_id.py
 )
 
 echo "==> Repo:   $REPO_DIR"

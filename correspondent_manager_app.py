@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.27"  # 2.27: Brillenpass-Trigger API + Steuerjahr
-UI_VERSION = "2.39"
+__version__ = "2.28"  # 2.28: Brillenpass im Korrespondenten-Edit
+UI_VERSION = "2.40"
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -563,6 +563,19 @@ def _normalize_identifikatoren(raw) -> dict:
             tel_seen.add(n)
             tels.append(s)
     return {"uid": uids, "iban": ibans, "email": emails, "telefon": tels}
+
+
+def _normalize_brillenpass(raw) -> dict:
+    if not raw or not isinstance(raw, dict):
+        return {"aktiv": False, "parser": "", "typische_begriffe": []}
+    parser = str(raw.get("parser") or "").strip().lower()
+    begriffe = _normalize_string_list(raw.get("typische_begriffe") or [])
+    aktiv = bool(raw.get("aktiv")) and bool(parser)
+    return {
+        "aktiv": aktiv,
+        "parser": parser if aktiv else "",
+        "typische_begriffe": begriffe if aktiv else [],
+    }
 
 
 def _normalize_beziehung_fields(bez: dict) -> None:
@@ -2128,7 +2141,7 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     for field in ["varianten", "match", "default_dokumenttyp", "default_dokumenttyp_id",
                   "typische_ordner", "notiz", "extraktion_muster", "erwartungen",
                   "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
-                  "nicht_verwechseln_mit", "beziehungen", "kuerzel", "identifikatoren"]:
+                  "nicht_verwechseln_mit", "beziehungen", "kuerzel", "identifikatoren", "brillenpass"]:
         if field in body:
             val = body[field]
             if field == "kuerzel":
@@ -2137,6 +2150,8 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
                 val = _normalize_string_list(body[field])
             elif field == "identifikatoren":
                 val = _normalize_identifikatoren(body[field])
+            elif field == "brillenpass":
+                val = _normalize_brillenpass(body[field])
             entry[field] = val
 
     for bez in entry.get("beziehungen", []):

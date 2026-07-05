@@ -55,7 +55,15 @@ def reprocess_brillenpass_document(document_id: int, *, force: bool = False) -> 
 
     aktiv, parser_name = pc.corr_supports_brillenpass(corr_entry)
     if not aktiv:
-        return {"ok": False, "error": f"Korrespondent ohne brillenpass.aktiv (Parser: {parser_name or '—'})"}
+        return {
+            "ok": False,
+            "error": (
+                f"Korrespondent «{corr_entry.get('name', '?')}» ohne brillenpass.aktiv "
+                f"(Parser: {parser_name or '—'}) — in paper.manager → Korrespondenten "
+                f"oder correspondents.json: "
+                f'"brillenpass": {{"aktiv": true, "parser": "fielmann"}}'
+            ),
+        }
 
     pdf_path = pc.find_pdf(str(document_id))
     image_b64 = pc.pdf_to_base64_image(pdf_path) if pdf_path else None
