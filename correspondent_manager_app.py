@@ -21,7 +21,7 @@ import os
 import re
 
 __version__ = "2.35"  # 2.35: Session-Check host-aware, Legacy-Split Menü
-UI_VERSION = "2.47"
+UI_VERSION = "2.48"
 import fcntl
 from contextlib import contextmanager
 import logging
