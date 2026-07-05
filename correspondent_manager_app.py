@@ -53,6 +53,7 @@ from brillenpass_parser import (
     parse_by_parser,
     resolve_brillenpass_aktuell,
     sort_brillenpass_versions,
+    normalize_gueltig_ab_iso,
     vendor_from_parser,
 )
 
@@ -1777,13 +1778,19 @@ def _find_brillenpass_entry(data: dict, person_id: str) -> dict | None:
 
 
 def _repair_brillenpass_store(data: dict) -> bool:
-    """Sortiert Versionen und korrigiert aktuell = neuestes gültig_ab (einmalig bei Lesen)."""
+    """Sortiert Versionen, normalisiert Datumsformate, aktuell = neuestes gültig_ab."""
     changed = False
     for e in data.get("eintraege", []):
-        vers = sort_brillenpass_versions(e.get("versionen") or [])
-        correct = resolve_brillenpass_aktuell(vers)
-        if vers != (e.get("versionen") or []):
-            e["versionen"] = vers
+        vers = list(e.get("versionen") or [])
+        for v in vers:
+            iso = normalize_gueltig_ab_iso(v.get("gueltig_ab"))
+            if iso and iso != v.get("gueltig_ab"):
+                v["gueltig_ab"] = iso
+                changed = True
+        sorted_vers = sort_brillenpass_versions(vers)
+        correct = resolve_brillenpass_aktuell(sorted_vers)
+        if sorted_vers != (e.get("versionen") or []):
+            e["versionen"] = sorted_vers
             changed = True
         if correct and e.get("aktuell") != correct:
             e["aktuell"] = correct
