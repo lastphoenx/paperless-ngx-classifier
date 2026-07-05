@@ -22,11 +22,18 @@ from brillenpass_parser import (
 log = logging.getLogger("brillenpass_tsv")
 
 _HEADER_SYNONYMS: dict[str, tuple[str, ...]] = {
-    "sph": ("sph", "sph."),
-    "cyl": ("cyl", "zyl", "cyl.", "zyl."),
-    "achse": ("achse", "axe", "achs", "a", "axis"),
+    "sph": ("sph", "sph.", "sφ", "sp"),
+    "cyl": ("cyl", "zyl", "cyl.", "zyl.", "cy1", "zy1"),
+    "achse": ("achse", "axe", "achs", "axis", "ach", "a°"),
     "add": ("add", "zusa", "zusatz", "addition"),
-    "pd": ("pd",),
+    "pd": ("pd", "pupillendistanz"),
+}
+_HEADER_PREFIX: dict[str, re.Pattern[str]] = {
+    "sph": re.compile(r"^sph", re.I),
+    "cyl": re.compile(r"^(cyl|zyl|cy1|zy1)", re.I),
+    "achse": re.compile(r"^(achse|axe|achs|axis|ach)", re.I),
+    "add": re.compile(r"^(add|zusa)", re.I),
+    "pd": re.compile(r"^pd", re.I),
 }
 
 _RL_RE = re.compile(r"^(r|l|rechts|links)$", re.IGNORECASE)
@@ -38,13 +45,19 @@ def _normalize_header_token(text: str) -> str:
 
 
 def header_field_for_token(text: str) -> str | None:
-    n = _normalize_header_token(text)
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    n = _normalize_header_token(raw)
     if not n:
         return None
     for field, syns in _HEADER_SYNONYMS.items():
         if n in syns:
             return field
-    if n in ("a°", "a"):
+    for field, pat in _HEADER_PREFIX.items():
+        if pat.match(raw.strip()):
+            return field
+    if n in ("a°",) or raw.strip().upper() in ("A°", "A"):
         return "achse"
     return None
 
@@ -108,7 +121,7 @@ def run_tesseract_tsv(image_path: str, *, lang: str = "deu", min_conf: int = 30)
     return words
 
 
-def _pdf_first_page_jpg(pdf_path: str) -> str | None:
+def _pdf_first_page_jpg(pdf_path: str, *, dpi: int = 300) -> str | None:
     try:
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         tmp_path = tmp.name
@@ -116,7 +129,7 @@ def _pdf_first_page_jpg(pdf_path: str) -> str | None:
         subprocess.run(
             [
                 "gs", "-dNOPAUSE", "-dBATCH", "-sDEVICE=jpeg",
-                "-dFirstPage=1", "-dLastPage=1", "-r150",
+                "-dFirstPage=1", "-dLastPage=1", f"-r{dpi}",
                 f"-sOutputFile={tmp_path}", pdf_path,
             ],
             capture_output=True,
@@ -130,7 +143,19 @@ def _pdf_first_page_jpg(pdf_path: str) -> str | None:
 
 
 def run_tesseract_tsv_on_document(document_path: str, *, lang: str = "deu") -> list[dict]:
-    """PDF oder Bild — bei leerem PDF-OCR Fallback auf gerenderte erste Seite."""
+    """PDF: zuerst gerenderte Seite (300 dpi) — direktes PDF-OCR liefert oft schlechte Tabellen."""
+    if document_path.lower().endswith(".pdf"):
+        jpg = _pdf_first_page_jpg(document_path)
+        if jpg:
+            try:
+                words = run_tesseract_tsv(jpg, lang=lang)
+                if words:
+                    return words
+            finally:
+                try:
+                    os.unlink(jpg)
+                except OSError:
+                    pass
     words = run_tesseract_tsv(document_path, lang=lang)
     if words or not document_path.lower().endswith(".pdf"):
         return words
@@ -166,6 +191,15 @@ def find_best_header_row(zeilen: list[list[dict]]) -> tuple[dict[str, dict], int
             best_fields = fields
             best_idx = idx
     return best_fields, best_count, best_idx
+
+
+def header_field_names(fields: dict[str, dict]) -> list[str]:
+    return sorted(fields.keys())
+
+
+def tsv_words_to_text(words: list[dict]) -> str:
+    """TSV-Wörter → mehrzeiliger Text für Regex-Parser."""
+    return "\n".join(" ".join(w["text"] for w in zeile) for zeile in gruppiere_nach_top(words))
 
 
 def count_header_anchors(words: list[dict]) -> int:
@@ -241,6 +275,72 @@ def _assign_row_values(zeile: list[dict], column_specs: dict[str, dict[str, floa
     return values
 
 
+def _numeric_tokens(zeile: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for w in zeile:
+        t = w["text"].strip()
+        if header_field_for_token(t) or _RL_RE.match(t):
+            continue
+        if _NUM_RE.match(t.replace(",", ".")):
+            out.append(w)
+    return out
+
+
+def _parse_rl_rows_positional(zeilen: list[list[dict]]) -> dict | None:
+    """Fallback: R/L-Zeile mit Sph/Cyl/Achse/PD ohne volle Header-Zeile."""
+    result: dict[str, Any] = {
+        "parser": "tsv_positional",
+        "fern": _empty_eye_block(),
+        "naehe": _empty_eye_block(),
+        "pd": {"rechts": None, "links": None},
+    }
+    found = 0
+    for zeile in zeilen:
+        side = _row_side(zeile)
+        if not side:
+            continue
+        nums = _numeric_tokens(zeile)
+        if len(nums) < 3:
+            continue
+        eye = _eye_from_values({
+            "sph": nums[0]["text"],
+            "cyl": nums[1]["text"],
+            "achse": nums[2]["text"],
+        })
+        if not eye.get("sph"):
+            continue
+        result["fern"][side] = eye
+        pd_v = None
+        for w in reversed(nums):
+            cand = _norm_val(w["text"])
+            if _plausible_pd(cand):
+                pd_v = cand
+                break
+        if pd_v:
+            result["pd"][side] = pd_v
+        found += 1
+    if found == 0:
+        return None
+    if not has_brillenpass_values(result):
+        return None
+    return result
+
+
+def _parse_tsv_text_fallback(words: list[dict]) -> dict | None:
+    """McOptic/Fielmann-Regex auf Tesseract-Fließtext."""
+    from brillenpass_parser import parse_brillenpass_auto  # noqa: WPS433
+
+    flat = tsv_words_to_text(words)
+    if not flat.strip():
+        return None
+    parsed = parse_brillenpass_auto(flat)
+    if not parsed or not has_brillenpass_values(parsed):
+        return None
+    parsed = deepcopy(parsed)
+    parsed["parser"] = "tsv_text"
+    return parsed
+
+
 def _eye_from_values(vals: dict[str, str]) -> dict[str, str | None]:
     eye: dict[str, str | None] = {}
     if vals.get("sph"):
@@ -295,16 +395,35 @@ def parse_by_anchors(words: list[dict]) -> dict | None:
 def extract_brillenpass_from_image(image_path: str) -> tuple[dict, str, dict]:
     """TSV-Pipeline: (daten, confidence, meta)."""
     words = run_tesseract_tsv_on_document(image_path)
-    anchor_count = count_header_anchors(words)
-    meta: dict[str, Any] = {"header_anchors": anchor_count, "word_count": len(words)}
+    zeilen = gruppiere_nach_top(words) if words else []
+    header_fields, anchor_count, _header_idx = find_best_header_row(zeilen) if zeilen else ({}, 0, -1)
+    meta: dict[str, Any] = {
+        "header_anchors": anchor_count,
+        "header_fields": header_field_names(header_fields),
+        "word_count": len(words),
+        "ocr_source": "jpeg300" if (image_path or "").lower().endswith(".pdf") else "direct",
+    }
+
     parsed = parse_by_anchors(words)
+    method = "anchors" if parsed else None
+    if not parsed:
+        parsed = _parse_rl_rows_positional(zeilen)
+        method = "positional" if parsed else method
+    if not parsed:
+        parsed = _parse_tsv_text_fallback(words)
+        method = "text" if parsed else method
+
     if parsed:
-        meta["confidence"] = "hoch"
-        return parsed, "hoch", meta
+        meta["method"] = method
+        meta["confidence"] = "hoch" if anchor_count >= 3 else "mittel"
+        return parsed, meta["confidence"], meta
     if anchor_count >= 3:
         meta["confidence"] = "niedrig"
+        meta["tsv_preview"] = tsv_words_to_text(words)[:400]
         return {}, "niedrig", meta
     meta["confidence"] = "keine_extraktion"
+    if words:
+        meta["tsv_preview"] = tsv_words_to_text(words)[:400]
     return {}, "keine_extraktion", meta
 
 
