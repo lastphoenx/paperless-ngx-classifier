@@ -1821,7 +1821,8 @@ def _get_letzte_brillenpass_version(person_id: str) -> dict | None:
     for entry in _load_brillenpaesse_data().get("eintraege", []):
         if entry.get("person_id") == person_id:
             vers = entry.get("versionen") or []
-            return vers[-1] if vers else None
+            from brillenpass_parser import latest_brillenpass_version  # noqa: WPS433
+            return latest_brillenpass_version(vers)
     return None
 
 

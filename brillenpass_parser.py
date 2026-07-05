@@ -568,6 +568,50 @@ def parse_brillenpass_with_parsers(
     )
 
 
+def _parse_gueltig_date(gueltig_ab: str | None):
+    """ISO-Datum parsen — für Sortierung / aktuell."""
+    if not gueltig_ab:
+        return None
+    try:
+        from datetime import date
+        return date.fromisoformat(str(gueltig_ab)[:10])
+    except ValueError:
+        return None
+
+
+def sort_brillenpass_versions(versionen: list[dict]) -> list[dict]:
+    """Versionen chronologisch (älteste zuerst)."""
+    return sorted(
+        versionen,
+        key=lambda v: _parse_gueltig_date(v.get("gueltig_ab")) or __import__("datetime").date.min,
+    )
+
+
+def latest_brillenpass_version(versionen: list[dict]) -> dict | None:
+    """Neueste Version nach gültig_ab (nicht Listenende)."""
+    if not versionen:
+        return None
+    return sort_brillenpass_versions(versionen)[-1]
+
+
+def resolve_brillenpass_aktuell(versionen: list[dict]) -> str | None:
+    """Stand-Datum = neuestes gültig_ab."""
+    v = latest_brillenpass_version(versionen)
+    return (v.get("gueltig_ab") or "").strip() or None if v else None
+
+
+def chronological_prev_version(versionen: list[dict], gueltig_ab: str) -> dict | None:
+    """Direkt vorausgehende Version (chronologisch), für Diff bei historischen Einträgen."""
+    new_d = _parse_gueltig_date(gueltig_ab)
+    if not new_d:
+        return latest_brillenpass_version(versionen)
+    prior = [
+        v for v in versionen
+        if (_parse_gueltig_date(v.get("gueltig_ab")) or __import__("datetime").date.min) < new_d
+    ]
+    return sort_brillenpass_versions(prior)[-1] if prior else None
+
+
 def brillenpass_dates_close(d1: str | None, d2: str | None, max_days: int = 21) -> bool:
     """Gleiche Brillenpass-Periode (Rechnung + Pass wenige Tage auseinander)."""
     if not d1 or not d2:
@@ -650,6 +694,11 @@ def merge_brillenpass_version(existing: dict, incoming: dict) -> dict:
     for k in ("beschreibung", "index", "durchmesser", "beschichtungen"):
         if not g_out.get(k) and g_inc.get(k):
             g_out[k] = g_inc[k]
+    p_out = out.setdefault("pd", {"rechts": None, "links": None})
+    p_inc = incoming.get("pd") or {}
+    for side in ("rechts", "links"):
+        if not p_out.get(side) and p_inc.get(side):
+            p_out[side] = p_inc[side]
     apply_document_ids(out, incoming)
     ext = out.setdefault("extraktion", {})
     inc_ext = incoming.get("extraktion") or {}
@@ -667,7 +716,7 @@ def build_version_id(gueltig_ab: str, korrespondent: str) -> str:
 
 
 def _bp_base(parser: str, **kwargs) -> dict:
-    return {
+    base = {
         "parser": parser,
         "gueltig_ab": kwargs.get("gueltig_ab"),
         "auftrag": kwargs.get("auftrag", ""),
@@ -679,6 +728,10 @@ def _bp_base(parser: str, **kwargs) -> dict:
         },
         "extraktion": {"quelle": f"{parser}_regex", "confidence": "mittel"},
     }
+    pd = kwargs.get("pd")
+    if pd and (pd.get("rechts") or pd.get("links")):
+        base["pd"] = {"rechts": pd.get("rechts"), "links": pd.get("links")}
+    return base
 
 
 def _side_key(label: str) -> str:
@@ -814,11 +867,48 @@ _MCOPTIC_RL = re.compile(
     r"(?:^|\n)\s*(R|L|Rechts|Links)\s*[:.]?\s*"
     r"([+\-]?\s*[\d.,]+)\s+"
     r"([+\-]?\s*[\d.,]+)\s+"
-    r"(\d+)\s+"
-    r"([+\-]?\s*[\d.,]+)"
-    r"(?:\s+[\d.,]+)?",
+    r"(\d+)\s*°?"
+    r"(?:\s+([+\-]?\s*[\d.,]+))?"
+    r"(?:\s+([+\-]?\s*[\d.,]+))?",
     re.IGNORECASE,
 )
+
+
+def _pd_or_add(raw: str | None) -> tuple[str | None, str | None]:
+    """Zahl in ADD (<5 dpt) oder PD (15–40 mm) einordnen."""
+    if not raw:
+        return None, None
+    try:
+        f = abs(float(str(raw).replace(",", ".").lstrip("+")))
+    except ValueError:
+        return None, None
+    if 15 <= f <= 40:
+        return None, _norm_val(raw)
+    if f < 5:
+        return _norm_val(raw), None
+    return None, None
+
+
+def _fill_mcoptic_pass_rows(text: str) -> tuple[dict[str, dict | None], dict[str, str | None]]:
+    """McOptic-Karte: SPH/ZYL/ACHSE/ADD + mono-PD pro Auge."""
+    eyes: dict[str, dict | None] = {"rechts": None, "links": None}
+    pd: dict[str, str | None] = {"rechts": None, "links": None}
+    for m in _MCOPTIC_RL.finditer(text):
+        side = _side_key(m.group(1))
+        add_v, pd_v = None, None
+        for gi in (5, 6):
+            if m.lastindex and m.lastindex >= gi and m.group(gi):
+                a, p = _pd_or_add(m.group(gi))
+                if a and not add_v:
+                    add_v = a
+                if p and not pd_v:
+                    pd_v = p
+        eye = _eye_from_parts(m.group(2), m.group(3), m.group(4), add_v)
+        if eye:
+            eyes[side] = eye
+        if pd_v:
+            pd[side] = pd_v
+    return eyes, pd
 
 _AUGENARZT_RL = re.compile(
     r"(?:^|\n)\s*(Rechts|Links|R|L)\s*[:.]?\s*"
@@ -883,7 +973,7 @@ def parse_fielmann_pass(ocr_text: str) -> dict:
 def parse_mcoptic_pass(ocr_text: str) -> dict:
     """McOptic Brillenpass-Karte (SPH ZYL ACHSE ADD PD)."""
     text = ocr_text or ""
-    eyes = _fill_eye_block_from_matches(text, _MCOPTIC_RL)
+    eyes, pd = _fill_mcoptic_pass_rows(text)
     fern, naehe = _mcoptic_pass_buckets(eyes)
 
     glas_desc = ""
@@ -902,6 +992,7 @@ def parse_mcoptic_pass(ocr_text: str) -> dict:
         gueltig_ab=_parse_pass_date(text),
         fern=fern,
         naehe=naehe,
+        pd=pd,
         glas={"beschreibung": glas_desc, "index": None, "durchmesser": None, "beschichtungen": []},
     )
 
@@ -1142,6 +1233,9 @@ def compute_brillenpass_diff(old: dict | None, new: dict) -> dict:
             _flat(f"{dist}.{side}", (new.get(dist) or {}).get(side), new_flat)
     _flat("glas", old.get("glas"), old_flat)
     _flat("glas", new.get("glas"), new_flat)
+    for side in ("rechts", "links"):
+        _flat(f"pd.{side}", (old.get("pd") or {}).get(side), old_flat)
+        _flat(f"pd.{side}", (new.get("pd") or {}).get(side), new_flat)
 
     diff = {}
     for key in set(old_flat) | set(new_flat):

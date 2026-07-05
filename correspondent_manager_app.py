@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.36"  # 2.36: Legacy QR-Split 600 DPI, kein Kein_Barcode-Fallback
-UI_VERSION = "2.48"
+__version__ = "2.37"  # 2.37: Brillenpass Multi-Version, PD, aktuell-Fix
+UI_VERSION = "2.51"
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -42,13 +42,17 @@ from brillenpass_parser import (
     VENDOR_LABELS,
     VENDOR_PARSERS,
     build_version_id,
+    chronological_prev_version,
     compute_brillenpass_diff,
     detect_parser,
     find_brillenpass_period_duplicate,
     has_brillenpass_values,
+    latest_brillenpass_version,
     merge_brillenpass_version,
     normalize_parser_name,
     parse_by_parser,
+    resolve_brillenpass_aktuell,
+    sort_brillenpass_versions,
     vendor_from_parser,
 )
 
@@ -1706,7 +1710,7 @@ def _get_letzte_brillenpass_version(person_id: str) -> dict | None:
     for entry in data.get("eintraege", []):
         if entry.get("person_id") == person_id:
             vers = entry.get("versionen") or []
-            return vers[-1] if vers else None
+            return latest_brillenpass_version(vers)
     return None
 
 
@@ -1772,22 +1776,39 @@ def _find_brillenpass_entry(data: dict, person_id: str) -> dict | None:
     return None
 
 
+def _repair_brillenpass_store(data: dict) -> bool:
+    """Sortiert Versionen und korrigiert aktuell = neuestes gültig_ab (einmalig bei Lesen)."""
+    changed = False
+    for e in data.get("eintraege", []):
+        vers = sort_brillenpass_versions(e.get("versionen") or [])
+        correct = resolve_brillenpass_aktuell(vers)
+        if vers != (e.get("versionen") or []):
+            e["versionen"] = vers
+            changed = True
+        if correct and e.get("aktuell") != correct:
+            e["aktuell"] = correct
+            changed = True
+    if changed:
+        _save_brillenpaesse(data)
+    return changed
+
+
 @app.get("/api/brillenpass", response_class=JSONResponse)
 def api_brillenpass_list():
-    """Alle Brillenpässe mit aktueller Version pro Person."""
+    """Alle Brillenpässe — alle Versionen pro Person (chronologisch sortiert)."""
     data = _load_brillenpaesse()
+    _repair_brillenpass_store(data)
     result = []
     for e in data.get("eintraege", []):
-        vers = e.get("versionen") or []
-        aktuell = e.get("aktuell")
-        current = None
-        if vers:
-            current = next((v for v in reversed(vers) if v.get("gueltig_ab") == aktuell), vers[-1])
+        vers = sort_brillenpass_versions(e.get("versionen") or [])
+        aktuell = resolve_brillenpass_aktuell(vers)
+        current = latest_brillenpass_version(vers)
         result.append({
             "person_id":    e.get("person_id"),
             "anzeigename":  e.get("anzeigename"),
             "aktuell":      aktuell,
             "version_count": len(vers),
+            "versionen":    vers,
             "current":      current,
         })
     pending_lines = _load_pending_brillenpass_lines()
@@ -1995,8 +2016,8 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
         bp_entry = {"person_id": person_id, "anzeigename": anzeigename, "aktuell": gueltig_ab, "versionen": []}
         data.setdefault("eintraege", []).append(bp_entry)
 
-    prev = (bp_entry.get("versionen") or [])[-1] if bp_entry.get("versionen") else None
     vers = bp_entry.setdefault("versionen", [])
+    prev = chronological_prev_version(vers, gueltig_ab)
     dup_idx = find_brillenpass_period_duplicate(
         vers, gueltig_ab, korrespondent, max_days=BRILLENPASS_DEDUP_DAYS,
     )
@@ -2010,6 +2031,7 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
         "fern": vorschlag.get("fern") or {"rechts": None, "links": None},
         "naehe": vorschlag.get("naehe") or {"rechts": None, "links": None},
         "glas": vorschlag.get("glas") or {},
+        "pd": vorschlag.get("pd") or {"rechts": None, "links": None},
         "extraktion": vorschlag.get("extraktion") or {"quelle": "review", "confidence": "hoch"},
     }
     deduped = False
@@ -2027,7 +2049,8 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
             "diff_zu_vorher": compute_brillenpass_diff(prev, incoming),
         }
         vers.append(version)
-    bp_entry["aktuell"] = gueltig_ab
+    vers[:] = sort_brillenpass_versions(vers)
+    bp_entry["aktuell"] = resolve_brillenpass_aktuell(vers) or gueltig_ab
     if anzeigename:
         bp_entry["anzeigename"] = anzeigename
     _save_brillenpaesse(data)
@@ -2153,8 +2176,9 @@ def api_brillenpass_patch(person_id: str, body: dict = Body(...)):
     updated = {**vers[idx], **(body.get("version") or {})}
     updated["diff_zu_vorher"] = compute_brillenpass_diff(prev, updated)
     vers[idx] = updated
-    if updated.get("gueltig_ab"):
-        bp_entry["aktuell"] = updated["gueltig_ab"]
+    sorted_vers = sort_brillenpass_versions(vers)
+    bp_entry["versionen"] = sorted_vers
+    bp_entry["aktuell"] = resolve_brillenpass_aktuell(sorted_vers) or bp_entry.get("aktuell")
     _save_brillenpaesse(data)
     return {"status": "updated", "version": updated}
 

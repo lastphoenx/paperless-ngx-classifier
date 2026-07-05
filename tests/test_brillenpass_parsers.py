@@ -5,12 +5,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from brillenpass_parser import (  # noqa: E402
+    chronological_prev_version,
     corr_brillenpass_parsers,
     detect_parser,
     has_brillenpass_values,
+    latest_brillenpass_version,
     merge_brillenpass,
     merge_brillenpass_version,
     normalize_parser_name,
+    resolve_brillenpass_aktuell,
+    sort_brillenpass_versions,
     _merge_eye,
     parse_augenarzt,
     parse_by_parser,
@@ -18,6 +22,7 @@ from brillenpass_parser import (  # noqa: E402
     parse_fielmann_pass,
     parse_mcoptic_pass,
     parse_optik_meyer_moehlin,
+    find_brillenpass_period_duplicate,
 )
 
 FIELMANN_PASS_OCR = """
@@ -104,6 +109,8 @@ def test_mcoptic_pass():
     assert r["parser"] == "mcoptic_brillenpass"
     assert r["naehe"]["rechts"]["add"] == "+1.50"
     assert r["naehe"]["links"]["cyl"] == "-0.50"
+    assert r["pd"]["rechts"] == "31.5"
+    assert r["pd"]["links"] == "32.0"
     assert r["gueltig_ab"] == "2023-10-15"
     assert has_brillenpass_values(r)
 
@@ -115,6 +122,8 @@ def test_mcoptic_pass_fern_einstaerke():
     assert r["fern"]["rechts"]["achse"] == "178"
     assert r["fern"]["links"]["sph"] == "-0.75"
     assert r["naehe"]["rechts"] is None
+    assert r["pd"]["rechts"] == "29.0"
+    assert r["pd"]["links"] == "32.5"
     assert r["gueltig_ab"] == "2022-03-15"
     assert "0120RX" in r["glas"]["beschreibung"]
 
@@ -150,6 +159,20 @@ def test_merge_sph_sign_conflict_prefers_parser():
     v = {"sph": "2.50", "cyl": "-1.25", "achse": "178"}
     m = _merge_eye(p, v)
     assert m["sph"] == "-2.50"
+
+
+def test_brillenpass_version_chronology():
+    vers = [
+        {"gueltig_ab": "2022-03-15", "korrespondent": "McOptic"},
+        {"gueltig_ab": "2012-04-26", "korrespondent": "McOptic"},
+    ]
+    assert resolve_brillenpass_aktuell(vers) == "2022-03-15"
+    assert latest_brillenpass_version(vers)["gueltig_ab"] == "2022-03-15"
+    prev = chronological_prev_version(vers[:1], "2012-04-26")
+    assert prev is None
+    prev2 = chronological_prev_version(vers, "2023-01-01")
+    assert prev2["gueltig_ab"] == "2022-03-15"
+    assert find_brillenpass_period_duplicate(vers, "2012-04-26", "McOptic") is None
 
 
 def test_merge_brillenpass_version_collects_document_ids():
