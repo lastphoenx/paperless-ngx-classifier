@@ -13,6 +13,7 @@ from brillenpass_parser import (  # noqa: E402
     merge_brillenpass,
     merge_brillenpass_version,
     normalize_parser_name,
+    normalize_vision_brillenpass,
     resolve_brillenpass_aktuell,
     sort_brillenpass_versions,
     _merge_eye,
@@ -336,3 +337,44 @@ def test_parse_by_parser():
     r = parse_by_parser("mcoptic_pass", MCOPTIC_PASS_OCR)
     assert r["parser"] == "mcoptic_brillenpass"
     assert r["naehe"]["rechts"]["add"] == "+1.50"
+
+
+def test_normalize_vision_moves_pd_from_prisma():
+    raw = {
+        "fern": {
+            "rechts": {"sph": "-2.75", "cyl": "-1.25", "achse": "179", "prisma": "29.5", "basis": "ADD", "add": "3"},
+            "links": {"sph": "-1.00", "cyl": "-1.50", "achse": "0"},
+        },
+        "pd": {"rechts": None, "links": "null"},
+    }
+    norm = normalize_vision_brillenpass(raw)
+    assert norm["pd"]["rechts"] == "29.5"
+    assert norm["pd"]["links"] is None
+    assert norm["fern"]["rechts"].get("add") is None
+    assert norm["fern"]["rechts"].get("basis") is None
+
+
+def test_consolidate_ignores_hallucinated_integer_add():
+    """Einstärke ohne ADD: Vision-«3» darf nicht nach naehe verschieben."""
+    vision = {
+        "fern": {
+            "rechts": {"sph": "-2.75", "cyl": "-1.25", "achse": "179", "add": "3"},
+            "links": {"sph": "-1.00", "cyl": "-1.50", "achse": "0"},
+        },
+        "pd": {"rechts": "29.5", "links": "31.0"},
+    }
+    norm = normalize_vision_brillenpass(vision)
+    merged = merge_brillenpass({}, norm, prefer_vision=True)
+    assert merged["fern"]["rechts"]["sph"] == "-2.75"
+    assert merged["naehe"]["rechts"] is None
+    assert merged["pd"]["links"] == "31.0"
+
+
+def test_consolidate_near_bucket_still_moves_real_add():
+    merged = merge_brillenpass(
+        {"fern": {"rechts": {"sph": "+0.25", "cyl": "-0.25", "achse": "57", "add": "+1.50"}, "links": None},
+         "naehe": {"rechts": None, "links": {"sph": "+0.00", "cyl": "-0.25", "achse": "110", "add": "+1.50"}}},
+        {},
+    )
+    assert merged["naehe"]["rechts"]["sph"] == "+0.25"
+    assert merged["fern"]["rechts"] is None

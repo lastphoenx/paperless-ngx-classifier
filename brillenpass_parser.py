@@ -99,10 +99,19 @@ def _sanitize_eye(eye: dict | None) -> dict | None:
             bf = abs(float(str(basis).replace(",", ".").lstrip("+")))
             if 15 <= bf <= 40:
                 out["basis"] = None
+                basis = ""
         except ValueError:
             pass
-    if basis.upper() in ("R", "L") or basis.replace("°", "").upper() in ("A", "A°"):
+    if basis.upper() in ("R", "L", "ADD") or basis.replace("°", "").upper() in ("A", "A°"):
         out["basis"] = None
+    # PD (mm) fälschlich in prisma (nach Add-Umordnung nochmal prüfen)
+    if out.get("prisma") and not out.get("add"):
+        try:
+            pf = abs(float(str(out["prisma"]).replace(",", ".").lstrip("+")))
+            if 15 <= pf <= 40:
+                out["prisma"] = None
+        except ValueError:
+            pass
     # Add 0.00 bei Ferngläsern → leer
     if out.get("add") is not None:
         try:
@@ -295,6 +304,52 @@ def _empty_eye_block() -> dict:
     return {"rechts": None, "links": None}
 
 
+def _nullish(val) -> None | str:
+    if val is None:
+        return None
+    s = str(val).strip().lower()
+    if s in ("null", "none", "", "-", "n/a"):
+        return None
+    return str(val).strip()
+
+
+def normalize_vision_brillenpass(
+    data: dict | None,
+    *,
+    parser_hint: dict | None = None,
+) -> dict:
+    """Vision-JSON bereinigen: null-Strings, PD aus Prisma, erfundene ADD-Werte."""
+    if not data:
+        return {}
+    out = deepcopy(data)
+    pd_out = out.setdefault("pd", {"rechts": None, "links": None})
+    for side in ("rechts", "links"):
+        pd_out[side] = _nullish(pd_out.get(side))
+
+    for dist in ("fern", "naehe"):
+        block = out.setdefault(dist, _empty_eye_block())
+        for side in ("rechts", "links"):
+            eye = block.get(side)
+            if not eye:
+                continue
+            prisma = eye.get("prisma")
+            if prisma and not pd_out.get(side):
+                try:
+                    f = abs(float(str(prisma).replace(",", ".").lstrip("+")))
+                    if 15 <= f <= 40:
+                        pd_out[side] = str(prisma).replace(",", ".")
+                        eye["prisma"] = None
+                except ValueError:
+                    pass
+            add = eye.get("add")
+            if add and not _plausible_reading_add(add, parser_hint):
+                eye["add"] = None
+                if (eye.get("basis") or "").upper() == "ADD":
+                    eye["basis"] = None
+            block[side] = _sanitize_eye(eye)
+    return out
+
+
 def snapshot_brillenpass(data: dict | None) -> dict:
     """Kompakte Übersicht befüllter Felder (für Log/Audit)."""
     if not data:
@@ -419,7 +474,7 @@ def merge_brillenpass(
             p_out[side] = v_pd[side]
 
     base = _reconcile_split_eyes(base, parser_data)
-    base = _consolidate_near_bucket(base)
+    base = _consolidate_near_bucket(base, parser_data)
 
     sources = [base.get("extraktion", {}).get("quelle", "")]
     if vision_data:
@@ -928,6 +983,22 @@ def _add_is_near(add_val: str | None) -> bool:
         return False
 
 
+def _plausible_reading_add(add_val: str | None, parser_data: dict | None = None) -> bool:
+    """Lesewert ADD — keine Ganzzahl-Halluzinationen (z. B. «3» aus Glas-Index 150)."""
+    if not _add_is_near(add_val):
+        return False
+    s = str(add_val).replace(",", ".").strip().lstrip("+-")
+    if "." in s:
+        return True
+    if parser_data:
+        for dist in ("fern", "naehe"):
+            for side in ("rechts", "links"):
+                pa = ((parser_data.get(dist) or {}).get(side) or {}).get("add")
+                if _add_is_near(pa):
+                    return True
+    return False
+
+
 def _reconcile_split_eyes(data: dict, parser_data: dict | None) -> dict:
     """
     Parser+Vision-Mix: z. B. R nur in fern, L nur in naehe → einen Block.
@@ -1123,13 +1194,13 @@ def _mcoptic_pass_buckets(eyes: dict[str, dict | None]) -> tuple[dict, dict]:
     return eyes, _empty_eye_block()
 
 
-def _consolidate_near_bucket(data: dict) -> dict:
+def _consolidate_near_bucket(data: dict, parser_data: dict | None = None) -> dict:
     """Leseglas (ADD): Werte aus fern nach naehe ziehen — verhindert R→fern / L→naehe-Split."""
     fern = dict(data.get("fern") or _empty_eye_block())
     naehe = dict(data.get("naehe") or _empty_eye_block())
     any_add = any(
-        _add_is_near((fern.get(s) or {}).get("add"))
-        or _add_is_near((naehe.get(s) or {}).get("add"))
+        _plausible_reading_add((fern.get(s) or {}).get("add"), parser_data)
+        or _plausible_reading_add((naehe.get(s) or {}).get("add"), parser_data)
         for s in ("rechts", "links")
     )
     if not any_add:
