@@ -889,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.74';
+const UI_VERSION = '2.75';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5099,6 +5099,23 @@ function _bpDiffHtml(diff) {
   ).join('');
 }
 
+function _bpDiagnoseHtml(v) {
+  const d = (v.extraktion || {}).diagnose;
+  if (!d) return '';
+  const gaps = d.gaps || [];
+  const s1 = d.stufe1_ok ? 'ok' : 'teil/leer';
+  const s2 = d.stufe2_ok ? 'ok' : 'teil/leer';
+  const gapHtml = gaps.length
+    ? `<div style="color:#fbbf24;font-size:11px;margin-top:6px">Lücken: ${gaps.map(g => `<code>${g}</code>`).join(', ')}</div>`
+    : '<div style="color:#4ade80;font-size:11px;margin-top:6px">Extraktion vollständig</div>';
+  return `<div style="margin-top:8px;padding:8px 10px;background:rgba(79,156,249,.08);border-radius:6px;border:1px solid var(--border)">
+    <div style="font-size:10px;font-weight:700;color:var(--accent);margin-bottom:4px">EXTRAKTION</div>
+    <div style="font-size:11px;color:var(--muted)">Stufe 1 Parser (${d.parser_detected || '?'}): ${s1} · Stufe 2 Vision: ${s2}${d.has_image ? '' : ' (ohne Bild)'}</div>
+    ${gapHtml}
+    <div style="font-size:10px;color:var(--muted);margin-top:4px">Audit: <code>audit_log.jsonl</code> → brillenpass_s1/s2/merged</div>
+  </div>`;
+}
+
 function renderBrillenpassReviewPanel(entry) {
   const panel = document.getElementById('bp-review-panel');
   if (!panel || !entry) { if (panel) panel.style.display = 'none'; return; }
@@ -5132,6 +5149,7 @@ function renderBrillenpassReviewPanel(entry) {
         <label>Gültig ab</label>
         <input type="date" id="bp-gueltig-ab" value="${v.gueltig_ab || ''}">
       </div>
+      ${_bpDiagnoseHtml(v)}
       <div class="bp-eye-grid" style="margin-top:12px">
         <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Rechts</div>${_bpEyeFields('bp-nr', (v.naehe||{}).rechts)}</div>
         <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Links</div>${_bpEyeFields('bp-nl', (v.naehe||{}).links)}</div>

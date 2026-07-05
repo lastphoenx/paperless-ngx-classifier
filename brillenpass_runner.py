@@ -103,8 +103,22 @@ def reprocess_brillenpass_document(
     )
     if not parser_data and "fielmann_rechnung" in parser_names:
         parser_data = pc.parse_fielmann_brillenpass(ocr_text)
+    chosen = pc.detect_parser(
+        ocr_text, allowed=parser_names, dokumenttyp_visuell=dt_vis, vision_meta=vision_meta,
+    )
     vision_bp = pc.vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
-    merged = pc.merge_brillenpass(parser_data, vision_bp, prefer_vision=bool(image_b64))
+    prefer_vis = bool(image_b64)
+    merged = pc.merge_brillenpass(parser_data, vision_bp, prefer_vision=prefer_vis)
+    from brillenpass_parser import diagnose_brillenpass_extraction  # noqa: WPS433
+    diagnose = diagnose_brillenpass_extraction(
+        parser_data, vision_bp, merged,
+        parser_detected=chosen, has_image=bool(image_b64), prefer_vision=prefer_vis,
+    )
+    merged.setdefault("extraktion", {})["diagnose"] = diagnose
+    if document_id:
+        pc.write_audit_entry(document_id, "brillenpass_merged", diagnose)
+    if diagnose.get("gaps"):
+        log.warning("Brillenpass Lücken #%s: %s", document_id, ", ".join(diagnose["gaps"]))
     merged["korrespondent"] = corr_entry.get("name", "")
     if not merged.get("gueltig_ab") and doc.get("created"):
         merged["gueltig_ab"] = str(doc["created"])[:10]

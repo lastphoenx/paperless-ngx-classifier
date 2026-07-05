@@ -288,7 +288,73 @@ def _empty_eye_block() -> dict:
     return {"rechts": None, "links": None}
 
 
-def merge_brillenpass(
+def snapshot_brillenpass(data: dict | None) -> dict:
+    """Kompakte Übersicht befüllter Felder (für Log/Audit)."""
+    if not data:
+        return {}
+    out: dict = {}
+    for dist in ("fern", "naehe"):
+        for side in ("rechts", "links"):
+            eye = (data.get(dist) or {}).get(side) or {}
+            filled = {k: v for k, v in eye.items() if v}
+            if filled:
+                out[f"{dist}.{side}"] = filled
+    pd = data.get("pd") or {}
+    for side in ("rechts", "links"):
+        if pd.get(side):
+            out[f"pd.{side}"] = pd[side]
+    for k in ("gueltig_ab", "parser", "auftrag", "rechnung"):
+        if data.get(k):
+            out[k] = data[k]
+    return out
+
+
+def diagnose_brillenpass_extraction(
+    parser_data: dict | None,
+    vision_data: dict | None,
+    merged: dict | None,
+    *,
+    parser_detected: str | None = None,
+    has_image: bool = False,
+    prefer_vision: bool = False,
+) -> dict:
+    """Wo klemmt's: Stufe 1 vs. Stufe 2 vs. Merge — Lückenliste."""
+    gaps: list[str] = []
+    for dist in ("fern", "naehe"):
+        for side in ("rechts", "links"):
+            eye = ((merged or {}).get(dist) or {}).get(side) or {}
+            if not eye.get("sph"):
+                continue
+            for field in ("cyl", "achse", "add"):
+                if not eye.get(field):
+                    gaps.append(f"{dist}.{side}.{field}")
+    pd = (merged or {}).get("pd") or {}
+    for side in ("rechts", "links"):
+        dist_eye = ((merged or {}).get("fern") or {}).get(side) or {}
+        near_eye = ((merged or {}).get("naehe") or {}).get(side) or {}
+        if (dist_eye.get("sph") or near_eye.get("sph")) and not pd.get(side):
+            gaps.append(f"pd.{side}")
+
+    parser_ok = bool(parser_data and has_brillenpass_values(parser_data))
+    vision_ok = bool(vision_data and has_brillenpass_values({
+        "fern": vision_data.get("fern") or _empty_eye_block(),
+        "naehe": vision_data.get("naehe") or _empty_eye_block(),
+        "glas": vision_data.get("glas") or {},
+    }))
+
+    return {
+        "parser_detected": parser_detected,
+        "has_image": has_image,
+        "prefer_vision": prefer_vision,
+        "stufe1_ok": parser_ok,
+        "stufe2_ok": vision_ok,
+        "stufe1": snapshot_brillenpass(parser_data),
+        "stufe2": snapshot_brillenpass(vision_data) if vision_data else {},
+        "merged": snapshot_brillenpass(merged),
+        "gaps": gaps,
+    }
+
+
     parser_data: dict | None,
     vision_data: dict | None,
     *,
@@ -867,6 +933,16 @@ def _reconcile_split_eyes(data: dict, parser_data: dict | None) -> dict:
             )
             if pn > pf:
                 target = "naehe"
+            elif pn == pf and pn > 0:
+                has_add = any(
+                    _add_is_near(((parser_data.get("naehe") or {}).get(s) or {}).get("add"))
+                    for s in ("rechts", "links")
+                ) or any(
+                    _add_is_near((naehe.get(s) or {}).get("add"))
+                    for s in ("rechts", "links")
+                )
+                if has_add:
+                    target = "naehe"
         merged_block = _empty_eye_block()
         for side in ("rechts", "links"):
             if target == "fern":
@@ -1097,7 +1173,18 @@ _MCOPTIC_RECHNUNG_RL = re.compile(
 def parse_mcoptic_rechnung(ocr_text: str) -> dict:
     """McOptic Quittung / Krankenkassenexemplar (Messungstabelle)."""
     text = ocr_text or ""
-    fern = _fill_naehe_from_matches(text, _MCOPTIC_RECHNUNG_RL)
+    # Stufe 1a: Tabellenzeilen R/L ohne Sph./Cyl.-Labels (häufig auf Rechnung)
+    eyes, pd = _fill_mcoptic_pass_rows(text)
+    fern, naehe = _mcoptic_pass_buckets(eyes)
+    # Stufe 1b: explizite Labels (Sph. Cyl. A°) ergänzen
+    labeled = _fill_naehe_from_matches(text, _MCOPTIC_RECHNUNG_RL)
+    for side in ("rechts", "links"):
+        le = labeled.get(side)
+        if not le:
+            continue
+        bucket = naehe if _add_is_near(le.get("add")) else fern
+        if not bucket.get(side):
+            bucket[side] = le
 
     glas_desc = ""
     for pat in [
@@ -1119,7 +1206,8 @@ def parse_mcoptic_rechnung(ocr_text: str) -> dict:
         "mcoptic_rechnung",
         gueltig_ab=_parse_pass_date(text),
         fern=fern,
-        naehe={"rechts": None, "links": None},
+        naehe=naehe,
+        pd=pd,
         rechnung=rechnung,
         glas={"beschreibung": glas_desc, "index": None, "durchmesser": None, "beschichtungen": []},
     )
