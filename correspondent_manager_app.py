@@ -19,6 +19,7 @@ Nginx-Reverse-Proxy + Authentik Forward Auth davor schalten.
 import json
 import os
 import re
+import asyncio
 
 __version__ = "2.37"  # 2.37: Brillenpass Multi-Version, PD, aktuell-Fix
 UI_VERSION = "2.51"
@@ -173,6 +174,10 @@ async def require_paperless_session(request: Request, call_next):
     paperless_internal = os.environ.get("PAPERLESS_INTERNAL_URL",
                          os.environ.get("PAPERLESS_URL", "http://localhost:8000"))
 
+    # Health ohne Auth — Service-Check auch wenn Paperless/Ollama hängt
+    if path == "/health":
+        return await call_next(request)
+
     def _session_valid() -> bool:
         session_cookie = request.cookies.get("sessionid")
         if not session_cookie:
@@ -212,13 +217,13 @@ async def require_paperless_session(request: Request, call_next):
             )
             if token == _INTERNAL_TOKEN:
                 return await call_next(request)
-        if _session_valid():
+        if await asyncio.to_thread(_session_valid):
             return await call_next(request)
         from fastapi.responses import JSONResponse as _JR
         return _JR(status_code=401, content={"detail": "Nicht authentifiziert"})
 
     # Browser-Requests: kein Cookie → Login-Redirect
-    if _session_valid():
+    if await asyncio.to_thread(_session_valid):
         return await call_next(request)
 
     host = request.headers.get("host", "localhost:8100")
@@ -1945,6 +1950,14 @@ def api_brillenpass_manual(body: dict = Body(...)):
     return {"ok": True, "message": f"Manueller Brillenpass für {anzeigename} zur Review eingereiht"}
 
 
+async def _run_brillenpass_bg(doc_id: int, force: bool, parser_override: str) -> None:
+    """Vision/Ollama blockiert — in Thread, damit Uvicorn weiter antwortet."""
+    from brillenpass_runner import brillenpass_job_run
+    await asyncio.to_thread(
+        brillenpass_job_run, doc_id, force=force, parser_override=parser_override,
+    )
+
+
 @app.post("/api/brillenpass/trigger/{doc_id}")
 def api_brillenpass_trigger(
     doc_id: int,
@@ -1953,7 +1966,6 @@ def api_brillenpass_trigger(
 ):
     """Bestehendes Dokument nachträglich durch Brillenpass-Pipeline (async, Vision ~1–2 Min)."""
     from brillenpass_runner import (
-        brillenpass_job_run,
         brillenpass_job_set,
         preflight_brillenpass_document,
     )
@@ -1976,9 +1988,7 @@ def api_brillenpass_trigger(
     person = pre.get("anzeigename") or pre.get("person_id") or "?"
     start_msg = f"Brillenpass für {person} ({img}) — Vision ~1–2 Min…"
     brillenpass_job_set(doc_id, status="running", message=start_msg)
-    background_tasks.add_task(
-        brillenpass_job_run, doc_id, force=force, parser_override=parser_override,
-    )
+    background_tasks.add_task(_run_brillenpass_bg, doc_id, force, parser_override)
 
     return {
         "ok": True,
