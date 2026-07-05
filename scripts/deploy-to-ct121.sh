@@ -33,6 +33,7 @@ FILES=(
   post_consume.py
   document_date.py
   brillenpass_parser.py
+  brillenpass_tsv.py
   brillenpass_runner.py
   legacy_split_by_qr.py
   steuerjahr.py
