@@ -40,6 +40,14 @@ def test_excludes_geburtsdatum():
     assert iso == "2026-01-19"
 
 
+def test_frick_den_maerz():
+    """McOptic Quittung: «Frick, den 22. März 2022»."""
+    text = "McOptic\nFrick, den 22. März 2022\nQuittung No: Q-TEST"
+    iso, src = extract_document_issue_date(text)
+    assert iso == "2022-03-22"
+    assert "ort_komma_monat" in src
+
+
 def test_validate_rejects_old():
     iso, susp = validate_issue_date("1974-05-10", 2026, set())
     assert iso is None
