@@ -326,14 +326,18 @@ def _parse_rl_rows_positional(zeilen: list[list[dict]]) -> dict | None:
     return result
 
 
-def _parse_tsv_text_fallback(words: list[dict]) -> dict | None:
-    """McOptic/Fielmann-Regex auf Tesseract-Fließtext."""
-    from brillenpass_parser import parse_brillenpass_auto  # noqa: WPS433
+def _parse_tsv_text_fallback(words: list[dict], parser_names: list[str] | None = None) -> dict | None:
+    """Regex-Parser auf Tesseract-Fließtext (McOptic/Fielmann/…)."""
+    from brillenpass_parser import parse_brillenpass_with_parsers  # noqa: WPS433
 
     flat = tsv_words_to_text(words)
     if not flat.strip():
         return None
-    parsed = parse_brillenpass_auto(flat)
+    allowed = parser_names or [
+        "mcoptic_brillenpass", "mcoptic_rechnung", "fielmann_brillenpass",
+        "fielmann_rechnung", "augenarzt_verordnung", "optik_meyer_rechnung",
+    ]
+    parsed = parse_brillenpass_with_parsers(flat, allowed)
     if not parsed or not has_brillenpass_values(parsed):
         return None
     parsed = deepcopy(parsed)
@@ -392,7 +396,10 @@ def parse_by_anchors(words: list[dict]) -> dict | None:
     return result
 
 
-def extract_brillenpass_from_image(image_path: str) -> tuple[dict, str, dict]:
+def extract_brillenpass_from_image(
+    image_path: str,
+    parser_names: list[str] | None = None,
+) -> tuple[dict, str, dict]:
     """TSV-Pipeline: (daten, confidence, meta)."""
     words = run_tesseract_tsv_on_document(image_path)
     zeilen = gruppiere_nach_top(words) if words else []
@@ -410,7 +417,7 @@ def extract_brillenpass_from_image(image_path: str) -> tuple[dict, str, dict]:
         parsed = _parse_rl_rows_positional(zeilen)
         method = "positional" if parsed else method
     if not parsed:
-        parsed = _parse_tsv_text_fallback(words)
+        parsed = _parse_tsv_text_fallback(words, parser_names)
         method = "text" if parsed else method
 
     if parsed:
