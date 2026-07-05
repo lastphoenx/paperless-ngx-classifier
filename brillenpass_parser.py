@@ -435,7 +435,7 @@ def diagnose_brillenpass_extraction(
     gaps: list[str] = []
     conflicts: list[str] = []
     needs_add = any(
-        _plausible_reading_add(((merged or {}).get(dist) or {}).get(side) or {}).get("add"))
+        _plausible_reading_add(((merged or {}).get(dist) or {}).get(side) or {}).get("add")
         for dist in ("fern", "naehe")
         for side in ("rechts", "links")
     )
