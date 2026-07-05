@@ -129,8 +129,9 @@
       "typische_ordner": ["Person1/Gesundheit"],
       "brillenpass": {
         "aktiv": true,
-        "parser": "mcoptic_pass",
-        "typische_begriffe": ["Brillenpass", "SPH ZYL", "McOptic"]
+        "parsers": ["mcoptic_rechnung", "mcoptic_pass"],
+        "parser": "mcoptic_rechnung",
+        "typische_begriffe": ["Brillenpass", "SPH ZYL", "McOptic", "Quittung"]
       },
       "_paperless": {"id": null, "is_insensitive": true}
     },

@@ -34,6 +34,7 @@ FILES=(
   document_date.py
   brillenpass_parser.py
   brillenpass_runner.py
+  legacy_split_by_qr.py
   steuerjahr.py
   pre_consume.sh
   pre_consume_qr.py

@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.42"  # 12.42: Brillenpass-Parser-Registry (Pass, Augenarzt, Meyer)
+POST_CONSUME_VERSION = "12.43"  # 12.43: Brillenpass Multi-Parser + Dedup
 import re
 import sys
 import json
@@ -42,12 +42,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from brillenpass_parser import (
+    corr_brillenpass_parsers,
     corr_supports_brillenpass,
     detect_parser,
     has_brillenpass_values,
+    looks_like_brillenpass_any,
     looks_like_brillenpass_document,
     looks_like_optiker_rechnung,
     merge_brillenpass,
+    parse_brillenpass_with_parsers,
     parse_by_parser,
     parse_fielmann_brillenpass,
 )
@@ -1893,13 +1896,14 @@ def maybe_queue_brillenpass(
     """Optiker-Rechnung → Parser + Vision → Review-Queue."""
     if not corr_entry:
         return
-    aktiv, parser_name = corr_supports_brillenpass(corr_entry)
+    aktiv, _ = corr_supports_brillenpass(corr_entry)
     if not aktiv:
         return
+    parser_names = corr_brillenpass_parsers(corr_entry)
 
     dt_vis = (vision_meta or {}).get("dokumenttyp_visuell", "")
-    if not looks_like_brillenpass_document(ocr_text, parser_name, dt_vis):
-        log.debug("Brillenpass: Dokumenttyp für Parser %s nicht erkannt", parser_name)
+    if not looks_like_brillenpass_any(ocr_text, parser_names, dt_vis):
+        log.debug("Brillenpass: kein Parser-Treffer für %s", parser_names)
         return
 
     direct_name, direct_reason = _match_person_direct(ocr_text, vision_meta)
@@ -1908,10 +1912,10 @@ def maybe_queue_brillenpass(
         return
     person_id = _resolve_person_id(direct_name)
     anzeigename = _resolve_person_anzeigename(person_id) or direct_name
-    log.info("Brillenpass-Trigger: person=%s (%s), parser=%s", person_id, direct_reason, parser_name)
+    log.info("Brillenpass-Trigger: person=%s (%s), parser=%s", person_id, direct_reason, parser_names)
 
-    parser_data = parse_by_parser(parser_name, ocr_text)
-    if not parser_data and parser_name == "fielmann":
+    parser_data = parse_brillenpass_with_parsers(ocr_text, parser_names)
+    if not parser_data and "fielmann" in parser_names:
         parser_data = parse_fielmann_brillenpass(ocr_text)
     vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
     merged = merge_brillenpass(parser_data, vision_bp)

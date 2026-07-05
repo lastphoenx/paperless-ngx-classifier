@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.32"  # 2.32: Brillenpass manuell + Parser-Registry
-UI_VERSION = "2.44"
+__version__ = "2.33"  # 2.33: Multi-Parser, Dedup, Legacy-QR-Split
+UI_VERSION = "2.45"
 import fcntl
 from contextlib import contextmanager
 import logging
@@ -40,7 +40,9 @@ from brillenpass_parser import (
     build_version_id,
     compute_brillenpass_diff,
     detect_parser,
+    find_brillenpass_period_duplicate,
     has_brillenpass_values,
+    merge_brillenpass_version,
     parse_by_parser,
 )
 
@@ -63,6 +65,9 @@ PENDING_REVIEW_TAG       = os.environ.get("PENDING_REVIEW_TAG",       "pending_r
 PENDING_QS_TAG           = os.environ.get("PENDING_QS_TAG",           "pending_qs")
 PENDING_NEW_CORR_TAG     = os.environ.get("PENDING_NEW_CORR_TAG",      "pending_new_correspondent")
 PENDING_BRILLENPASS_TAG  = os.environ.get("PENDING_BRILLENPASS_TAG",  "pending_brillenpass")
+BRILLENPASS_DEDUP_DAYS     = int(os.environ.get("BRILLENPASS_DEDUP_DAYS", "21"))
+PAPERLESS_CONSUME_DIR      = os.environ.get("PAPERLESS_CONSUME_DIR", "/mnt/paperless-data/consume")
+LEGACY_SPLIT_QR_REGEX      = os.environ.get("LEGACY_SPLIT_QR_REGEX", r"^[0-9]{6}_[^\s]+$")
 ALL_PENDING_TAGS         = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG, PENDING_BRILLENPASS_TAG}
 
 PAPERLESS_HEADERS = {
@@ -575,13 +580,22 @@ def _normalize_identifikatoren(raw) -> dict:
 
 def _normalize_brillenpass(raw) -> dict:
     if not raw or not isinstance(raw, dict):
-        return {"aktiv": False, "parser": "", "typische_begriffe": []}
-    parser = str(raw.get("parser") or "").strip().lower()
+        return {"aktiv": False, "parser": "", "parsers": [], "typische_begriffe": []}
     begriffe = _normalize_string_list(raw.get("typische_begriffe") or [])
-    aktiv = bool(raw.get("aktiv")) and bool(parser)
+    raw_parsers = raw.get("parsers") or []
+    if isinstance(raw_parsers, str):
+        raw_parsers = [raw_parsers]
+    single = str(raw.get("parser") or "").strip().lower()
+    parsers: list[str] = []
+    for p in list(raw_parsers) + ([single] if single else []):
+        name = str(p or "").strip().lower()
+        if name in PARSER_NAMES and name not in parsers:
+            parsers.append(name)
+    aktiv = bool(raw.get("aktiv")) and bool(parsers)
     return {
         "aktiv": aktiv,
-        "parser": parser if aktiv else "",
+        "parser": parsers[0] if parsers else "",
+        "parsers": parsers if aktiv else [],
         "typische_begriffe": begriffe if aktiv else [],
     }
 
@@ -651,6 +665,19 @@ def pl_delete(path: str) -> None:
     url = f"{PAPERLESS_API_URL.rstrip('/')}/{path.lstrip('/')}"
     r = requests.delete(url, headers=PAPERLESS_HEADERS, timeout=30)
     r.raise_for_status()
+
+
+def pl_download_pdf(doc_id: int) -> tuple[bytes, str]:
+    """PDF-Bytes und Originaldateiname aus Paperless."""
+    doc = pl_get(f"/documents/{doc_id}/")
+    r = requests.get(
+        f"{PAPERLESS_API_URL.rstrip('/')}/documents/{doc_id}/download/",
+        headers=PAPERLESS_HEADERS,
+        timeout=120,
+        stream=True,
+    )
+    r.raise_for_status()
+    return r.content, doc.get("original_file_name") or f"{doc_id}.pdf"
 
 
 def resolve_group_ids(group_names: list[str]) -> list[int]:
@@ -1940,8 +1967,11 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
         data.setdefault("eintraege", []).append(bp_entry)
 
     prev = (bp_entry.get("versionen") or [])[-1] if bp_entry.get("versionen") else None
-    version = {
-        "id": build_version_id(gueltig_ab, korrespondent),
+    vers = bp_entry.setdefault("versionen", [])
+    dup_idx = find_brillenpass_period_duplicate(
+        vers, gueltig_ab, korrespondent, max_days=BRILLENPASS_DEDUP_DAYS,
+    )
+    incoming = {
         "gueltig_ab": gueltig_ab,
         "korrespondent": korrespondent,
         "document_id": doc_id,
@@ -1951,9 +1981,22 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
         "naehe": vorschlag.get("naehe") or {"rechts": None, "links": None},
         "glas": vorschlag.get("glas") or {},
         "extraktion": vorschlag.get("extraktion") or {"quelle": "review", "confidence": "hoch"},
-        "diff_zu_vorher": compute_brillenpass_diff(prev, vorschlag),
     }
-    bp_entry.setdefault("versionen", []).append(version)
+    deduped = False
+    if dup_idx is not None:
+        prev_for_diff = vers[dup_idx - 1] if dup_idx > 0 else None
+        merged = merge_brillenpass_version(vers[dup_idx], incoming)
+        merged["diff_zu_vorher"] = compute_brillenpass_diff(prev_for_diff, merged)
+        vers[dup_idx] = merged
+        version = merged
+        deduped = True
+    else:
+        version = {
+            "id": build_version_id(gueltig_ab, korrespondent),
+            **incoming,
+            "diff_zu_vorher": compute_brillenpass_diff(prev, incoming),
+        }
+        vers.append(version)
     bp_entry["aktuell"] = gueltig_ab
     if anzeigename:
         bp_entry["anzeigename"] = anzeigename
@@ -1972,7 +2015,64 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
         except Exception as e:
             log.warning("Brillenpass-Notiz fehlgeschlagen: %s", e)
 
-    return {"status": "approved", "version_id": version["id"], "diff": version["diff_zu_vorher"]}
+    return {
+        "status": "approved",
+        "version_id": version.get("id", build_version_id(gueltig_ab, korrespondent)),
+        "diff": version.get("diff_zu_vorher", {}),
+        "deduped": deduped,
+    }
+
+
+@app.post("/api/legacy-split/trigger/{doc_id}")
+def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
+    """Paperless-Dokument per QR splitten → Teile nach consume/ (volle Pipeline)."""
+    from legacy_split_by_qr import split_paperless_document
+
+    dry_run = bool(body.get("dry_run", False))
+    regex = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
+    consume_dir = Path(body.get("consume_dir") or PAPERLESS_CONSUME_DIR)
+
+    try:
+        pdf_bytes, orig_name = pl_download_pdf(doc_id)
+    except Exception as e:
+        raise HTTPException(400, f"Dokument #{doc_id} laden fehlgeschlagen: {e}") from e
+
+    if dry_run:
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+            tf.write(pdf_bytes)
+            tmp = tf.name
+        try:
+            from legacy_split_by_qr import find_split_markers
+            markers, total = find_split_markers(tmp, regex=regex)
+            preview = []
+            for i, (barcode, from_page) in enumerate(markers):
+                to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
+                preview.append({"barcode": barcode, "from_page": from_page, "to_page": to_page})
+            return {"ok": True, "dry_run": True, "document_id": doc_id, "pages": total, "splits": preview}
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+
+    if not consume_dir.exists():
+        raise HTTPException(400, f"Consume-Ordner nicht gefunden: {consume_dir}")
+
+    try:
+        parts = split_paperless_document(
+            pdf_bytes, consume_dir,
+            original_filename=orig_name, regex=regex,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Split fehlgeschlagen: {e}") from e
+
+    if not parts:
+        raise HTTPException(400, "Keine QR-Split-Marker gefunden — Regex oder Scan prüfen")
+
+    return {
+        "ok": True,
+        "message": f"{len(parts)} Teile nach {consume_dir} geschrieben — Pipeline startet automatisch",
+        "document_id": doc_id,
+        "parts": parts,
+    }
 
 
 @app.patch("/api/brillenpass/{person_id}")

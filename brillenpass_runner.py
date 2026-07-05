@@ -56,31 +56,32 @@ def reprocess_brillenpass_document(
     else:
         return {"ok": False, "error": "Dokument hat keinen Korrespondenten"}
 
-    aktiv, parser_name = pc.corr_supports_brillenpass(corr_entry)
+    parser_names = pc.corr_brillenpass_parsers(corr_entry)
     if parser_override:
-        parser_name = parser_override.strip().lower()
-    if not aktiv and not parser_override:
-        return {
-            "ok": False,
-            "error": (
-                f"Korrespondent «{corr_entry.get('name', '?')}» ohne brillenpass.aktiv "
-                f"(Parser: {parser_name or '—'}) — in paper.manager → Korrespondenten "
-                f"oder correspondents.json: "
-                f'"brillenpass": {{"aktiv": true, "parser": "fielmann"}}'
-            ),
-        }
+        parser_names = [p.strip().lower() for p in parser_override.replace(",", " ").split() if p.strip()]
+    if not parser_names and not parser_override:
+        aktiv, _ = pc.corr_supports_brillenpass(corr_entry)
+        if not aktiv:
+            return {
+                "ok": False,
+                "error": (
+                    f"Korrespondent «{corr_entry.get('name', '?')}» ohne brillenpass.aktiv "
+                    f"— in paper.manager → Korrespondenten "
+                    f'"brillenpass": {{"aktiv": true, "parsers": ["fielmann", "fielmann_pass"]}}'
+                ),
+            }
 
     pdf_path = pc.find_pdf(str(document_id))
     image_b64 = pc.pdf_to_base64_image(pdf_path) if pdf_path else None
 
     vision_meta = {"dokumenttyp_visuell": "", "datum": (doc.get("created") or "")[:10] or None}
-    if not pc.looks_like_brillenpass_document(ocr_text, parser_name, ""):
+    if not pc.looks_like_brillenpass_any(ocr_text, parser_names, ""):
         detected = pc.detect_parser(ocr_text)
         if detected and not parser_override:
-            parser_name = detected
-            log.info("Brillenpass: Parser auto-erkannt → %s", parser_name)
+            parser_names = [detected]
+            log.info("Brillenpass: Parser auto-erkannt → %s", detected)
         elif not parser_override:
-            return {"ok": False, "error": f"Kein Brillenpass-Dokument erkannt (Parser: {parser_name})"}
+            return {"ok": False, "error": f"Kein Brillenpass-Dokument erkannt (Parser: {parser_names})"}
 
     direct_name, direct_reason = pc._match_person_direct(ocr_text, vision_meta)
     if not direct_name:
@@ -89,8 +90,8 @@ def reprocess_brillenpass_document(
     person_id = pc._resolve_person_id(direct_name)
     anzeigename = pc._resolve_person_anzeigename(person_id) or direct_name
 
-    parser_data = pc.parse_by_parser(parser_name, ocr_text)
-    if not parser_data and parser_name == "fielmann":
+    parser_data = pc.parse_brillenpass_with_parsers(ocr_text, parser_names)
+    if not parser_data and "fielmann" in parser_names:
         parser_data = pc.parse_fielmann_brillenpass(ocr_text)
     vision_bp = pc.vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
     merged = pc.merge_brillenpass(parser_data, vision_bp)
@@ -129,7 +130,7 @@ def reprocess_brillenpass_document(
         "message": f"Brillenpass-Review eingereiht für {anzeigename}",
         "document_id": document_id,
         "person_id": person_id,
-        "parser": parser_name,
+        "parser": parser_names,
         "person_match": direct_reason,
     }
 
