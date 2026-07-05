@@ -194,6 +194,12 @@
   .bp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; cursor: pointer; }
   .bp-card:hover { border-color: var(--accent); }
   .bp-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .bp-card-body { font-size: 11px; color: #cbd5e1; margin-top: 8px; line-height: 1.55; }
+  .bp-card-meta { font-size: 10px; color: #94a3b8; margin-bottom: 8px; }
+  .bp-dist-block { margin-bottom: 6px; }
+  .bp-dist-label { font-size: 10px; font-weight: 700; color: var(--accent); letter-spacing: .04em; margin-bottom: 2px; }
+  .bp-eye-row { margin-bottom: 2px; }
+  .bp-eye-lbl { color: #94a3b8; margin-right: 2px; }
   .bp-diff-new { color: #4ade80; }
   .bp-diff-old { color: var(--muted); text-decoration: line-through; font-size: 11px; }
   .bp-eye-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -807,7 +813,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.42';
+const UI_VERSION = '2.43';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -4715,6 +4721,41 @@ function _bpFmtEye(eye) {
   return parts.join(' / ');
 }
 
+function _bpFmtEyeRow(eye, sideLabel) {
+  if (!eye || !eye.sph) return '';
+  const bits = [];
+  const push = (lbl, v) => { if (v) bits.push(`<span><span class="bp-eye-lbl">${lbl}</span>${v}</span>`); };
+  push('Sph ', eye.sph);
+  push('Cyl ', eye.cyl);
+  push('Ach ', eye.achse);
+  push('Add ', eye.add);
+  push('Prism ', eye.prisma);
+  push('Bas ', eye.basis);
+  if (!bits.length) return '';
+  return `<div class="bp-eye-row"><span style="font-weight:600;color:#e2e8f0">${sideLabel}</span> ${bits.join(' · ')}</div>`;
+}
+
+function _bpFmtDistBlock(title, block) {
+  block = block || {};
+  const r = _bpFmtEyeRow(block.rechts, 'R');
+  const l = _bpFmtEyeRow(block.links, 'L');
+  if (!r && !l) return '';
+  return `<div class="bp-dist-block"><div class="bp-dist-label">${title}</div>${r}${l}</div>`;
+}
+
+function _bpFmtGlas(glas) {
+  glas = glas || {};
+  const parts = [];
+  if (glas.index) parts.push(`Index ${glas.index}`);
+  if (glas.durchmesser) parts.push(`Ø${glas.durchmesser}`);
+  if (glas.beschreibung) {
+    const d = String(glas.beschreibung).slice(0, 48);
+    parts.push(d + (glas.beschreibung.length > 48 ? '…' : ''));
+  }
+  if ((glas.beschichtungen || []).length) parts.push(glas.beschichtungen.join(', '));
+  return parts.length ? parts.join(' · ') : '—';
+}
+
 function _bpRenderOverview() {
   const el = document.getElementById('bp-overview-list');
   if (!el) return;
@@ -4725,22 +4766,25 @@ function _bpRenderOverview() {
   el.innerHTML = _bpOverview.map(e => {
     const c = e.current || {};
     const naehe = c.naehe || {};
+    const fern = c.fern || {};
     const glas = c.glas || {};
     const badge = e.pending_review ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
     const docLink = c.document_id
       ? `<a href="${paperlessDocUrl(c.document_id)}" target="_blank" data-paperless-doc="${c.document_id}"
-          style="color:var(--accent);font-size:11px;text-decoration:none">Dok #${c.document_id} ↗</a>`
+          style="color:var(--accent);font-size:11px;text-decoration:none;font-weight:500">Dok #${c.document_id} ↗</a>`
       : '';
+    const distHtml = [_bpFmtDistBlock('Nähe', naehe), _bpFmtDistBlock('Fern', fern)].filter(Boolean).join('');
     return `<div class="bp-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <strong>${e.anzeigename || e.person_id}</strong>${badge}
+        <strong style="color:#f1f5f9">${e.anzeigename || e.person_id}</strong>${badge}
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">
-        Stand: ${e.aktuell || '—'} · ${c.korrespondent || '—'}<br>
-        Nähe R: ${_bpFmtEye(naehe.rechts)} · L: ${_bpFmtEye(naehe.links)}<br>
-        Glas: ${glas.index || '—'} ${glas.durchmesser ? 'Ø'+glas.durchmesser : ''}
+      <div class="bp-card-meta">Stand: ${e.aktuell || '—'} · ${c.korrespondent || '—'}</div>
+      <div class="bp-card-body">
+        ${distHtml || '<div class="bp-eye-row">Keine Glaswerte</div>'}
+        <div class="bp-eye-row" style="margin-top:6px"><span class="bp-eye-lbl">Glas</span> ${_bpFmtGlas(glas)}</div>
+        ${c.auftrag ? `<div class="bp-eye-row"><span class="bp-eye-lbl">Auftrag</span> ${c.auftrag}</div>` : ''}
       </div>
-      <div style="margin-top:6px">${docLink}</div>
+      <div style="margin-top:8px">${docLink}</div>
     </div>`;
   }).join('');
 }
