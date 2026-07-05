@@ -355,6 +355,7 @@ def diagnose_brillenpass_extraction(
     }
 
 
+def merge_brillenpass(
     parser_data: dict | None,
     vision_data: dict | None,
     *,
