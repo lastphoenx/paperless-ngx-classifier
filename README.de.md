@@ -152,9 +152,12 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
 - **Familie** — Personen, Fahrzeuge, Haushaltsname (keine Hardcodierung im Code); Beziehungsübersicht über alle Korrespondenten
-- **Brillenpass** — Optiker-Rechnungen (z. B. Fielmann) werden geparst, zur Review eingereiht und nach Freigabe in `brillenpaesse.json` versioniert (Nähe/Fern, Glas, Diff zur Vorversion)
+- **Brillenpass** — Optiker-Dokumente (Rechnung, Pass-Karte, Verordnung): Auto-Parser pro Vendor, Review-Queue, versioniert in `brillenpaesse.json`, Perioden-Dedup
+- **Legacy QR-Split** — Mehrseiten-NAS-Scans nachträglich an Metadaten-QR splitten → `consume/` → volle Pipeline
 
-**Brillenpass-Workflow:** Korrespondent mit `brillenpass.aktiv` (Parser z. B. `fielmann`) + eindeutige Person (`family.json`) + Rechnung mit Glaswerten → Pipeline schreibt `pending_brillenpass.jsonl` und setzt Tag `pending_brillenpass` → Tab **Brillenpass** → Freigeben speichert Version in `brillenpaesse.json` (mit `diff_zu_vorher`).
+**Brillenpass-Workflow:** Korrespondent mit `brillenpass.aktiv` + `vendor` (z. B. `mcoptic`) + eindeutige Person → Pipeline erkennt Format (A4 vs. Karte) → `pending_brillenpass.jsonl` → Tab **Brillenpass** → Freigabe in `brillenpaesse.json` (Dedup wenn Rechnung+Pass innerhalb 21 Tage).
+
+**Legacy QR-Split:** Tab **✂ Legacy QR-Split** oder `POST /api/legacy-split/trigger/{doc_id}` — Details [`docs/LEGACY_IMPORT.md`](docs/LEGACY_IMPORT.md#qr-split-nachträglich).
 - **Kürzel** — 2–6 Zeichen langes Kürzel pro Korrespondent (z. B. `UBS`, `ZV`); als Badge angezeigt, durchsuchbar, Live-Eindeutigkeitsprüfung
 - **Paperless-Link** — direkter «Paperless-NGX öffnen ↗»-Button in der Seitenleiste und auf dem Home-Tab; URL aus `PAPERLESS_URL` in `.env`
 - **Versionsanzeige** — zeigt aktive Versionen aller Komponenten in der Seitenleiste
@@ -225,6 +228,7 @@ nano /opt/paperless/.env
 
 **Vollständige Installationsanleitung** → [`INSTALL.md`](INSTALL.md)  
 **Benutzerhandbuch (paper.manager)** → [`docs/Benutzerhandbuch_paper_manager.md`](docs/Benutzerhandbuch_paper_manager.md)  
+**Developer Guide** → [`docs/DEVELOPER.md`](docs/DEVELOPER.md)  
 **Paperless v3 Upgrade (wenn stable)** → [`docs/UPGRADE_V3.md`](docs/UPGRADE_V3.md) · Version prüfen: `./scripts/paperless-version-check.sh`
 
 > **`docker-compose.yml`** in diesem Repo ist eine **Vorlage** für einen vollständigen Paperless-NGX Docker-Stack (DB, Broker, Webserver). **Image ist auf `2.20.15` gepinnt** — nie `:latest` auf Produktion. Pfade, Passwörter und Volumes vor der Nutzung anpassen — siehe `.env.example`.
@@ -257,6 +261,9 @@ nano /opt/paperless/.env
 | `BRILLENPAESSE_JSON` | `/opt/.../brillenpaesse.json` | Gespeicherte Brillenpass-Versionen |
 | `PENDING_BRILLENPASS_JSONL` | `/opt/.../pending_brillenpass.jsonl` | Review-Queue vor Freigabe |
 | `PENDING_BRILLENPASS_TAG` | `pending_brillenpass` | Tag am Quelldokument während Review |
+| `BRILLENPASS_DEDUP_DAYS` | `21` | Dedup-Fenster bei Freigabe (Rechnung + Pass gleiche Periode) |
+| `PAPERLESS_CONSUME_DIR` | `/mnt/paperless-data/consume` | Ziel für Legacy QR-Split |
+| `LEGACY_SPLIT_QR_REGEX` | `^[0-9]{6}_[^\s]+$` | QR-Metadaten auf Trennseiten (NAS) |
 | `OLLAMA_REGEX_MODEL` | `llama3.3:70b` | Separates Ollama-Modell für den Regex-Assistenten in paper.manager (Fallback auf `OLLAMA_MODEL`) |
 
 Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VERSIONING.md`.
@@ -272,10 +279,14 @@ Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VE
 | `pre_consume_qr.py` | QR-Bill-Parser: extrahiert Betrag, IBAN, Referenz aus Schweizer QR-Rechnungen |
 | `correspondent_manager_app.py` | FastAPI-Backend für paper.manager Review-UI |
 | `paper_manager_ui.html` | Browser-UI zum Reviewen, Trainieren, Konfigurieren |
+| `brillenpass_parser.py` | Brillenpass-Parser-Registry, Auto-Detect, Dedup |
+| `brillenpass_runner.py` | Nachträgliche Brillenpass-Verarbeitung (CLI/API) |
+| `legacy_split_by_qr.py` | Legacy QR-Metadaten-Split → consume/ |
 | `docker-compose.yml` | Paperless-NGX Stack (Vorlage — Pfade und Passwörter anpassen) |
 | `.env.example` | Alle Konfigurationsvariablen mit Erklärungen |
 | `training/` | Beispiel-Konfigurationsdateien für Korrespondenten, Dokumenttypen, Manifest etc. |
 | `docs/VERSIONING.md` | Wann UI / BE / Pipeline-Versionen hochzählen |
+| `docs/DEVELOPER.md` | Architektur, APIs, Parser erweitern, Auth |
 
 ---
 
@@ -302,7 +313,8 @@ Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
 | Tags | Ausschluss-Keywords pro Tag |
 | Speicherpfade | Ordnerkonfiguration |
 | Familie | Haushaltsname, Personen, Fahrzeuge; Beziehungsübersicht über alle Korrespondenten |
-| Brillenpass | Optiker-Rechnungen → Review-Queue → versionierter Pass pro Person (Fielmann-Parser zuerst) |
+| Legacy QR-Split | Mehrseiten-Scan per Dok-ID an QR splitten → consume/ → volle Pipeline |
+| Brillenpass | Optiker-Dokumente → Auto-Parser → Review → versionierter Pass pro Person |
 
 ---
 
