@@ -304,6 +304,9 @@
   <div class="nav-item" onclick="showView('family')" id="nav-family">
     <span>👪</span> Familie
   </div>
+  <div class="nav-item" onclick="showView('legacy-split')" id="nav-legacy-split">
+    <span>✂</span> Legacy QR-Split
+  </div>
   <div class="nav-item" onclick="showView('brillenpass')" id="nav-brillenpass">
     <span>👓</span> Brillenpass
     <span class="nav-badge" id="brillenpass-count">0</span>
@@ -812,18 +815,29 @@
       </div>
       <div id="bp-trigger-status" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
     </div>
-    <div class="card" style="margin-top:20px;padding:14px 16px">
-      <div class="card-title" style="font-size:13px;margin-bottom:8px">Legacy QR-Split</div>
-      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
-        Mehrseiten-Scan an QR-Codes splitten (Regex <code>^[0-9]{6}_…$</code>) und Teile nach
-        <code>consume/</code> legen — volle Pipeline wie bei neuem Scan.
+  </div>
+
+  <!-- LEGACY QR-SPLIT VIEW -->
+  <div id="view-legacy-split" style="display:none">
+    <div class="view-header">
+      <h2>Legacy QR-Split</h2>
+      <p style="color:var(--muted);font-size:13px;margin-top:4px">
+        Mehrseiten-Scans aus der NAS-Zeit an QR-Codes splitten und Teile in die normale Pipeline legen.
+      </p>
+    </div>
+    <div class="card" style="padding:16px 18px">
+      <p style="color:var(--muted);font-size:12px;margin-bottom:12px;line-height:1.6">
+        Regex <code>^[0-9]{6}_[^\s]+$</code> (z.&nbsp;B. <code>060102_Gesundheit_Monika</code>).
+        Teile landen in <code>consume/</code> — volle Pipeline wie bei neuem Scan.
+        Konfiguration: <code>PAPERLESS_CONSUME_DIR</code>, <code>LEGACY_SPLIT_QR_REGEX</code> in <code>.env</code>.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <input type="number" id="bp-lsplit-id" placeholder="Dok-ID" min="1" style="max-width:120px;font-size:13px">
+        <input type="number" id="lsplit-id" placeholder="Paperless Dok-ID" min="1"
+          style="max-width:160px;font-size:13px">
         <button class="btn btn-secondary" onclick="triggerLegacySplit(true)">Vorschau</button>
         <button class="btn btn-primary" onclick="triggerLegacySplit(false)">▶ Splitten → consume</button>
       </div>
-      <div id="bp-lsplit-status" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
+      <div id="lsplit-status" style="font-size:12px;margin-top:10px;color:var(--muted)"></div>
     </div>
   </div>
 
@@ -872,7 +886,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.45';
+const UI_VERSION = '2.47';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2190,7 +2204,7 @@ function renderCorrMap(eintraege) {
           ${(e.nicht_verwechseln_mit).map(t=>`<span class="badge" style="background:rgba(245,158,11,.12);color:#fbbf24">${t}</span>`).join('')}
         </div>` : ''}
         ${(e.brillenpass||{}).aktiv ? `<div style="margin-bottom:6px">
-          <span class="badge" style="background:rgba(16,185,129,.15);color:#34d399">👓 Brillenpass (${((e.brillenpass||{}).parsers||[]).join('+') || (e.brillenpass||{}).parser || '?'})</span>
+          <span class="badge" style="background:rgba(16,185,129,.15);color:#34d399">👓 Brillenpass (${(e.brillenpass||{}).vendor || ((e.brillenpass||{}).parsers||[]).join('+') || (e.brillenpass||{}).parser || '?'})</span>
         </div>` : ''}
         <div style="margin-bottom:8px">
           <span style="color:var(--muted);font-size:11px">VARIANTEN: </span>
@@ -2421,15 +2435,22 @@ function toggleCorrEdit(idx, entry) {
           Brillenpass aktiv
         </label>
         <div class="field-group" style="margin-bottom:8px">
-          <label style="font-size:11px">Parser (mehrere möglich — Rechnung + Pass)</label>
-          <div class="tags-input" id="ce-bp-parsers-${idx}" data-tags='${JSON.stringify((entry.brillenpass||{}).parsers || ((entry.brillenpass||{}).parser ? [(entry.brillenpass||{}).parser] : []))}'>
+          <label style="font-size:11px">Optiker (Auto-Erkennung: Rechnung A4 vs. Brillenpass-Karte)</label>
+          <select id="ce-bp-vendor-${idx}" style="font-size:12px;max-width:280px">
+            <option value="">— Optiker wählen —</option>
+            ${_bpVendorOptionsHtml((entry.brillenpass||{}).vendor || '')}
+          </select>
+        </div>
+        <details style="margin-bottom:8px;font-size:11px;color:var(--muted)">
+          <summary style="cursor:pointer">Erweitert: Parser manuell einschränken</summary>
+          <div class="tags-input" id="ce-bp-parsers-${idx}" data-tags='${JSON.stringify((entry.brillenpass||{}).parsers || ((entry.brillenpass||{}).parser ? [(entry.brillenpass||{}).parser] : []))}' style="margin-top:6px">
             ${((entry.brillenpass||{}).parsers || ((entry.brillenpass||{}).parser ? [(entry.brillenpass||{}).parser] : [])).map(v => tagChip(v, `ce-bp-parsers-${idx}`)).join('')}
             <select onchange="addTagDirect('ce-bp-parsers-${idx}',this.value);this.value=''">
               <option value="">+ Parser hinzufügen</option>
               ${_bpParserOptionsHtml('')}
             </select>
           </div>
-        </div>
+        </details>
         <label style="font-size:11px">Typische Begriffe (OCR-Hinweise, Enter)</label>
         <div class="tags-input" id="ce-bp-begriffe-${idx}" data-tags='${JSON.stringify((entry.brillenpass||{}).typische_begriffe||[])}'>
           ${((entry.brillenpass||{}).typische_begriffe||[]).map(v => tagChip(v, `ce-bp-begriffe-${idx}`)).join('')}
@@ -2678,6 +2699,7 @@ async function saveCorrEdit(idx, nameParam) {
     },
     brillenpass: {
       aktiv: document.getElementById(`ce-bp-aktiv-${idx}`)?.checked || false,
+      vendor: document.getElementById(`ce-bp-vendor-${idx}`)?.value || '',
       parsers: getTagsFromContainer(`ce-bp-parsers-${idx}`),
       parser: (getTagsFromContainer(`ce-bp-parsers-${idx}`)[0] || ''),
       typische_begriffe: getTagsFromContainer(`ce-bp-begriffe-${idx}`),
@@ -4769,13 +4791,25 @@ let _bpOverview = [];
 let _bpReview = [];
 let _bpSelectedReview = null;
 let _bpParsers = [
-  {id:'fielmann', label:'Fielmann Rechnung'},
-  {id:'fielmann_pass', label:'Fielmann Brillenpass (Karte)'},
-  {id:'mcoptic_pass', label:'McOptic Brillenpass (Karte)'},
-  {id:'mcoptic_rechnung', label:'McOptic Rechnung/Quittung'},
-  {id:'augenarzt', label:'Augenarzt-Verordnung'},
-  {id:'optik_meyer_moehlin', label:'Optik Meyer Möhlin'},
+  {id:'fielmann_rechnung', label:'Fielmann · Rechnung (A4)', format:'rechnung'},
+  {id:'fielmann_brillenpass', label:'Fielmann · Brillenpass (Karte)', format:'brillenpass'},
+  {id:'mcoptic_rechnung', label:'McOptic · Rechnung/Quittung (A4)', format:'rechnung'},
+  {id:'mcoptic_brillenpass', label:'McOptic · Brillenpass (Karte)', format:'brillenpass'},
+  {id:'augenarzt_verordnung', label:'Augenarzt · Verordnung', format:'verordnung'},
+  {id:'optik_meyer_rechnung', label:'Optik Meyer · Rechnung/Verordnung', format:'rechnung'},
 ];
+let _bpVendors = [
+  {id:'fielmann', label:'Fielmann'},
+  {id:'mcoptic', label:'McOptic'},
+  {id:'optik_meyer', label:'Optik Meyer Möhlin'},
+  {id:'augenarzt', label:'Augenarzt (Verordnung)'},
+];
+
+function _bpVendorOptionsHtml(selected) {
+  return _bpVendors.map(v =>
+    `<option value="${v.id}" ${selected===v.id?'selected':''}>${v.label}</option>`
+  ).join('');
+}
 
 function _bpParserOptionsHtml(selected) {
   return _bpParsers.map(p =>
@@ -4788,6 +4822,7 @@ async function _loadBpParsers() {
     const r = await fetch(`${API_BASE}/brillenpass/parsers`);
     const d = await r.json();
     if (d.parsers && d.parsers.length) _bpParsers = d.parsers;
+    if (d.vendors && d.vendors.length) _bpVendors = d.vendors;
   } catch (e) {}
   ['bp-man-parser', 'bp-trigger-parser'].forEach(id => {
     const el = document.getElementById(id);
@@ -5151,14 +5186,15 @@ async function loadBrillenpassView() {
 }
 
 async function triggerLegacySplit(dryRun) {
-  const id = parseInt(document.getElementById('bp-lsplit-id')?.value || '', 10);
-  const status = document.getElementById('bp-lsplit-status');
+  const id = parseInt(document.getElementById('lsplit-id')?.value || '', 10);
+  const status = document.getElementById('lsplit-status');
   if (!id) { showToast('Dokument-ID eingeben', 'error'); return; }
   if (status) status.textContent = dryRun ? 'Analysiere…' : 'Splitte (kann pro Seite ~2s dauern)…';
   try {
     const r = await fetch(`${API_BASE}/legacy-split/trigger/${id}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
+      credentials: 'same-origin',
       body: JSON.stringify({dry_run: dryRun}),
     });
     const d = await r.json();

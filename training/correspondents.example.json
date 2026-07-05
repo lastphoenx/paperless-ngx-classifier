@@ -107,7 +107,7 @@
       },
       "brillenpass": {
         "aktiv": true,
-        "parser": "fielmann",
+        "vendor": "fielmann",
         "typische_begriffe": ["Brillenglas", "Nähe Rechts", "Asph.Hochbr"]
       },
       "_paperless": {
@@ -129,8 +129,7 @@
       "typische_ordner": ["Person1/Gesundheit"],
       "brillenpass": {
         "aktiv": true,
-        "parsers": ["mcoptic_rechnung", "mcoptic_pass"],
-        "parser": "mcoptic_rechnung",
+        "vendor": "mcoptic",
         "typische_begriffe": ["Brillenpass", "SPH ZYL", "McOptic", "Quittung"]
       },
       "_paperless": {"id": null, "is_insensitive": true}
@@ -144,7 +143,7 @@
       "typische_ordner": ["Person1/Gesundheit"],
       "brillenpass": {
         "aktiv": true,
-        "parser": "optik_meyer_moehlin",
+        "vendor": "optik_meyer",
         "typische_begriffe": ["Optik Meyer", "Verordnung", "Glasart"]
       },
       "_paperless": {"id": null, "is_insensitive": true}
@@ -158,7 +157,7 @@
       "typische_ordner": ["Person1/Gesundheit"],
       "brillenpass": {
         "aktiv": true,
-        "parser": "augenarzt",
+        "vendor": "augenarzt",
         "typische_begriffe": ["Verordnung", "Refraktion", "Dioptrie"]
       },
       "_paperless": {

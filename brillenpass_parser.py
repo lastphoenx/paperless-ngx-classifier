@@ -219,7 +219,7 @@ def parse_fielmann_brillenpass(ocr_text: str) -> dict:
     gueltig_ab = parse_ch_date_short(text)
 
     return {
-        "parser": "fielmann",
+        "parser": "fielmann_rechnung",
         "gueltig_ab": gueltig_ab,
         "auftrag": auftrag,
         "rechnung": rechnung,
@@ -231,7 +231,7 @@ def parse_fielmann_brillenpass(ocr_text: str) -> dict:
             "durchmesser": durchmesser,
             "beschichtungen": beschichtungen,
         },
-        "extraktion": {"quelle": "fielmann_regex", "confidence": "mittel"},
+        "extraktion": {"quelle": "fielmann_rechnung_regex", "confidence": "mittel"},
     }
 
 
@@ -291,36 +291,105 @@ def has_brillenpass_values(data: dict) -> bool:
     return bool(glas.get("index") or glas.get("beschreibung"))
 
 
+# Parser-IDs: {optiker}_{dokumentformat} — Auto-Erkennung wählt Rechnung vs. Brillenpass vs. Verordnung
 PARSER_LABELS: dict[str, str] = {
-    "fielmann": "Fielmann Rechnung",
-    "fielmann_pass": "Fielmann Brillenpass (Karte)",
-    "mcoptic_pass": "McOptic Brillenpass (Karte)",
-    "mcoptic_rechnung": "McOptic Rechnung/Quittung",
-    "augenarzt": "Augenarzt-Verordnung",
-    "optik_meyer_moehlin": "Optik Meyer Möhlin",
+    "fielmann_rechnung": "Fielmann · Rechnung (A4)",
+    "fielmann_brillenpass": "Fielmann · Brillenpass (Karte)",
+    "mcoptic_rechnung": "McOptic · Rechnung/Quittung (A4)",
+    "mcoptic_brillenpass": "McOptic · Brillenpass (Karte)",
+    "augenarzt_verordnung": "Augenarzt · Verordnung",
+    "optik_meyer_rechnung": "Optik Meyer · Rechnung/Verordnung",
+}
+
+PARSER_FORMAT: dict[str, str] = {
+    "fielmann_rechnung": "rechnung",
+    "fielmann_brillenpass": "brillenpass",
+    "mcoptic_rechnung": "rechnung",
+    "mcoptic_brillenpass": "brillenpass",
+    "augenarzt_verordnung": "verordnung",
+    "optik_meyer_rechnung": "rechnung",
+}
+
+PARSER_VENDOR: dict[str, str] = {
+    "fielmann_rechnung": "fielmann",
+    "fielmann_brillenpass": "fielmann",
+    "mcoptic_rechnung": "mcoptic",
+    "mcoptic_brillenpass": "mcoptic",
+    "augenarzt_verordnung": "augenarzt",
+    "optik_meyer_rechnung": "optik_meyer",
+}
+
+VENDOR_LABELS: dict[str, str] = {
+    "fielmann": "Fielmann",
+    "mcoptic": "McOptic",
+    "optik_meyer": "Optik Meyer Möhlin",
+    "augenarzt": "Augenarzt (Verordnung)",
+}
+
+VENDOR_PARSERS: dict[str, list[str]] = {
+    "fielmann": ["fielmann_rechnung", "fielmann_brillenpass"],
+    "mcoptic": ["mcoptic_rechnung", "mcoptic_brillenpass"],
+    "optik_meyer": ["optik_meyer_rechnung"],
+    "augenarzt": ["augenarzt_verordnung"],
+}
+
+# Abwärtskompatibilität alter Parser-IDs in correspondents.json
+PARSER_ALIASES: dict[str, str] = {
+    "fielmann": "fielmann_rechnung",
+    "fielmann_pass": "fielmann_brillenpass",
+    "mcoptic_pass": "mcoptic_brillenpass",
+    "augenarzt": "augenarzt_verordnung",
+    "optik_meyer_moehlin": "optik_meyer_rechnung",
 }
 
 PARSER_NAMES = list(PARSER_LABELS.keys())
 
 
+def normalize_parser_name(name: str) -> str:
+    n = str(name or "").strip().lower()
+    return PARSER_ALIASES.get(n, n)
+
+
+def vendor_from_parser(parser_name: str) -> str | None:
+    return PARSER_VENDOR.get(normalize_parser_name(parser_name))
+
+
 def corr_brillenpass_parsers(corr_entry: dict | None) -> list[str]:
-    """Alle aktiven Parser aus correspondents.json (parsers[] oder legacy parser)."""
+    """Erlaubte Parser-Kandidaten für Auto-Erkennung (Vendor oder explizite Liste)."""
     if not corr_entry:
         return []
     bp = corr_entry.get("brillenpass") or {}
     if not bp.get("aktiv"):
         return []
+
+    vendor = str(bp.get("vendor") or "").strip().lower()
+    if vendor and vendor in VENDOR_PARSERS:
+        return list(VENDOR_PARSERS[vendor])
+
     raw = bp.get("parsers") or []
     if isinstance(raw, str):
         raw = [raw]
     if not raw and bp.get("parser"):
         raw = [bp.get("parser")]
-    out: list[str] = []
+
+    explicit: list[str] = []
+    vendors: set[str] = set()
     for p in raw:
-        name = str(p or "").strip().lower()
-        if name in PARSER_NAMES and name not in out:
-            out.append(name)
-    return out
+        name = normalize_parser_name(str(p or "").strip())
+        if name in PARSER_NAMES and name not in explicit:
+            explicit.append(name)
+            v = vendor_from_parser(name)
+            if v:
+                vendors.add(v)
+
+    if not explicit:
+        return []
+
+    # Ein Optiker → alle Formate dieses Vendors (Rechnung + Brillenpass auto)
+    if len(vendors) == 1:
+        return list(VENDOR_PARSERS[vendors.pop()])
+
+    return explicit
 
 
 def corr_supports_brillenpass(corr_entry: dict | None) -> tuple[bool, str]:
@@ -333,29 +402,136 @@ def corr_supports_brillenpass(corr_entry: dict | None) -> tuple[bool, str]:
 
 def looks_like_brillenpass_any(
     ocr_text: str, parser_names: list[str], dokumenttyp_visuell: str = "",
+    vision_meta: dict | None = None,
 ) -> bool:
+    allowed = [normalize_parser_name(p) for p in parser_names]
+    if detect_parser(
+        ocr_text,
+        allowed=allowed,
+        dokumenttyp_visuell=dokumenttyp_visuell,
+        vision_meta=vision_meta,
+    ):
+        return True
     return any(
         looks_like_brillenpass_document(ocr_text, p, dokumenttyp_visuell)
-        for p in parser_names
+        for p in allowed
     )
 
 
-def parse_brillenpass_with_parsers(ocr_text: str, parser_names: list[str]) -> dict | None:
-    """Mehrere Parser anwenden und Ergebnisse mergen (Rechnung + Pass)."""
-    merged: dict | None = None
-    used: list[str] = []
-    for name in parser_names:
-        data = parse_by_parser(name, ocr_text)
-        if not data or not has_brillenpass_values(data):
-            continue
-        merged = merge_brillenpass(merged, data) if merged else data
-        used.append(name)
-    if not merged:
+def _vision_format_boost(dokumenttyp_visuell: str, fmt: str) -> int:
+    """Vision-Freitext (dokumenttyp_visuell) bevorzugt passendes Dokumentformat."""
+    vis = (dokumenttyp_visuell or "").lower()
+    if not vis or not fmt:
+        return 0
+    if fmt == "brillenpass":
+        if any(k in vis for k in ("brillenpass", "pass", "karte", "kartenformat", "plastikkarte")):
+            return 5
+        if any(k in vis for k in ("rechnung", "quittung", "a4", "krankenkassenexemplar")):
+            return -4
+    elif fmt == "rechnung":
+        if any(k in vis for k in ("rechnung", "quittung", "krankenkassenexemplar", "invoice", "a4")):
+            return 5
+        if any(k in vis for k in ("brillenpass", "karte", "pass", "plastik")):
+            return -4
+    elif fmt == "verordnung":
+        if any(k in vis for k in ("verordnung", "rezept", "augentest", "ärztlich")):
+            return 5
+    return 0
+
+
+def _vision_layout_boost(vision_meta: dict | None, fmt: str) -> int:
+    """Layout/Besonderheiten aus Vision (Karte vs. A4)."""
+    if not vision_meta or not fmt:
+        return 0
+    blob = " ".join(
+        str(vision_meta.get(k) or "")
+        for k in ("layout", "besonderheiten", "dokumenttyp_visuell")
+    ).lower()
+    if not blob:
+        return 0
+    if fmt == "brillenpass":
+        if any(k in blob for k in ("karte", "brillenpass", "kleinformat", "hochformat", "plastik", "wallet")):
+            return 3
+        if any(k in blob for k in ("a4", "querformat", "rechnung", "quittung")):
+            return -2
+    elif fmt == "rechnung":
+        if any(k in blob for k in ("a4", "rechnung", "quittung", "querformat", "mehrseitig")):
+            return 3
+        if any(k in blob for k in ("karte", "brillenpass", "kleinformat")):
+            return -2
+    return 0
+
+
+def detect_parser(
+    ocr_text: str,
+    *,
+    allowed: list[str] | None = None,
+    dokumenttyp_visuell: str = "",
+    vision_meta: dict | None = None,
+) -> str | None:
+    """Besten Parser per OCR + Vision (Format: Rechnung vs. Brillenpass vs. Verordnung)."""
+    text = ocr_text or ""
+    if not text.strip():
         return None
-    ext = merged.setdefault("extraktion", {})
-    ext["parsers_used"] = used
-    ext["quelle"] = "+".join(used) if used else ext.get("quelle", "")
-    return merged
+
+    candidates = [normalize_parser_name(p) for p in (allowed or PARSER_NAMES)]
+    candidates = [p for p in candidates if p in _DETECTORS]
+    if not candidates:
+        return None
+
+    scores: dict[str, int] = {}
+    for name in candidates:
+        score = _DETECTORS[name](text)
+        fmt = PARSER_FORMAT.get(name, "")
+        score += _vision_format_boost(dokumenttyp_visuell, fmt)
+        score += _vision_layout_boost(vision_meta, fmt)
+        scores[name] = score
+
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else None
+
+
+def parse_brillenpass_auto(
+    ocr_text: str,
+    parser_names: list[str],
+    *,
+    dokumenttyp_visuell: str = "",
+    vision_meta: dict | None = None,
+) -> dict | None:
+    """Einen passenden Parser wählen (Format-Erkennung) und parsen — kein Multi-Merge."""
+    allowed = [normalize_parser_name(p) for p in parser_names]
+    chosen = detect_parser(
+        ocr_text,
+        allowed=allowed,
+        dokumenttyp_visuell=dokumenttyp_visuell,
+        vision_meta=vision_meta,
+    )
+    if not chosen:
+        return None
+    data = parse_by_parser(chosen, ocr_text)
+    if not data or not has_brillenpass_values(data):
+        return None
+    ext = data.setdefault("extraktion", {})
+    ext["parser_detected"] = chosen
+    ext["parser_format"] = PARSER_FORMAT.get(chosen, "")
+    ext["parsers_allowed"] = [p for p in allowed if p in PARSER_NAMES]
+    return data
+
+
+def parse_brillenpass_with_parsers(
+    ocr_text: str,
+    parser_names: list[str],
+    *,
+    dokumenttyp_visuell: str = "",
+    vision_meta: dict | None = None,
+) -> dict | None:
+    """Alias — wählt einen Parser per Auto-Erkennung (kein Merge mehr)."""
+    return parse_brillenpass_auto(
+        ocr_text,
+        parser_names,
+        dokumenttyp_visuell=dokumenttyp_visuell,
+        vision_meta=vision_meta,
+    )
 
 
 def brillenpass_dates_close(d1: str | None, d2: str | None, max_days: int = 21) -> bool:
@@ -548,7 +724,7 @@ def parse_fielmann_pass(ocr_text: str) -> dict:
         index = (im.group(1) or im.group(2) or "").replace(",", ".")
 
     return _bp_base(
-        "fielmann_pass",
+        "fielmann_brillenpass",
         gueltig_ab=_parse_pass_date(text),
         naehe=naehe,
         glas={"beschreibung": glas_desc, "index": index, "durchmesser": None, "beschichtungen": []},
@@ -571,7 +747,7 @@ def parse_mcoptic_pass(ocr_text: str) -> dict:
             break
 
     return _bp_base(
-        "mcoptic_pass",
+        "mcoptic_brillenpass",
         gueltig_ab=_parse_pass_date(text),
         naehe=naehe,
         glas={"beschreibung": glas_desc, "index": None, "durchmesser": None, "beschichtungen": []},
@@ -644,7 +820,7 @@ def parse_augenarzt(ocr_text: str) -> dict:
         naehe = _fill_naehe_from_matches(text, _MCOPTIC_RL)
 
     return _bp_base(
-        "augenarzt",
+        "augenarzt_verordnung",
         gueltig_ab=_parse_pass_date(text),
         fern=fern,
         naehe=naehe,
@@ -657,8 +833,8 @@ def parse_optik_meyer_moehlin(ocr_text: str) -> dict:
     # Unteres Viertel bevorzugen (Werte «unten links» auf Rechnung)
     tail = text[max(0, len(text) * 3 // 4):] if len(text) > 400 else text
     base = parse_augenarzt(tail if _AUGENARZT_RL.search(tail) else text)
-    base["parser"] = "optik_meyer_moehlin"
-    base["extraktion"]["quelle"] = "optik_meyer_moehlin_regex"
+    base["parser"] = "optik_meyer_rechnung"
+    base["extraktion"]["quelle"] = "optik_meyer_rechnung_regex"
 
     if not base.get("gueltig_ab"):
         base["gueltig_ab"] = _parse_pass_date(text)
@@ -682,23 +858,23 @@ def parse_optik_meyer_moehlin(ocr_text: str) -> dict:
 
 
 _PARSERS: dict[str, Any] = {
-    "fielmann": parse_fielmann_brillenpass,
-    "fielmann_pass": parse_fielmann_pass,
-    "mcoptic_pass": parse_mcoptic_pass,
+    "fielmann_rechnung": parse_fielmann_brillenpass,
+    "fielmann_brillenpass": parse_fielmann_pass,
+    "mcoptic_brillenpass": parse_mcoptic_pass,
     "mcoptic_rechnung": parse_mcoptic_rechnung,
-    "augenarzt": parse_augenarzt,
-    "optik_meyer_moehlin": parse_optik_meyer_moehlin,
+    "augenarzt_verordnung": parse_augenarzt,
+    "optik_meyer_rechnung": parse_optik_meyer_moehlin,
 }
 
 
 def parse_by_parser(parser_name: str, ocr_text: str) -> dict | None:
-    fn = _PARSERS.get((parser_name or "").lower())
+    fn = _PARSERS.get(normalize_parser_name(parser_name))
     if not fn:
         return None
     return fn(ocr_text or "")
 
 
-def _detect_fielmann(text: str) -> int:
+def _detect_fielmann_rechnung(text: str) -> int:
     score = 0
     if re.search(r"Nähe\s+Rechts|Naehe\s+Rechts", text, re.I):
         score += 3
@@ -709,7 +885,7 @@ def _detect_fielmann(text: str) -> int:
     return score
 
 
-def _detect_fielmann_pass(text: str) -> int:
+def _detect_fielmann_brillenpass(text: str) -> int:
     score = 0
     if re.search(r"Brillenpass|ADD\s+\d", text, re.I):
         score += 2
@@ -722,7 +898,7 @@ def _detect_fielmann_pass(text: str) -> int:
     return max(0, score)
 
 
-def _detect_mcoptic_pass(text: str) -> int:
+def _detect_mcoptic_brillenpass(text: str) -> int:
     score = 0
     if re.search(r"Mc\s*Optic|McOptic", text, re.I):
         score += 3
@@ -746,7 +922,7 @@ def _detect_mcoptic_rechnung(text: str) -> int:
     return score
 
 
-def _detect_augenarzt(text: str) -> int:
+def _detect_augenarzt_verordnung(text: str) -> int:
     score = 0
     if re.search(r"Verordnung|Augenarzt|Augenärzt|Dioptrie|Refraktion", text, re.I):
         score += 2
@@ -757,7 +933,7 @@ def _detect_augenarzt(text: str) -> int:
     return max(0, score)
 
 
-def _detect_optik_meyer(text: str) -> int:
+def _detect_optik_meyer_rechnung(text: str) -> int:
     score = 0
     if re.search(r"Optik\s+Meyer", text, re.I):
         score += 3
@@ -773,30 +949,20 @@ def _detect_optik_meyer(text: str) -> int:
 
 
 _DETECTORS: dict[str, Any] = {
-    "fielmann": _detect_fielmann,
-    "fielmann_pass": _detect_fielmann_pass,
-    "mcoptic_pass": _detect_mcoptic_pass,
+    "fielmann_rechnung": _detect_fielmann_rechnung,
+    "fielmann_brillenpass": _detect_fielmann_brillenpass,
+    "mcoptic_brillenpass": _detect_mcoptic_brillenpass,
     "mcoptic_rechnung": _detect_mcoptic_rechnung,
-    "augenarzt": _detect_augenarzt,
-    "optik_meyer_moehlin": _detect_optik_meyer,
+    "augenarzt_verordnung": _detect_augenarzt_verordnung,
+    "optik_meyer_rechnung": _detect_optik_meyer_rechnung,
 }
-
-
-def detect_parser(ocr_text: str) -> str | None:
-    """Besten Parser anhand OCR-Heuristik wählen."""
-    text = ocr_text or ""
-    if not text.strip():
-        return None
-    scores = {name: fn(text) for name, fn in _DETECTORS.items()}
-    best = max(scores, key=scores.get)
-    return best if scores[best] > 0 else None
 
 
 def looks_like_brillenpass_document(
     ocr_text: str, parser_name: str, dokumenttyp_visuell: str = "",
 ) -> bool:
     """Parser-spezifische Erkennung (Pass, Verordnung, Rechnung)."""
-    name = (parser_name or "").lower()
+    name = normalize_parser_name(parser_name or "")
     if name in _DETECTORS:
         return _DETECTORS[name](ocr_text or "") > 0
     return looks_like_optiker_rechnung(ocr_text, dokumenttyp_visuell)
