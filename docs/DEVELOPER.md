@@ -163,11 +163,39 @@ Freigabe: `POST /api/brillenpass-review/{index}` → `brillenpaesse.json`, optio
 | GET | `/api/brillenpass/parsers` | Parser + Vendors für UI |
 | POST | `/api/brillenpass/parse` | Dry-parse (text oder document_id) |
 | POST | `/api/brillenpass/manual` | Manuelle Erfassung → Queue |
-| POST | `/api/brillenpass/trigger/{doc_id}` | Nachträgliche Pipeline |
+| POST | `/api/brillenpass/trigger/{doc_id}` | Nachträgliche Pipeline (async, Vision ~1–2 Min) |
+| GET | `/api/brillenpass/trigger-status/{doc_id}` | Job-Status für UI-Polling (`running`/`done`/`error`) |
 | GET | `/api/brillenpass-review` | Offene Reviews |
 | POST | `/api/brillenpass-review/{index}` | Freigeben/Ablehnen |
 
 CLI: `python brillenpass_runner.py <doc_id> [--parser mcoptic_brillenpass] [--force]`
+
+### 5.8 Nachträglicher Trigger & Betrieb
+
+- **Preflight (sync):** Dokument, OCR, Korrespondent, Person; ohne `force` Abbruch wenn Dok bereits in `pending_brillenpass.jsonl`.
+- **Vision (async):** läuft in `asyncio.to_thread` — blockiert Uvicorn nicht (`correspondent_manager_app._run_brillenpass_bg`).
+- **UI:** pollt `trigger-status` alle 3s, max. ~2,5 Min; zeigt echte Fehler statt sofortigem Erfolg.
+
+**Diagnose auf CT121:**
+
+```bash
+systemctl status correspondent-manager
+journalctl -u correspondent-manager -n 80 --no-pager
+curl -s http://127.0.0.1:8100/health
+grep '"document_id": 3563' /opt/paperless-scripts/training/audit_log.jsonl | grep brillenpass | tail -5
+```
+
+**Bekannte Fallstricke:**
+
+| Symptom | Ursache |
+|---|---|
+| `JSON.parse` / HTTP 502 | Sync Vision > Proxy-Timeout (alt, vor async) |
+| `'bool' object has no attribute 'get'` | Bug in `diagnose_brillenpass_extraction` (fix `57de419`) |
+| GET `/` hängt, 0 Bytes | Vision blockierte Worker (Fix Thread `3342511` — Verifikation auf CT121) |
+| s1 leer, s2 ok | McOptic-OCR-Parser trifft nicht — nur Vision liefert Werte |
+| Kein Review trotz merged | `write_pending` Dedup oder Crash nach s2 |
+
+Ausführlicher Handoff: [BRILLENPASS_HANDOFF.md](BRILLENPASS_HANDOFF.md).
 
 ---
 
