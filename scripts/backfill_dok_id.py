@@ -3,9 +3,10 @@
 Einmalig CF «Dok-ID» (Paperless document id) für alle Dokumente nachbefüllen.
 
 Voraussetzung: Custom Field in Paperless angelegt, CF_DOK_ID in .env gesetzt.
+Liest automatisch /opt/paperless-scripts/.env und /opt/paperless/.env.
 
-  python scripts/backfill_dok_id.py --dry-run
-  python scripts/backfill_dok_id.py
+  python3 /opt/paperless-scripts/backfill_dok_id.py --dry-run
+  python3 /opt/paperless-scripts/backfill_dok_id.py
 """
 from __future__ import annotations
 
@@ -21,7 +22,28 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+def _load_env_files() -> None:
+    """Token/CF_* aus üblichen Server-.env-Dateien (ohne python-dotenv)."""
+    candidates = [
+        Path("/opt/paperless-scripts/.env"),
+        Path("/opt/paperless/.env"),
+        ROOT / ".env",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
 def main() -> int:
+    _load_env_files()
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="Nur zählen, nicht patchen")
     ap.add_argument("--page-size", type=int, default=100)
@@ -34,6 +56,8 @@ def main() -> int:
 
     if not token:
         print("FEHLER: PAPERLESS_TOKEN nicht gesetzt", file=sys.stderr)
+        print("  → /opt/paperless-scripts/.env oder /opt/paperless/.env prüfen", file=sys.stderr)
+        print("  → oder: set -a && source /opt/paperless-scripts/.env && set +a", file=sys.stderr)
         return 1
     if not cf_id:
         print("FEHLER: CF_DOK_ID nicht gesetzt (0 = deaktiviert)", file=sys.stderr)

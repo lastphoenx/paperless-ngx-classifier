@@ -806,7 +806,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.39';
+const UI_VERSION = '2.40';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2123,6 +2123,9 @@ function renderCorrMap(eintraege) {
           <span style="color:var(--muted);font-size:11px">NICHT VERWECHSELN: </span>
           ${(e.nicht_verwechseln_mit).map(t=>`<span class="badge" style="background:rgba(245,158,11,.12);color:#fbbf24">${t}</span>`).join('')}
         </div>` : ''}
+        ${(e.brillenpass||{}).aktiv ? `<div style="margin-bottom:6px">
+          <span class="badge" style="background:rgba(16,185,129,.15);color:#34d399">👓 Brillenpass (${(e.brillenpass||{}).parser||'?'})</span>
+        </div>` : ''}
         <div style="margin-bottom:8px">
           <span style="color:var(--muted);font-size:11px">VARIANTEN: </span>
           ${(e.varianten||[]).map(v=>`<span class="badge badge-neu" style="margin-right:4px">${v}</span>`).join('')}
@@ -2341,6 +2344,29 @@ function toggleCorrEdit(idx, entry) {
         <label>Notiz</label>
         <textarea id="ce-notiz-${idx}">${entry.notiz||''}</textarea>
       </div>
+      <div class="field-group" style="padding-top:10px;border-top:1px dashed var(--border)">
+        <label>👓 Brillenpass
+          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+            Optiker-Rechnungen → automatisch parsen &amp; Review-Queue
+          </span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;color:var(--text);margin-bottom:8px">
+          <input type="checkbox" id="ce-bp-aktiv-${idx}" ${(entry.brillenpass||{}).aktiv?'checked':''}>
+          Brillenpass aktiv
+        </label>
+        <div class="field-group" style="margin-bottom:8px">
+          <label style="font-size:11px">Parser</label>
+          <select id="ce-bp-parser-${idx}" style="max-width:200px">
+            <option value="">— keiner —</option>
+            <option value="fielmann" ${(entry.brillenpass||{}).parser==='fielmann'?'selected':''}>Fielmann</option>
+          </select>
+        </div>
+        <label style="font-size:11px">Typische Begriffe (OCR-Hinweise, Enter)</label>
+        <div class="tags-input" id="ce-bp-begriffe-${idx}" data-tags='${JSON.stringify((entry.brillenpass||{}).typische_begriffe||[])}'>
+          ${((entry.brillenpass||{}).typische_begriffe||[]).map(v => tagChip(v, `ce-bp-begriffe-${idx}`)).join('')}
+          <input type="text" placeholder="Brillenglas" onkeydown="addTag(event,'ce-bp-begriffe-${idx}')">
+        </div>
+      </div>
       <hr class="divider">
       <div style="color:var(--muted);font-size:12px;margin-bottom:8px">
         EXTRAKTIONS-MUSTER
@@ -2548,7 +2574,7 @@ async function checkKuerzelUnique(input, idx, corrName) {
 
 async function saveCorrEdit(idx, nameParam) {
   flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-email-${idx}`, `ce-tel-${idx}`,
-                  `ce-nvm-${idx}`, `ce-ord-${idx}`,
+                  `ce-nvm-${idx}`, `ce-ord-${idx}`, `ce-bp-begriffe-${idx}`,
                   `ce-fixtags-${idx}`, `ce-verbdt-${idx}`, `ce-verbord-${idx}`, `ce-verbtag-${idx}`]);
   const name = nameParam || document.getElementById(`corr-edit-${idx}`)?.dataset?.name;
   const dtName = document.getElementById(`ce-typ-${idx}`)?.value || '';
@@ -2580,6 +2606,11 @@ async function saveCorrEdit(idx, nameParam) {
       hat_qr_rechnung:       document.getElementById(`ce-qr-${idx}`)?.checked || false,
       hat_faelligkeitsdatum: document.getElementById(`ce-faellig-${idx}`)?.checked || false,
       hat_betrag:            document.getElementById(`ce-betrag-${idx}`)?.checked !== false,
+    },
+    brillenpass: {
+      aktiv: document.getElementById(`ce-bp-aktiv-${idx}`)?.checked || false,
+      parser: document.getElementById(`ce-bp-parser-${idx}`)?.value || '',
+      typische_begriffe: getTagsFromContainer(`ce-bp-begriffe-${idx}`),
     },
   };
   try {
