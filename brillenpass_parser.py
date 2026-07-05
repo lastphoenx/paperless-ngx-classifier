@@ -67,7 +67,7 @@ def _parse_eye_tail(tail: str) -> dict:
 
 
 def _sanitize_eye(eye: dict | None) -> dict | None:
-    """Offensichtliche OCR-Fehler (Betrag als Add) entfernen."""
+    """Offensichtliche OCR/Vision-Fehler (Betrag als Add, Add in Prisma) bereinigen."""
     if not eye:
         return eye
     out = dict(eye)
@@ -81,7 +81,46 @@ def _sanitize_eye(eye: dict | None) -> dict | None:
                 out[field] = None
         except ValueError:
             out[field] = None
+    # Vision verwechselt oft Add (1.75) mit Prisma — Add-Wert in Prisma-Spalte
+    prisma, add = out.get("prisma"), out.get("add")
+    if prisma and not add:
+        try:
+            f = abs(float(str(prisma).replace(",", ".").lstrip("+")))
+            if 0.5 <= f <= 4.5:
+                out["add"] = prisma if str(prisma).startswith(("+", "-")) else f"+{prisma}"
+                out["prisma"] = None
+                out["basis"] = None
+        except ValueError:
+            pass
     return out
+
+
+def _vals_close(a, b) -> bool:
+    if not a or not b:
+        return False
+    try:
+        return abs(float(str(a).replace(",", ".").lstrip("+")) - float(str(b).replace(",", ".").lstrip("+"))) < 0.01
+    except ValueError:
+        return str(a).strip() == str(b).strip()
+
+
+def _merge_eye(p_eye: dict | None, v_eye: dict | None) -> dict | None:
+    if p_eye and not v_eye:
+        return _sanitize_eye(p_eye)
+    if v_eye and not p_eye:
+        return _sanitize_eye(v_eye)
+    if not p_eye and not v_eye:
+        return None
+    merged = dict(p_eye)
+    for k, val in (v_eye or {}).items():
+        if not val or merged.get(k):
+            continue
+        if k == "prisma" and merged.get("add") and _vals_close(val, merged["add"]):
+            continue
+        if k == "add" and merged.get("prisma") and _vals_close(val, merged["prisma"]):
+            continue
+        merged[k] = val
+    return _sanitize_eye(merged)
 
 
 _EYE_LINE_RE = re.compile(
@@ -216,18 +255,9 @@ def merge_brillenpass(parser_data: dict | None, vision_data: dict | None) -> dic
         for side in ("rechts", "links"):
             v_eye = (vision_data.get(dist) or {}).get(side)
             p_eye = (base.get(dist) or {}).get(side)
-            if v_eye and not p_eye:
-                base.setdefault(dist, _empty_eye_block())[side] = _sanitize_eye(v_eye)
-            elif v_eye and p_eye:
-                merged = dict(p_eye)
-                for k, val in v_eye.items():
-                    if not merged.get(k) and val:
-                        merged[k] = val
-                base[dist][side] = _sanitize_eye(merged)
-            elif p_eye:
-                base[dist][side] = _sanitize_eye(p_eye)
-            elif v_eye:
-                base[dist][side] = _sanitize_eye(v_eye)
+            merged_eye = _merge_eye(p_eye, v_eye)
+            if merged_eye:
+                base.setdefault(dist, _empty_eye_block())[side] = merged_eye
 
     v_glas = vision_data.get("glas") or {}
     b_glas = base.setdefault("glas", {})

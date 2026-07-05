@@ -50,6 +50,19 @@ def test_parse_fielmann_naehe():
     assert has_brillenpass_values(r)
 
 
+def test_merge_vision_prisma_to_add():
+    """Vision setzt 1.75 oft fälschlich als Prisma statt Add."""
+    vision = {
+        "naehe": {
+            "rechts": {"sph": "+0.50", "cyl": "-0.50", "achse": "80", "prisma": "1.75", "basis": "A", "add": None},
+            "links": None,
+        },
+    }
+    merged = merge_brillenpass(None, vision)
+    assert merged["naehe"]["rechts"]["add"] == "1.75" or merged["naehe"]["rechts"]["add"] == "+1.75"
+    assert merged["naehe"]["rechts"]["prisma"] is None
+
+
 def test_merge_vision_fills_gap():
     parser = parse_fielmann_brillenpass(FIELMANN_OCR)
     vision = {
