@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.29"  # 2.29: Brillenpass Parser Add/Prisma + UI-Link
-UI_VERSION = "2.41"
+__version__ = "2.30"  # 2.30: Paperless-Dok-Link Fix + Brillenpass Prisma/Add
+UI_VERSION = "2.42"
 import fcntl
 from contextlib import contextmanager
 import logging

@@ -800,13 +800,14 @@ function applyPaperlessLinks(url) {
   window.PAPERLESS_URL = base;
   const sl = document.getElementById('nav-paperless-link');
   if (sl) sl.href = base;
-  document.querySelectorAll('.paperless-open-btn').forEach(btn => {
+  // Nur generische «Paperless öffnen»-Buttons — NICHT paperlessDocUrl()-Links (die haben data-paperless-doc)
+  document.querySelectorAll('.paperless-open-btn:not([data-paperless-doc])').forEach(btn => {
     btn.href = base;
     btn.style.display = 'inline-flex';
     btn.title = base;
   });
 }
-const UI_VERSION = '2.41';
+const UI_VERSION = '2.42';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -4727,7 +4728,8 @@ function _bpRenderOverview() {
     const glas = c.glas || {};
     const badge = e.pending_review ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
     const docLink = c.document_id
-      ? `<a href="${paperlessDocUrl(c.document_id)}" target="_blank" class="paperless-open-btn" style="font-size:11px">Dok #${c.document_id}</a>`
+      ? `<a href="${paperlessDocUrl(c.document_id)}" target="_blank" data-paperless-doc="${c.document_id}"
+          style="color:var(--accent);font-size:11px;text-decoration:none">Dok #${c.document_id} ↗</a>`
       : '';
     return `<div class="bp-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
@@ -4784,13 +4786,13 @@ function renderBrillenpassReviewPanel(entry) {
     <div class="card">
       <div class="card-header">
         <span class="card-title">${entry.anzeigename} — ${entry.korrespondent}</span>
-        <a href="${docUrl}" target="_blank" rel="noopener"
-           class="paperless-open-btn" style="color:var(--accent);font-size:12px;text-decoration:none;font-weight:600">
-          Dok #${docId} ↗
+        <a href="${docUrl}" target="_blank" rel="noopener" data-paperless-doc="${docId}"
+           style="color:var(--accent);font-size:12px;text-decoration:none;font-weight:600">
+          In Paperless öffnen ↗
         </a>
       </div>
       <div style="display:grid;grid-template-columns:200px 1fr;gap:12px;margin-top:10px">
-        ${thumb ? `<a href="${docUrl}" target="_blank" rel="noopener" class="paperless-open-btn"
+        ${thumb ? `<a href="${docUrl}" target="_blank" rel="noopener" data-paperless-doc="${docId}"
           title="In Paperless öffnen" style="display:block;line-height:0">
           <img src="${thumb}" alt="Vorschau Dok #${docId}" style="width:100%;border-radius:6px;border:1px solid var(--border);cursor:pointer">
         </a>` : ''}
@@ -4824,7 +4826,6 @@ function renderBrillenpassReviewPanel(entry) {
       </div>
     </div>`;
   _bpSelectedReview = entry;
-  applyPaperlessLinks();
 }
 
 function _bpRenderReviewList() {
