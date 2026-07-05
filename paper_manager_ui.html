@@ -886,7 +886,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.48';
+const UI_VERSION = '2.49';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5222,6 +5222,19 @@ async function triggerLegacySplit(dryRun) {
       body: JSON.stringify({dry_run: dryRun}),
     });
     if (dryRun) {
+      if (!d.ok || !(d.splits || []).length) {
+        let msg = d.message || 'Kein passender Metadaten-QR gefunden';
+        const other = (d.qr_debug || []).filter(x => !x.matched).slice(0, 4);
+        if (other.length) {
+          msg += ' — andere QR: ' + other.map(x =>
+            `S.${x.page} «${String(x.raw).slice(0, 48)}»`).join('; ');
+        } else if (d.qr_seen === 0) {
+          msg += ' — auf keiner Seite ein QR-Code erkannt';
+        }
+        if (status) status.textContent = `${d.pages} Seiten: ${msg}`;
+        showToast('Kein Split möglich', 'error');
+        return;
+      }
       const lines = (d.splits || []).map(s =>
         `S.${s.from_page}–${s.to_page}: ${s.barcode}`).join(' · ');
       if (status) status.textContent = `${d.pages} Seiten → ${(d.splits||[]).length} Teile: ${lines}`;
