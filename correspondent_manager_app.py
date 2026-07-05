@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-from fastapi import FastAPI, HTTPException, Request, Body
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -1946,16 +1946,55 @@ def api_brillenpass_manual(body: dict = Body(...)):
 
 
 @app.post("/api/brillenpass/trigger/{doc_id}")
-def api_brillenpass_trigger(doc_id: int, body: dict = Body(default={})):
-    """Bestehendes Dokument nachträglich durch Brillenpass-Pipeline schicken."""
-    from brillenpass_runner import reprocess_brillenpass_document
+def api_brillenpass_trigger(
+    doc_id: int,
+    background_tasks: BackgroundTasks,
+    body: dict = Body(default={}),
+):
+    """Bestehendes Dokument nachträglich durch Brillenpass-Pipeline (async, Vision ~1–2 Min)."""
+    from brillenpass_runner import preflight_brillenpass_document, reprocess_brillenpass_document
 
     force = bool(body.get("force", False))
     parser_override = (body.get("parser") or "").strip()
-    result = reprocess_brillenpass_document(doc_id, force=force, parser_override=parser_override)
-    if not result.get("ok"):
-        raise HTTPException(400, result.get("error", "Brillenpass-Trigger fehlgeschlagen"))
-    return result
+
+    try:
+        pre = preflight_brillenpass_document(
+            doc_id, force=force, parser_override=parser_override,
+        )
+    except Exception as e:
+        log.exception("Brillenpass preflight #%s", doc_id)
+        raise HTTPException(500, f"Brillenpass-Vorprüfung fehlgeschlagen: {e}") from e
+
+    if not pre.get("ok"):
+        raise HTTPException(400, pre.get("error", "Brillenpass-Trigger fehlgeschlagen"))
+
+    def _run_brillenpass_trigger() -> None:
+        try:
+            result = reprocess_brillenpass_document(
+                doc_id, force=force, parser_override=parser_override,
+            )
+            if result.get("ok"):
+                log.info("Brillenpass trigger #%s: %s", doc_id, result.get("message"))
+            else:
+                log.error("Brillenpass trigger #%s: %s", doc_id, result.get("error"))
+        except Exception:
+            log.exception("Brillenpass trigger #%s failed", doc_id)
+
+    background_tasks.add_task(_run_brillenpass_trigger)
+
+    img = "mit Vision" if pre.get("has_image") else "nur Parser (kein PDF-Bild)"
+    person = pre.get("anzeigename") or pre.get("person_id") or "?"
+    return {
+        "ok": True,
+        "async": True,
+        "document_id": doc_id,
+        "message": (
+            f"Brillenpass für {person} gestartet ({img}) — "
+            f"~1–2 Min warten, dann Review-Liste aktualisieren"
+        ),
+        "person_id": pre.get("person_id"),
+        "person_match": pre.get("person_match"),
+    }
 
 
 @app.get("/api/brillenpass/{person_id}", response_class=JSONResponse)
