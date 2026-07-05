@@ -25,17 +25,63 @@ def _parse_eye_values(m: re.Match) -> dict:
     sph = _norm_val(m.group(3))
     cyl = _norm_val(m.group(4))
     achse = (m.group(5) or "").strip() or None
-    prisma = (m.group(6) or "").strip().replace(",", ".") or None
-    basis = (m.group(7) or "").strip().upper() or None
-    add_v = _norm_val(m.group(8)) if m.lastindex and m.lastindex >= 8 else None
+    tail = _parse_eye_tail(m.group(6) if m.lastindex and m.lastindex >= 6 else "")
     return {
         "sph": sph,
         "cyl": cyl,
         "achse": achse,
-        "prisma": prisma,
-        "basis": basis,
-        "add": add_v,
+        **tail,
     }
+
+
+def _parse_eye_tail(tail: str) -> dict:
+    """Fielmann-Zeile nach Achse: Add oft vor Rechnungsbetrag (A 307.00), Prisma leer."""
+    tail = (tail or "").strip()
+    prisma = basis = add_v = None
+    if not tail:
+        return {"prisma": None, "basis": None, "add": None}
+
+    # Rechnungsbetrag am Zeilenende (z. B. «A 307.00») — nicht Add/Prisma
+    tail = re.sub(r"\s+(?:[A-Za-z]\s+)?\d{2,}[.,]\d{2}\s*$", "", tail).strip()
+    tokens = [t for t in tail.split() if not (len(t) == 1 and t.isalpha())]
+
+    for t in tokens:
+        nv = _norm_val(t)
+        if not nv:
+            continue
+        try:
+            f = abs(float(nv.lstrip("+").replace(",", ".")))
+        except ValueError:
+            continue
+        if f > 10:
+            continue
+        if 0.5 <= f <= 4.5:
+            if add_v is None:
+                add_v = nv
+            elif prisma is None:
+                prisma = nv
+        elif prisma is None and f <= 12:
+            prisma = nv
+
+    return {"prisma": prisma, "basis": basis, "add": add_v}
+
+
+def _sanitize_eye(eye: dict | None) -> dict | None:
+    """Offensichtliche OCR-Fehler (Betrag als Add) entfernen."""
+    if not eye:
+        return eye
+    out = dict(eye)
+    for field, max_v in (("add", 5.0), ("prisma", 12.0)):
+        v = out.get(field)
+        if not v:
+            continue
+        try:
+            f = abs(float(str(v).replace(",", ".").lstrip("+")))
+            if f > max_v:
+                out[field] = None
+        except ValueError:
+            out[field] = None
+    return out
 
 
 _EYE_LINE_RE = re.compile(
@@ -43,9 +89,7 @@ _EYE_LINE_RE = re.compile(
     r"([+\-]?\s*[\d.,]+)\s+"
     r"([+\-]?\s*[\d.,]+)\s+"
     r"(\d+)\s+"
-    r"([\d.,]+)?\s*"
-    r"([A-Za-z])?\s*"
-    r"([\d.,]+)?",
+    r"(.*)$",
     re.IGNORECASE,
 )
 
@@ -90,7 +134,7 @@ def parse_fielmann_brillenpass(ocr_text: str) -> dict:
     for m in _EYE_LINE_RE.finditer(text):
         dist = m.group(1).lower()
         side = m.group(2).lower()
-        eye = _parse_eye_values(m)
+        eye = _sanitize_eye(_parse_eye_values(m))
         bucket = fern if dist.startswith("fern") else naehe
         bucket["rechts" if side.startswith("recht") else "links"] = eye
 
@@ -173,13 +217,17 @@ def merge_brillenpass(parser_data: dict | None, vision_data: dict | None) -> dic
             v_eye = (vision_data.get(dist) or {}).get(side)
             p_eye = (base.get(dist) or {}).get(side)
             if v_eye and not p_eye:
-                base.setdefault(dist, _empty_eye_block())[side] = v_eye
+                base.setdefault(dist, _empty_eye_block())[side] = _sanitize_eye(v_eye)
             elif v_eye and p_eye:
                 merged = dict(p_eye)
                 for k, val in v_eye.items():
                     if not merged.get(k) and val:
                         merged[k] = val
-                base[dist][side] = merged
+                base[dist][side] = _sanitize_eye(merged)
+            elif p_eye:
+                base[dist][side] = _sanitize_eye(p_eye)
+            elif v_eye:
+                base[dist][side] = _sanitize_eye(v_eye)
 
     v_glas = vision_data.get("glas") or {}
     b_glas = base.setdefault("glas", {})

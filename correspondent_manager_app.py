@@ -20,8 +20,8 @@ import json
 import os
 import re
 
-__version__ = "2.28"  # 2.28: Brillenpass im Korrespondenten-Edit
-UI_VERSION = "2.40"
+__version__ = "2.29"  # 2.29: Brillenpass Parser Add/Prisma + UI-Link
+UI_VERSION = "2.41"
 import fcntl
 from contextlib import contextmanager
 import logging

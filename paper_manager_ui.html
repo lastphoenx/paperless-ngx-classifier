@@ -806,7 +806,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.40';
+const UI_VERSION = '2.41';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -4776,6 +4776,7 @@ function renderBrillenpassReviewPanel(entry) {
   panel.style.display = '';
   const v = JSON.parse(JSON.stringify(entry.vorschlag || {}));
   const docId = entry.document_id;
+  const docUrl = docId ? paperlessDocUrl(docId) : '#';
   const thumb = docId ? `${API_BASE}/proxy/document/${docId}/thumb/` : '';
   const prev = entry.letzte_version || null;
 
@@ -4783,10 +4784,16 @@ function renderBrillenpassReviewPanel(entry) {
     <div class="card">
       <div class="card-header">
         <span class="card-title">${entry.anzeigename} — ${entry.korrespondent}</span>
-        <a href="${paperlessDocUrl(docId)}" target="_blank" class="btn" style="font-size:11px">Dok #${docId}</a>
+        <a href="${docUrl}" target="_blank" rel="noopener"
+           class="paperless-open-btn" style="color:var(--accent);font-size:12px;text-decoration:none;font-weight:600">
+          Dok #${docId} ↗
+        </a>
       </div>
       <div style="display:grid;grid-template-columns:200px 1fr;gap:12px;margin-top:10px">
-        ${thumb ? `<img src="${thumb}" alt="Vorschau" style="width:100%;border-radius:6px;border:1px solid var(--border)">` : ''}
+        ${thumb ? `<a href="${docUrl}" target="_blank" rel="noopener" class="paperless-open-btn"
+          title="In Paperless öffnen" style="display:block;line-height:0">
+          <img src="${thumb}" alt="Vorschau Dok #${docId}" style="width:100%;border-radius:6px;border:1px solid var(--border);cursor:pointer">
+        </a>` : ''}
         <div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Diff zur letzten Version (Vorschau beim Freigeben berechnet)</div>
           <div id="bp-diff-preview">${prev ? '<p style="font-size:11px;color:var(--muted)">Letzte Version: '+ (prev.gueltig_ab||'') +'</p>' : '<p style="font-size:11px;color:var(--muted)">Erste Version für diese Person.</p>'}</div>
@@ -4817,6 +4824,7 @@ function renderBrillenpassReviewPanel(entry) {
       </div>
     </div>`;
   _bpSelectedReview = entry;
+  applyPaperlessLinks();
 }
 
 function _bpRenderReviewList() {

@@ -39,6 +39,8 @@ def test_parse_fielmann_naehe():
     assert r["naehe"]["rechts"]["sph"] == "+0.50"
     assert r["naehe"]["rechts"]["cyl"] == "-0.50"
     assert r["naehe"]["rechts"]["achse"] == "65"
+    assert r["naehe"]["rechts"]["add"] == "+1.75"
+    assert r["naehe"]["rechts"]["prisma"] is None
     assert r["naehe"]["links"]["sph"] == "+0.25"
     assert r["glas"]["index"] == "1.6"
     assert r["glas"]["durchmesser"] == 75
