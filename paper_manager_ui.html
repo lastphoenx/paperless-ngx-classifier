@@ -5091,6 +5091,49 @@ function _bpCollectEye(prefix) {
   return eye.sph ? eye : null;
 }
 
+function _bpComputeDiff(old, neu) {
+  if (!old || !neu) return {};
+  const flat = (root, dist, side) => {
+    const o = {};
+    const eye = (root[dist] || {})[side];
+    if (!eye || typeof eye !== 'object') return o;
+    for (const [k, v] of Object.entries(eye)) {
+      if (v != null && v !== '') o[`${dist}.${side}.${k}`] = v;
+    }
+    return o;
+  };
+  const flatPd = (root) => {
+    const o = {};
+    const pd = root.pd || {};
+    for (const side of ['rechts', 'links']) {
+      if (pd[side] != null && pd[side] !== '') o[`pd.${side}`] = pd[side];
+    }
+    return o;
+  };
+  const flatGlas = (root) => {
+    const o = {};
+    const g = root.glas || {};
+    for (const [k, v] of Object.entries(g)) {
+      if (v != null && v !== '' && !(Array.isArray(v) && !v.length)) o[`glas.${k}`] = v;
+    }
+    return o;
+  };
+  const oldFlat = { ...flatGlas(old), ...flatPd(old) };
+  const newFlat = { ...flatGlas(neu), ...flatPd(neu) };
+  for (const dist of ['fern', 'naehe']) {
+    for (const side of ['rechts', 'links']) {
+      Object.assign(oldFlat, flat(old, dist, side));
+      Object.assign(newFlat, flat(neu, dist, side));
+    }
+  }
+  const diff = {};
+  for (const key of new Set([...Object.keys(oldFlat), ...Object.keys(newFlat)])) {
+    const a = oldFlat[key], b = newFlat[key];
+    if (a !== b) diff[key] = { alt: a ?? null, neu: b ?? null };
+  }
+  return diff;
+}
+
 function _bpDiffHtml(diff) {
   if (!diff || !Object.keys(diff).length) return '<p style="color:var(--muted);font-size:11px">Keine Änderung zur letzten Version.</p>';
   return Object.entries(diff).map(([k, v]) =>
@@ -5103,15 +5146,22 @@ function _bpDiagnoseHtml(v) {
   const d = (v.extraktion || {}).diagnose;
   if (!d) return '';
   const gaps = d.gaps || [];
+  const conflicts = d.conflicts || [];
+  const conf = d.confidence || (v.extraktion || {}).confidence || '?';
+  const confColor = { hoch: '#4ade80', mittel: '#fbbf24', tief: '#f87171' }[conf] || 'var(--muted)';
   const s1 = d.stufe1_ok ? 'ok' : 'teil/leer';
   const s2 = d.stufe2_ok ? 'ok' : 'teil/leer';
   const gapHtml = gaps.length
     ? `<div style="color:#fbbf24;font-size:11px;margin-top:6px">Lücken: ${gaps.map(g => `<code>${g}</code>`).join(', ')}</div>`
-    : '<div style="color:#4ade80;font-size:11px;margin-top:6px">Extraktion vollständig</div>';
+    : '<div style="color:#4ade80;font-size:11px;margin-top:6px">Keine Lücken</div>';
+  const conflictHtml = conflicts.length
+    ? `<div style="color:#f87171;font-size:11px;margin-top:6px">Konflikte Parser↔Vision: ${conflicts.map(c => `<code>${c}</code>`).join('<br>')}</div>`
+    : '';
   return `<div style="margin-top:8px;padding:8px 10px;background:rgba(79,156,249,.08);border-radius:6px;border:1px solid var(--border)">
     <div style="font-size:10px;font-weight:700;color:var(--accent);margin-bottom:4px">EXTRAKTION</div>
-    <div style="font-size:11px;color:var(--muted)">Stufe 1 Parser (${d.parser_detected || '?'}): ${s1} · Stufe 2 Vision: ${s2}${d.has_image ? '' : ' (ohne Bild)'}</div>
+    <div style="font-size:11px;color:var(--muted)">Stufe 1 Parser (${d.parser_detected || '?'}): ${s1} · Stufe 2 Vision: ${s2}${d.has_image ? '' : ' (ohne Bild)'} · Confidence: <span style="color:${confColor};font-weight:600">${conf}</span></div>
     ${gapHtml}
+    ${conflictHtml}
     <div style="font-size:10px;color:var(--muted);margin-top:4px">Audit: <code>audit_log.jsonl</code> → brillenpass_s1/s2/merged</div>
   </div>`;
 }
@@ -5125,6 +5175,7 @@ function renderBrillenpassReviewPanel(entry) {
   const docUrl = docId ? paperlessDocUrl(docId) : '#';
   const thumb = docId ? `${API_BASE}/proxy/document/${docId}/thumb/` : '';
   const prev = entry.letzte_version || null;
+  const diff = prev ? _bpComputeDiff(prev, v) : {};
 
   panel.innerHTML = `
     <div class="card">
@@ -5141,8 +5192,8 @@ function renderBrillenpassReviewPanel(entry) {
           <img src="${thumb}" alt="Vorschau Dok #${docId}" style="width:100%;border-radius:6px;border:1px solid var(--border);cursor:pointer">
         </a>` : ''}
         <div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Diff zur letzten Version (Vorschau beim Freigeben berechnet)</div>
-          <div id="bp-diff-preview">${prev ? '<p style="font-size:11px;color:var(--muted)">Letzte Version: '+ (prev.gueltig_ab||'') +'</p>' : '<p style="font-size:11px;color:var(--muted)">Erste Version für diese Person.</p>'}</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Diff zur letzten Version${prev ? ' (' + (prev.gueltig_ab || '?') + ')' : ''}</div>
+          <div id="bp-diff-preview">${_bpDiffHtml(diff)}</div>
         </div>
       </div>
       <div class="field-group" style="margin-top:12px">

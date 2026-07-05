@@ -356,6 +356,8 @@ def normalize_vision_brillenpass(
                 if (eye.get("basis") or "").upper() == "ADD":
                     eye["basis"] = None
             block[side] = _sanitize_eye(eye)
+    if out.get("gueltig_ab"):
+        out["gueltig_ab"] = normalize_gueltig_ab_iso(out.get("gueltig_ab"))
     if ocr_text:
         out = apply_ocr_brillenpass_crosscheck(ocr_text, out)
     return out
@@ -391,6 +393,7 @@ def apply_ocr_brillenpass_crosscheck(ocr_text: str, data: dict) -> dict:
             if ref.get(field):
                 eye[field] = ref[field]
         out[target_dist][side] = _sanitize_eye(eye)
+    for side in ("rechts", "links"):
         if pd_map.get(side):
             out.setdefault("pd", {"rechts": None, "links": None})[side] = str(
                 pd_map[side]
@@ -428,22 +431,48 @@ def diagnose_brillenpass_extraction(
     has_image: bool = False,
     prefer_vision: bool = False,
 ) -> dict:
-    """Wo klemmt's: Stufe 1 vs. Stufe 2 vs. Merge — Lückenliste."""
+    """Wo klemmt's: Stufe 1 vs. Stufe 2 vs. Merge — Lücken, Konflikte, Confidence."""
     gaps: list[str] = []
+    conflicts: list[str] = []
+    needs_add = any(
+        _plausible_reading_add(((merged or {}).get(dist) or {}).get(side) or {}).get("add"))
+        for dist in ("fern", "naehe")
+        for side in ("rechts", "links")
+    )
     for dist in ("fern", "naehe"):
         for side in ("rechts", "links"):
             eye = ((merged or {}).get(dist) or {}).get(side) or {}
             if not eye.get("sph"):
                 continue
-            for field in ("cyl", "achse", "add"):
+            for field in ("cyl", "achse"):
                 if not eye.get(field):
                     gaps.append(f"{dist}.{side}.{field}")
+            if dist == "naehe" and needs_add and not eye.get("add"):
+                gaps.append(f"{dist}.{side}.add")
     pd = (merged or {}).get("pd") or {}
     for side in ("rechts", "links"):
         dist_eye = ((merged or {}).get("fern") or {}).get(side) or {}
         near_eye = ((merged or {}).get("naehe") or {}).get(side) or {}
         if (dist_eye.get("sph") or near_eye.get("sph")) and not pd.get(side):
             gaps.append(f"pd.{side}")
+
+    if not (merged or {}).get("gueltig_ab"):
+        gaps.append("gueltig_ab")
+
+    # Parser vs. Vision — abweichende Werte (gefüllt aber evtl. falsch)
+    if parser_data and vision_data:
+        for dist in ("fern", "naehe"):
+            for side in ("rechts", "links"):
+                pe = ((parser_data.get(dist) or {}).get(side) or {})
+                ve = ((vision_data.get(dist) or {}).get(side) or {})
+                for field in ("sph", "cyl", "achse", "add"):
+                    pv, vv = pe.get(field), ve.get(field)
+                    if pv and vv and not _vals_close(pv, vv):
+                        conflicts.append(f"{dist}.{side}.{field}: Parser={pv} · Vision={vv}")
+        pp, vp = (parser_data.get("pd") or {}), (vision_data.get("pd") or {})
+        for side in ("rechts", "links"):
+            if pp.get(side) and vp.get(side) and not _vals_close(pp[side], vp[side]):
+                conflicts.append(f"pd.{side}: Parser={pp[side]} · Vision={vp[side]}")
 
     # Fehlendes Auge obwohl Geschwisterauge da (typisch OCR/Vision-Lücke)
     for dist in ("fern", "naehe"):
@@ -471,6 +500,8 @@ def diagnose_brillenpass_extraction(
         "stufe2": snapshot_brillenpass(vision_data) if vision_data else {},
         "merged": snapshot_brillenpass(merged),
         "gaps": gaps,
+        "conflicts": conflicts,
+        "confidence": ((merged or {}).get("extraktion") or {}).get("confidence"),
     }
 
 
@@ -1177,6 +1208,17 @@ def _parse_pass_date(text: str) -> str | None:
             return datetime(y, mo, d).strftime("%Y-%m-%d")
         except ValueError:
             continue
+    # McOptic-Karte: Datumszeile oben rechts (z. B. 10.06.2015 / 12.06.2015) — frühestes Datum
+    header = (text or "")[:900]
+    found: list[datetime] = []
+    for m in re.finditer(r"(?<!\d)(\d{1,2})\.(\d{1,2})\.(20\d{2}|19\d{2})(?!\d)", header):
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            found.append(datetime(y, mo, d))
+        except ValueError:
+            continue
+    if found:
+        return min(found).strftime("%Y-%m-%d")
     return parse_ch_date_short(text)
 
 

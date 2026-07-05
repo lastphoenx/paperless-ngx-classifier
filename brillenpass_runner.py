@@ -135,6 +135,11 @@ def reprocess_brillenpass_document(
     if diagnose.get("gaps"):
         log.warning("Brillenpass Lücken #%s: %s", document_id, ", ".join(diagnose["gaps"]))
     merged["korrespondent"] = corr_entry.get("name", "")
+    if not merged.get("gueltig_ab"):
+        from brillenpass_parser import _parse_pass_date, normalize_gueltig_ab_iso  # noqa: WPS433
+        merged["gueltig_ab"] = _parse_pass_date(ocr_text) or normalize_gueltig_ab_iso(
+            (vision_bp or {}).get("gueltig_ab")
+        )
     if not merged.get("gueltig_ab") and doc.get("created"):
         merged["gueltig_ab"] = str(doc["created"])[:10]
 

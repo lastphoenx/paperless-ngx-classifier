@@ -383,6 +383,28 @@ def test_consolidate_ignores_hallucinated_integer_add():
     assert merged["pd"]["links"] == "31.0"
 
 
+def test_mcoptic_header_date():
+    text = "26-32910 / Monika Santinelli\n12.06.2015\n10.06.2015\nSPH ZYL ACHSE\nR -2.75 -1.25 179 29.5"
+    from brillenpass_parser import _parse_pass_date
+    assert _parse_pass_date(text) == "2015-06-10"
+
+
+def test_diagnose_no_add_gap_for_fern_only():
+    merged = {
+        "fern": {
+            "rechts": {"sph": "-2.75", "cyl": "-1.25", "achse": "179"},
+            "links": {"sph": "-1.00", "cyl": "-1.50", "achse": "0"},
+        },
+        "naehe": {"rechts": None, "links": None},
+        "pd": {"rechts": "29.5", "links": "31.0"},
+        "gueltig_ab": "2015-06-10",
+    }
+    d = diagnose_brillenpass_extraction({}, {}, merged, has_image=True)
+    assert "fern.rechts.add" not in d["gaps"]
+    assert "fern.links.add" not in d["gaps"]
+    assert "gueltig_ab" not in d["gaps"]
+
+
 def test_consolidate_near_bucket_still_moves_real_add():
     merged = merge_brillenpass(
         {"fern": {"rechts": {"sph": "+0.25", "cyl": "-0.25", "achse": "57", "add": "+1.50"}, "links": None},
