@@ -13,13 +13,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 log = logging.getLogger("legacy_split_by_qr")
 
 DEFAULT_QR_REGEX = r"^[0-9]{6}_[^\s]+$"
-DEFAULT_DPI = 600  # wie tsa_barcode_split_function.sh (Ghostscript 600dpi)
-_FALLBACK_DPIS = (600, 400, 300)
+DEFAULT_DPI = 400  # 400 zuerst (schneller); 600 als Fallback
+_FALLBACK_DPIS = (400, 600, 300)
+_DECODE_TIMEOUT = 15
 
 
 def _decode_barcodes_from_image_path(img_path: str) -> list[str]:
@@ -41,7 +43,7 @@ def _decode_barcodes_from_image_path(img_path: str) -> list[str]:
         ],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_DECODE_TIMEOUT,
     )
     if proc.returncode == 0:
         import json
@@ -60,7 +62,7 @@ def _zbarimg_decode(img_path: str) -> list[str]:
         ["zbarimg", "-q", "--raw", img_path],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=_DECODE_TIMEOUT,
     )
     if proc.returncode not in (0, 4):  # 4 = found codes
         return []
@@ -74,6 +76,60 @@ def _enhance_page_image(image):
     return gray.convert("RGB")
 
 
+def _decode_page_image(image) -> list[str]:
+    """Barcodes von gerendeter Seite (ohne erneutes PDF-Rendern)."""
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for variant in (image.convert("RGB"), _enhance_page_image(image)):
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            tmp = tf.name
+        try:
+            variant.save(tmp, format="PNG")
+            for raw in _decode_barcodes_from_image_path(tmp):
+                if raw not in seen_set:
+                    seen_set.add(raw)
+                    seen.append(raw)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        if seen:
+            break
+    return seen
+
+
+def _markers_from_pages(
+    images: list,
+    *,
+    regex: str,
+) -> tuple[list[tuple[str, int]], list[dict]]:
+    pattern = re.compile(regex)
+    markers: list[tuple[str, int]] = []
+    qr_debug: list[dict] = []
+    for page_num, image in enumerate(images, start=1):
+        page_hits: list[str] = []
+        for raw in _decode_page_image(image):
+            hit = _match_barcode(raw, pattern)
+            qr_debug.append({"page": page_num, "raw": raw, "matched": bool(hit)})
+            if hit and hit not in page_hits:
+                page_hits.append(hit)
+        for hit in page_hits:
+            if markers and markers[-1] == (hit, page_num):
+                continue
+            log.info("QR Seite %d: %s", page_num, hit)
+            markers.append((hit, page_num))
+    return markers, qr_debug
+
+
+def _finalize_markers(
+    markers: list[tuple[str, int]],
+) -> list[tuple[str, int]]:
+    if not markers:
+        return markers
+    if markers[0][1] > 1:
+        log.info("Erster QR auf S.%d — Prefix Kein_Barcode S.1", markers[0][1])
+        markers.insert(0, ("Kein_Barcode", 1))
+    return markers
+
+
 def scan_page_qrs(
     pdf_path: str,
     page_num: int,
@@ -81,40 +137,25 @@ def scan_page_qrs(
     dpi: int = DEFAULT_DPI,
     dpis: tuple[int, ...] | None = None,
 ) -> list[str]:
-    """Alle Barcode-Texte auf Seite page_num (1-basiert), mehrere DPI-Versuche."""
+    """Alle Barcode-Texte auf Seite page_num (1-basiert) — Legacy-Einzelaufruf."""
     try:
         from pdf2image import convert_from_path
     except ImportError:
         raise RuntimeError("pdf2image fehlt — pip install pdf2image") from None
 
     tried = dpis or _FALLBACK_DPIS if dpi == DEFAULT_DPI else (dpi,)
-    seen: list[str] = []
-    seen_set: set[str] = set()
-
     for try_dpi in tried:
         images = convert_from_path(
             pdf_path, dpi=try_dpi, first_page=page_num, last_page=page_num,
         )
-        if not images:
-            continue
-        for variant in (images[0].convert("RGB"), _enhance_page_image(images[0])):
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
-                tmp = tf.name
-            try:
-                variant.save(tmp, format="PNG")
-                for raw in _decode_barcodes_from_image_path(tmp):
-                    if raw not in seen_set:
-                        seen_set.add(raw)
-                        seen.append(raw)
-            finally:
-                Path(tmp).unlink(missing_ok=True)
-        if seen:
-            break
-    return seen
+        if images:
+            found = _decode_page_image(images[0])
+            if found:
+                return found
+    return []
 
 
 def scan_page_qr(pdf_path: str, page_num: int, *, dpi: int = DEFAULT_DPI) -> str | None:
-    """Erste Barcode-Zeichenkette auf Seite page_num (1-basiert) oder None."""
     found = scan_page_qrs(pdf_path, page_num, dpi=dpi)
     return found[0] if found else None
 
@@ -150,78 +191,63 @@ def find_split_markers(
 ) -> tuple[list[tuple[str, int]], int, list[dict]]:
     """
     [(barcode, start_page), …] — 1-basierte Startseiten.
-    Optional «Kein_Barcode» ab S.1 wenn erster Treffer später kommt (wie Bash-Script).
-    Returns: (markers, total_pages, qr_debug) — qr_debug: [{page, raw, matched}]
+    Rendert PDF einmal pro DPI (nicht pro Seite) — deutlich schneller.
     """
     try:
+        from pdf2image import convert_from_path
         from pypdf import PdfReader
-    except ImportError:
-        raise RuntimeError("pypdf fehlt — pip install pypdf") from None
+    except ImportError as e:
+        raise RuntimeError("pdf2image/pypdf fehlt") from e
 
     total = len(PdfReader(pdf_path).pages)
-    pattern = re.compile(regex)
-    markers: list[tuple[str, int]] = []
-    qr_debug: list[dict] = []
+    dpis = _FALLBACK_DPIS if dpi == DEFAULT_DPI else (dpi,)
+    best_markers: list[tuple[str, int]] = []
+    best_debug: list[dict] = []
 
-    for page in range(1, total + 1):
-        page_hits: list[str] = []
-        for raw in scan_page_qrs(pdf_path, page, dpi=dpi):
-            hit = _match_barcode(raw, pattern)
-            qr_debug.append({"page": page, "raw": raw, "matched": bool(hit)})
-            if hit and hit not in page_hits:
-                page_hits.append(hit)
-        for hit in page_hits:
-            if markers and markers[-1] == (hit, page):
-                continue
-            log.info("QR Seite %d: %s", page, hit)
-            markers.append((hit, page))
+    for try_dpi in dpis:
+        try:
+            images = convert_from_path(pdf_path, dpi=try_dpi)
+        except Exception as e:
+            log.warning("PDF render dpi=%s fehlgeschlagen: %s", try_dpi, e)
+            continue
+        if len(images) != total:
+            log.warning("PDF render dpi=%s: %d Bilder, erwartet %d", try_dpi, len(images), total)
+        markers, qr_debug = _markers_from_pages(images, regex=regex)
+        markers = _finalize_markers(markers)
+        if _marker_score(markers) > _marker_score(best_markers):
+            best_markers, best_debug = markers, qr_debug
+        if _marker_score(markers) >= 2:
+            break  # genug Marker — höhere DPI spart Zeit
 
-    if not markers:
-        return [], total, qr_debug
-
-    if markers[0][1] > 1:
-        log.info("Erster QR auf S.%d — Prefix Kein_Barcode S.1", markers[0][1])
-        markers.insert(0, ("Kein_Barcode", 1))
-
-    return markers, total, qr_debug
+    return best_markers, total, best_debug
 
 
 def has_real_qr_splits(markers: list[tuple[str, int]]) -> bool:
-    """Mindestens ein echter Barcode (nicht nur Kein_Barcode über alles)."""
     return any(name != "Kein_Barcode" for name, _ in markers)
 
 
-def split_pdf_by_qr(
+def split_pdf_at_markers(
     pdf_path: str,
     output_dir: str | Path,
+    markers: list[tuple[str, int]],
+    total: int,
     *,
-    regex: str = DEFAULT_QR_REGEX,
-    dpi: int = DEFAULT_DPI,
     source_basename: str | None = None,
 ) -> list[dict]:
-    """
-    Splittet PDF an QR-Markern. Returns Liste:
-    {barcode, from_page, to_page, filename, path}
-    """
+    """PDF an vorberechneten Markern splitten (ohne erneuten QR-Scan)."""
     from pypdf import PdfReader, PdfWriter
 
-    pdf_path = str(pdf_path)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    markers, total = find_split_markers(pdf_path, regex=regex, dpi=dpi)[:2]
     if not has_real_qr_splits(markers):
         return []
 
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     f_stem = _basename_stem(source_basename or Path(pdf_path).name)
-    reader = PdfReader(pdf_path)
+    reader = PdfReader(str(pdf_path))
     results: list[dict] = []
 
     for i, (barcode, from_page) in enumerate(markers):
-        if i + 1 < len(markers):
-            to_page = markers[i + 1][1] - 1
-        else:
-            to_page = total
+        to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
         doc_name = _doc_name_from_barcode(barcode)
         filename = f"ocrscan_{doc_name}_{f_stem}_p{from_page}_bis_p{to_page}.pdf"
         out_path = output_dir / filename
@@ -246,9 +272,46 @@ def split_pdf_by_qr(
     return results
 
 
+def split_pdf_by_qr(
+    pdf_path: str,
+    output_dir: str | Path,
+    *,
+    regex: str = DEFAULT_QR_REGEX,
+    dpi: int = DEFAULT_DPI,
+    source_basename: str | None = None,
+) -> list[dict]:
+    markers, total, _ = find_split_markers(pdf_path, regex=regex, dpi=dpi)
+    return split_pdf_at_markers(
+        pdf_path, output_dir, markers, total, source_basename=source_basename,
+    )
+
+
 def _marker_score(markers: list[tuple[str, int]]) -> int:
-    """Mehr echte Marker = besser (Kein_Barcode zählt nicht)."""
     return sum(1 for name, _ in markers if name != "Kein_Barcode")
+
+
+def _scan_pdf_bytes(label: str, pdf_bytes: bytes, *, regex: str, dpi: int) -> dict:
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+        tf.write(pdf_bytes)
+        tmp = tf.name
+    try:
+        markers, total, qr_debug = find_split_markers(tmp, regex=regex, dpi=dpi)
+        score = _marker_score(markers)
+        seen = sum(1 for x in qr_debug if x.get("matched"))
+        log.info(
+            "Legacy-Split Scan %s: %d Seiten, %d Marker, %d QR-Treffer",
+            label, total, score, seen,
+        )
+        return {
+            "rank": (score, seen),
+            "label": label,
+            "pdf_bytes": pdf_bytes,
+            "markers": markers,
+            "total": total,
+            "qr_debug": qr_debug,
+        }
+    finally:
+        Path(tmp).unlink(missing_ok=True)
 
 
 def resolve_best_pdf_for_split(
@@ -257,38 +320,24 @@ def resolve_best_pdf_for_split(
     regex: str = DEFAULT_QR_REGEX,
     dpi: int = DEFAULT_DPI,
 ) -> tuple[str, bytes, list[tuple[str, int]], int, list[dict]] | None:
-    """
-    Probiert mehrere PDF-Quellen (original, archiv) — wählt die mit meisten QR-Markern.
-    Returns: (source_label, pdf_bytes, markers, total_pages, qr_debug) oder None.
-    """
+    """Original + Archiv parallel scannen — Variante mit meisten Markern gewinnt."""
+    if not pdf_variants:
+        return None
     best: dict | None = None
-    for label, pdf_bytes in pdf_variants:
-        if not pdf_bytes:
-            continue
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
-            tf.write(pdf_bytes)
-            tmp = tf.name
-        try:
-            markers, total, qr_debug = find_split_markers(tmp, regex=regex, dpi=dpi)
-            score = _marker_score(markers)
-            seen = sum(1 for x in qr_debug if x.get("matched"))
-            log.info(
-                "Legacy-Split Scan %s: %d Seiten, %d Marker, %d QR-Treffer",
-                label, total, score, seen,
-            )
-            rank = (score, seen)
-            candidate = {
-                "rank": rank,
-                "label": label,
-                "pdf_bytes": pdf_bytes,
-                "markers": markers,
-                "total": total,
-                "qr_debug": qr_debug,
-            }
-            if best is None or rank > best["rank"]:
+    workers = min(2, len(pdf_variants))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_scan_pdf_bytes, label, data, regex=regex, dpi=dpi): label
+            for label, data in pdf_variants if data
+        }
+        for fut in as_completed(futures):
+            try:
+                candidate = fut.result()
+            except Exception as e:
+                log.warning("Legacy-Split Scan %s fehlgeschlagen: %s", futures[fut], e)
+                continue
+            if best is None or candidate["rank"] > best["rank"]:
                 best = candidate
-        finally:
-            Path(tmp).unlink(missing_ok=True)
     if best is None:
         return None
     return (
@@ -307,12 +356,19 @@ def split_paperless_document(
     original_filename: str = "document.pdf",
     regex: str = DEFAULT_QR_REGEX,
     dpi: int = DEFAULT_DPI,
+    markers: list[tuple[str, int]] | None = None,
+    total: int | None = None,
 ) -> list[dict]:
-    """PDF-Bytes (z. B. aus Paperless) splitten und in output_dir schreiben."""
+    """PDF-Bytes splitten — optional mit vorberechneten Markern (kein Doppel-Scan)."""
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
         tf.write(pdf_bytes)
         tmp_pdf = tf.name
     try:
+        if markers is not None and total is not None:
+            return split_pdf_at_markers(
+                tmp_pdf, output_dir, markers, total,
+                source_basename=original_filename,
+            )
         return split_pdf_by_qr(
             tmp_pdf, output_dir,
             regex=regex, dpi=dpi, source_basename=original_filename,

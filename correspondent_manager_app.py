@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.44"  # 2.44: Legacy-Split Original+Archiv vergleichen
-UI_VERSION = "2.85"
+__version__ = "2.45"  # 2.45: Legacy-Split Batch-Render, kein Doppel-Scan
+UI_VERSION = "2.86"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -2313,6 +2313,8 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
                 consume_dir,
                 original_filename=orig_name,
                 regex=regex,
+                markers=markers,
+                total=total,
             ),
         )
     except Exception as e:
