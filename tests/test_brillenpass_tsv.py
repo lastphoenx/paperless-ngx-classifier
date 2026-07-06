@@ -108,3 +108,22 @@ def test_parse_by_anchors_insufficient_headers():
     words = [{"text": "SPH", "left": 10, "top": 10, "conf": 90}]
     assert parse_by_anchors(words) is None
     assert count_header_anchors(words) < 3
+
+
+def test_merge_rl_split_line():
+    from brillenpass_tsv import merge_rl_continuation_lines, _numeric_tokens, _row_side
+    words = [
+        {"text": "R", "left": 80, "top": 100},
+        {"text": "-2.75", "left": 200, "top": 118},
+        {"text": "-1.25", "left": 280, "top": 118},
+        {"text": "179", "left": 360, "top": 118},
+        {"text": "29.5", "left": 480, "top": 118},
+    ]
+    zeilen = merge_rl_continuation_lines(gruppiere_nach_top(words, tol=12))
+    assert any(_row_side(z) == "rechts" and len(_numeric_tokens(z)) >= 3 for z in zeilen)
+
+
+def test_plausible_rejects_garbage_sph():
+    from brillenpass_parser import plausible_refraktion_eye
+    assert not plausible_refraktion_eye({"sph": "+293", "cyl": "+23", "achse": "2"})
+    assert plausible_refraktion_eye({"sph": "-2.75", "cyl": "-1.25", "achse": "179"})

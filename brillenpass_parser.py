@@ -137,6 +137,69 @@ def _norm_val(v: str | float | int | None) -> str | None:
     return s
 
 
+def _coerce_ocular_diopter(raw: str | float | int | None) -> str | None:
+    """OCR ohne Dezimalpunkt: 275 → +2.75, -125 → -1.25."""
+    nv = _norm_val(raw)
+    if not nv:
+        return None
+    raw_s = str(raw or "").strip().replace(",", ".")
+    if "." in raw_s:
+        return nv
+    try:
+        f = float(nv.replace(",", ".").lstrip("+"))
+    except ValueError:
+        return nv
+    if abs(f) <= 15:
+        return nv
+    sign = "-" if nv.startswith("-") or str(raw or "").strip().startswith("-") else "+"
+    for div in (100, 10):
+        cand = abs(f) / div
+        if 0.01 < cand <= 15:
+            out = f"{sign}{cand:.2f}".rstrip("0").rstrip(".")
+            return out if "." in out else f"{out}.0"
+    return None
+
+
+def plausible_refraktion_eye(eye: dict | None) -> bool:
+    """Dioptrien/Achse in optisch sinnvollem Bereich."""
+    if not eye or not eye.get("sph"):
+        return False
+    for field, lo, hi in (("sph", -20, 20), ("cyl", -10, 10)):
+        v = eye.get(field)
+        if not v:
+            continue
+        try:
+            f = float(str(v).replace(",", ".").lstrip("+"))
+            if not lo <= f <= hi:
+                return False
+        except ValueError:
+            return False
+    achse = eye.get("achse")
+    if achse is not None and str(achse).strip() != "":
+        try:
+            a = int(re.sub(r"\D", "", str(achse)))
+            if not 0 <= a <= 180:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def plausible_brillenpass_data(data: dict | None) -> bool:
+    if not data:
+        return False
+    ok_eye = False
+    for dist in ("fern", "naehe"):
+        for side in ("rechts", "links"):
+            eye = (data.get(dist) or {}).get(side) or {}
+            if not eye.get("sph"):
+                continue
+            if not plausible_refraktion_eye(eye):
+                return False
+            ok_eye = True
+    return ok_eye
+
+
 def _parse_eye_values(m: re.Match) -> dict:
     sph = _norm_val(m.group(3))
     cyl = _norm_val(m.group(4))
@@ -1232,14 +1295,17 @@ def _side_key(label: str) -> str:
 def _eye_from_parts(sph, cyl, achse, add=None) -> dict | None:
     if not sph:
         return None
-    return _sanitize_eye({
-        "sph": _norm_val(sph),
-        "cyl": _norm_val(cyl),
+    sph_n = _coerce_ocular_diopter(sph) or _norm_val(sph)
+    cyl_n = (_coerce_ocular_diopter(cyl) or _norm_val(cyl)) if cyl else None
+    eye = _sanitize_eye({
+        "sph": sph_n,
+        "cyl": cyl_n,
         "achse": re.sub(r"\D", "", str(achse)) if achse else None,
         "prisma": None,
         "basis": None,
         "add": _norm_val(add),
     })
+    return eye if plausible_refraktion_eye(eye) else None
 
 
 def _add_is_near(add_val: str | None) -> bool:
