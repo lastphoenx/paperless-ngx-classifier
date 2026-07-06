@@ -12,9 +12,9 @@ CT121 Beispiele (liest /opt/paperless-scripts/.env und /opt/paperless/.env):
     /pfad/zum/scan.pdf --mode schulbericht --page 1 --num-predict 1024
 
 Modi:
-  baseline     — aktueller Pipeline-Prompt (Rechnungen + Rand-Handschrift)
-  schulbericht — strukturierte Extraktion für Schulberichte
-  transcribe   — wörtliche Handschrift-Transkription (HTR)
+  baseline     — aktueller Pipeline-Prompt (Seite 1, Rechnungen + Rand-Handschrift)
+  schulbericht — strukturierte Extraktion, alle PDF-Seiten automatisch
+  transcribe   — wörtliche HTR, alle PDF-Seiten automatisch
   all          — alle drei nacheinander
 """
 from __future__ import annotations
@@ -35,9 +35,20 @@ from typing import Any, Optional
 
 import requests
 
-log = logging.getLogger("test_handwriting_vision")
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from schulbericht_vision import (  # noqa: E402
+    SCHULBERICHT_NUM_PREDICT,
+    SCHULBERICHT_VISION_SYSTEM,
+    build_schulbericht_vision_prompt,
+    merge_schulbericht_pages,
+    pdf_page_count,
+    schulbericht_to_vision_meta,
+)
+
+log = logging.getLogger("test_handwriting_vision")
 
 
 def _load_env_files() -> None:
@@ -87,7 +98,7 @@ VISION_SYSTEM_HTR = (
 MODES = ("baseline", "schulbericht", "transcribe", "all")
 DEFAULT_NUM_PREDICT = {
     "baseline": 300,
-    "schulbericht": 800,
+    "schulbericht": SCHULBERICHT_NUM_PREDICT,
     "transcribe": 2048,
 }
 
@@ -357,34 +368,11 @@ def build_baseline_prompt(ocr_text: str) -> str:
     )
 
 
-def build_schulbericht_prompt(ocr_text: str) -> str:
-    ocr_snip = (ocr_text or "")[:2000]
-    return (
-        "Dies ist vermutlich ein Schweizer Schulbericht oder Zeugnis-Auszug.\n"
-        "Lies gedruckte UND handschriftliche Inhalte vom Bild.\n"
-        "Fasse lange Handschrift-Absätze sinnvoll zusammen (kein Wort-für-Wort nötig).\n"
-        "Antworte als JSON:\n"
-        "{\n"
-        '  "dokumenttyp": "Schulbericht",\n'
-        '  "schueler_vorname": "string oder null",\n'
-        '  "schueler_nachname": "string oder null",\n'
-        '  "klasse": "string oder null",\n'
-        '  "semester_oder_zeitraum": "z.B. 1. Semester 2025/26 oder null",\n'
-        '  "schule": "Name der Schule oder null",\n'
-        '  "lehrperson": "string oder null",\n'
-        '  "arbeits_haltung": "Kurzfassung Abschnitt Arbeitshaltung oder null",\n'
-        '  "leistungen": "Kurzfassung Abschnitt Leistungen oder null",\n'
-        '  "handschrift_lesbarkeit": "gut|mittel|schlecht",\n'
-        '  "confidence": 0.0,\n'
-        '  "hinweise": "Unsicherheiten oder null"\n'
-        "}\n\n"
-        f"OCR-Text (meist unbrauchbar bei Handschrift):\n{ocr_snip or '(leer)'}"
-    )
-
-
-def build_transcribe_prompt(ocr_text: str) -> str:
+def build_transcribe_prompt(ocr_text: str, page: int = 1, page_total: int = 1) -> str:
     ocr_snip = (ocr_text or "")[:500]
+    page_hint = f"SEITE {page} von {page_total}.\n" if page_total > 1 else ""
     return (
+        f"{page_hint}"
         "Transkribiere ALLEN sichtbaren Text auf diesem Bild wörtlich auf Deutsch.\n"
         "Unterscheide gedruckte Überschriften und handschriftlichen Fliesstext.\n"
         "Erfinde keine Wörter. Bei unleserlichen Stellen: [unleserlich].\n"
@@ -401,13 +389,33 @@ def build_transcribe_prompt(ocr_text: str) -> str:
     )
 
 
-def prompt_for_mode(mode: str, ocr_text: str) -> tuple[str, str]:
+def merge_transcribe_pages(pages: list[dict]) -> dict:
+    if not pages:
+        return {}
+    abschnitte: list[dict] = []
+    volltexts: list[str] = []
+    for p in pages:
+        if isinstance(p.get("abschnitte"), list):
+            abschnitte.extend(p["abschnitte"])
+        vt = p.get("volltext")
+        if vt and str(vt).strip():
+            volltexts.append(str(vt).strip())
+    merged = dict(pages[-1])
+    merged["abschnitte"] = abschnitte
+    merged["volltext"] = "\n\n".join(volltexts)
+    merged["seiten_anzahl"] = len(pages)
+    return merged
+
+
+def prompt_for_mode(
+    mode: str, ocr_text: str, page: int = 1, page_total: int = 1,
+) -> tuple[str, str]:
     if mode == "baseline":
         return build_baseline_prompt(ocr_text), VISION_SYSTEM_JSON
     if mode == "schulbericht":
-        return build_schulbericht_prompt(ocr_text), VISION_SYSTEM_JSON
+        return build_schulbericht_vision_prompt(ocr_text, page, page_total), SCHULBERICHT_VISION_SYSTEM
     if mode == "transcribe":
-        return build_transcribe_prompt(ocr_text), VISION_SYSTEM_HTR
+        return build_transcribe_prompt(ocr_text, page, page_total), VISION_SYSTEM_HTR
     raise ValueError(f"Unbekannter Modus: {mode}")
 
 
@@ -454,11 +462,12 @@ def run_mode(
     image_bytes: int,
     ocr_text: str,
     page: int,
+    page_total: int,
     model: str,
     num_predict: int,
     temperature: float,
 ) -> RunResult:
-    user_prompt, system = prompt_for_mode(mode, ocr_text)
+    user_prompt, system = prompt_for_mode(mode, ocr_text, page, page_total)
     t0 = time.perf_counter()
     error = None
     raw = ""
@@ -515,10 +524,22 @@ def log_result(res: RunResult) -> None:
         log.info("  Raw (%d Zeichen):\n%s", len(res.raw_response), preview)
 
 
-def parse_pages_arg(pages: Optional[str], page: int) -> list[int]:
+def resolve_page_list(
+    input_path: Path,
+    page: Optional[int],
+    pages: Optional[str],
+    mode: str,
+) -> list[int]:
     if pages:
         return [int(p.strip()) for p in pages.split(",") if p.strip()]
-    return [page]
+    if page is not None:
+        return [page]
+    if input_path.suffix.lower() == ".pdf":
+        total = pdf_page_count(str(input_path))
+        if mode == "baseline":
+            return [1]
+        return list(range(1, total + 1))
+    return [1]
 
 
 def resolve_input(path: Optional[str], doc_id: Optional[int]) -> ResolvedInput:
@@ -544,7 +565,7 @@ def main() -> int:
         "--mode", choices=MODES, default="all",
         help="Prompt-Variante (default: all)",
     )
-    parser.add_argument("--page", type=int, default=1, help="PDF-Seite 1-basiert (default: 1)")
+    parser.add_argument("--page", type=int, help="Nur diese PDF-Seite (sonst alle Seiten)")
     parser.add_argument("--pages", help="Mehrere Seiten, kommagetrennt z.B. 1,2,3")
     parser.add_argument("--dpi", type=int, default=150, help="Render-Auflösung (default: 150)")
     parser.add_argument("--model", default=MODEL_VISION, help=f"Ollama Vision-Modell (default: {MODEL_VISION})")
@@ -570,7 +591,7 @@ def main() -> int:
 
     input_path = resolved.path
     modes = list(MODES[:-1]) if args.mode == "all" else [args.mode]
-    page_list = parse_pages_arg(args.pages, args.page)
+    pdf_total = pdf_page_count(str(input_path)) if input_path.suffix.lower() == ".pdf" else 1
 
     try:
         if args.ocr_file:
@@ -584,8 +605,8 @@ def main() -> int:
             ocr_full = ocr_full[: args.ocr_chars]
 
         log.info(
-            "Input=%s  MEDIA_ROOT=%s  Modi=%s  Seiten=%s  Modell=%s  DPI=%d  Ollama=%s",
-            input_path, MEDIA_ROOT, modes, page_list, args.model, args.dpi, OLLAMA_BASE,
+            "Input=%s  PDF-Seiten=%d  MEDIA_ROOT=%s  Modi=%s  Modell=%s  DPI=%d  Ollama=%s",
+            input_path, pdf_total, MEDIA_ROOT, modes, args.model, args.dpi, OLLAMA_BASE,
         )
         if ocr_full:
             preview = ocr_full[:200].replace("\n", " ")
@@ -597,18 +618,24 @@ def main() -> int:
 
         all_results: list[dict] = []
 
-        for page in page_list:
-            try:
-                image_b64, image_bytes = file_to_base64_image(input_path, page=page, dpi=args.dpi)
-            except Exception as e:
-                log.error("Bild-Rendering Seite %d fehlgeschlagen: %s", page, e)
-                return 1
-            log.info(
-                "Seite %d gerendert: %d Bytes JPEG (base64 %d Zeichen)",
-                page, image_bytes, len(image_b64),
-            )
+        for mode in modes:
+            page_list = resolve_page_list(input_path, args.page, args.pages, mode)
+            log.info("Modus %s → Seiten %s", mode, page_list)
+            page_parsed: list[dict] = []
 
-            for mode in modes:
+            for page in page_list:
+                try:
+                    image_b64, image_bytes = file_to_base64_image(
+                        input_path, page=page, dpi=args.dpi,
+                    )
+                except Exception as e:
+                    log.error("Bild-Rendering Seite %d fehlgeschlagen: %s", page, e)
+                    return 1
+                log.info(
+                    "Seite %d/%d gerendert: %d Bytes JPEG",
+                    page, pdf_total, image_bytes,
+                )
+
                 npred = args.num_predict if args.num_predict is not None else DEFAULT_NUM_PREDICT[mode]
                 res = run_mode(
                     mode=mode,
@@ -616,6 +643,7 @@ def main() -> int:
                     image_bytes=image_bytes,
                     ocr_text=ocr_full,
                     page=page,
+                    page_total=pdf_total,
                     model=args.model,
                     num_predict=npred,
                     temperature=args.temperature,
@@ -627,6 +655,32 @@ def main() -> int:
                 if args.verbose:
                     row["raw_response"] = res.raw_response
                 all_results.append(row)
+                if isinstance(res.parsed, dict) and not res.parsed.get("_parse_failed"):
+                    page_parsed.append(res.parsed)
+
+            if mode == "schulbericht" and len(page_parsed) > 1:
+                merged = merge_schulbericht_pages(page_parsed)
+                vision = schulbericht_to_vision_meta(merged)
+                log.info("─" * 72)
+                log.info("SCHULBERICHT MERGED (%d Seiten):", len(page_parsed))
+                log.info("%s", json.dumps(merged, ensure_ascii=False, indent=2))
+                log.info("Vision-Meta: %s", json.dumps(vision, ensure_ascii=False, indent=2))
+                all_results.append({
+                    "mode": "schulbericht_merged",
+                    "page": 0,
+                    "parsed": merged,
+                    "vision_meta": vision,
+                })
+            elif mode == "transcribe" and len(page_parsed) > 1:
+                merged = merge_transcribe_pages(page_parsed)
+                log.info("─" * 72)
+                log.info("TRANSCRIBE MERGED (%d Seiten):", len(page_parsed))
+                log.info("%s", json.dumps(merged, ensure_ascii=False, indent=2))
+                all_results.append({
+                    "mode": "transcribe_merged",
+                    "page": 0,
+                    "parsed": merged,
+                })
 
         summary = {
             "input": str(input_path),

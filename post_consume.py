@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.63"  # 12.63: sanitize_decision None-sicher bei korrespondent/titel
+POST_CONSUME_VERSION = "12.64"  # 12.64: Schulbericht mehrseitige Vision (Handschrift)
 import re
 import sys
 import json
@@ -65,6 +65,14 @@ from document_date import (
     birth_dates_from_family,
     extract_document_issue_date,
     validate_issue_date,
+)
+from schulbericht_vision import (
+    SCHULBERICHT_NUM_PREDICT,
+    SCHULBERICHT_VISION_SYSTEM,
+    analyze_schulbericht_pdf,
+    build_schulbericht_vision_prompt,
+    looks_like_schulbericht,
+    schulbericht_to_vision_meta,
 )
 
 # ─── Konfiguration ────────────────────────────────────────────────────────────
@@ -1340,16 +1348,16 @@ def ollama_post(endpoint: str, payload: dict, timeout: int) -> dict:
     return r.json()
 
 
-def pdf_to_base64_image(pdf_path: str) -> Optional[str]:
-    """Erste Seite via ghostscript → JPEG → base64. Gleiche Methode wie v10."""
+def pdf_to_base64_image(pdf_path: str, page: int = 1, dpi: int = 150) -> Optional[str]:
+    """PDF-Seite via ghostscript → JPEG → base64."""
     try:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp_path = tmp.name
         subprocess.run([
             "gs", "-dNOPAUSE", "-dBATCH", "-sDEVICE=jpeg",
-            "-dFirstPage=1", "-dLastPage=1", "-r150",
+            f"-dFirstPage={page}", f"-dLastPage={page}", f"-r{dpi}",
             f"-sOutputFile={tmp_path}", pdf_path
-        ], capture_output=True, check=True)
+        ], capture_output=True, check=True, timeout=120)
         with open(tmp_path, "rb") as f:
             data = base64.b64encode(f.read()).decode()
         os.unlink(tmp_path)
@@ -1871,6 +1879,50 @@ def vision_analyze(image_b64: Optional[str], ocr_text: str) -> dict:
         return {}
 
 
+def vision_schulbericht_page(
+    image_b64: str,
+    ocr_text: str,
+    page: int,
+    page_total: int,
+) -> dict:
+    """Eine Schulbericht-Seite per Vision-LLM (mehr Token als Standard-Vision)."""
+    if not image_b64:
+        return {}
+    user_content = build_schulbericht_vision_prompt(ocr_text, page, page_total)
+    try:
+        resp = ollama_post(
+            "api/chat",
+            {
+                "model": MODEL_VISION,
+                "messages": [{
+                    "role": "user",
+                    "content": user_content,
+                    "images": [image_b64],
+                }],
+                "system": SCHULBERICHT_VISION_SYSTEM,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.1, "num_predict": SCHULBERICHT_NUM_PREDICT},
+            },
+            timeout=VISION_TIMEOUT,
+        )
+        raw = resp.get("message", {}).get("content", "")
+        data = extract_json_from_response(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning("Schulbericht-Vision Seite %d/%d fehlgeschlagen: %s", page, page_total, e)
+        return {}
+
+
+def vision_schulbericht_multipage(pdf_path: str, ocr_text: str) -> dict:
+    return analyze_schulbericht_pdf(
+        pdf_path,
+        ocr_text,
+        pdf_to_b64=lambda p, pg: pdf_to_base64_image(p, page=pg),
+        vision_page=vision_schulbericht_page,
+    )
+
+
 def vision_brillenpass_analyze(
     image_b64: Optional[str], ocr_text: str, parser_hint: dict | None = None,
 ) -> dict:
@@ -2384,7 +2436,7 @@ def build_llm_prompt(
 
     # Vision: nur die wichtigsten Felder kompakt
     vision_keys = ["absender", "empfaenger", "datum", "betrag", "kennzeichen",
-                   "dokumenttyp_visuell", "qr_einzahlungsschein", "sprache"]
+                   "dokumenttyp_visuell", "qr_einzahlungsschein", "sprache", "besonderheiten"]
     vision_kompakt = {k: vision_meta.get(k) for k in vision_keys
                       if vision_meta.get(k) and str(vision_meta.get(k)).lower()
                       not in ("null", "none", "")}
@@ -3835,6 +3887,11 @@ def main():
         image_b64 = pdf_to_base64_image(pdf_path)
     log.info("Schritt 2: Vision-LLM (%s)", MODEL_VISION)
     vision_meta = _disambiguate_vision_money_fields(vision_analyze(image_b64, ocr_text))
+    if pdf_path and looks_like_schulbericht(vision_meta, ocr_text):
+        log.info("Schulbericht erkannt — mehrseitige Vision startet")
+        sb_data = vision_schulbericht_multipage(pdf_path, ocr_text)
+        if sb_data:
+            vision_meta = {**vision_meta, **schulbericht_to_vision_meta(sb_data)}
     log.info("Vision: %s", json.dumps(vision_meta, ensure_ascii=False))
     write_audit_entry(document_id, "vision", vision_meta)
 
