@@ -21,6 +21,10 @@ venv/
 *.log
 logs/
 
+# HTR-Testausgaben (können personenbezogene Transkripte enthalten)
+htr-*.json
+/tmp/htr-*.json
+
 # Lokale Bedienungsanleitung (Word, haushaltsintern)
 docs/Bedienungsanleitung_paper_manager.*
 scripts/generate_bedienungsanleitung.ps1

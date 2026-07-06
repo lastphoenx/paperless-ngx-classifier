@@ -5,11 +5,8 @@ CLI: Handschrift / Schulbericht — Vision-LLM (qwen2.5vl) testen und tunen.
 Nur Kommandozeile — kein UI. Vergleicht Prompt-Varianten mit detaillierten Logs.
 
 CT121 Beispiele (liest /opt/paperless-scripts/.env und /opt/paperless/.env):
-  /opt/paperless-scripts/venv/bin/python3 /opt/paperless-scripts/test_handwriting_vision.py \\
-    --doc-id 3577 --mode all -v -o /tmp/htr-3577.json
-
   /opt/paperless-scripts/venv/bin/python3 test_handwriting_vision.py \\
-    /pfad/zum/scan.pdf --mode schulbericht --page 1 --num-predict 1024
+    --doc-id <PAPERLESS_DOC_ID> --mode pipeline -v -o /tmp/htr-test.json
 
 Modi:
   pipeline       — HTR aller Seiten → Text-Extract (empfohlen, wie post_consume v12.65)
@@ -55,6 +52,7 @@ from schulbericht_vision import (  # noqa: E402
     merge_htr_transcribe_pages,
     merge_schulbericht_pages,
     normalize_extracted_schulbericht,
+    parse_htr_response,
     pdf_page_count,
     schulbericht_to_vision_meta,
 )
@@ -385,8 +383,8 @@ def build_transcribe_prompt(ocr_text: str, page: int = 1, page_total: int = 1) -
     return build_htr_transcribe_prompt(page, page_total)
 
 
-def merge_transcribe_pages(pages: list[dict]) -> dict:
-    merged = merge_htr_transcribe_pages(pages)
+def merge_transcribe_pages(pages: list[dict], pages_total: int | None = None) -> dict:
+    merged = merge_htr_transcribe_pages(pages, pages_total=pages_total)
     merged["htr_confidence"] = estimate_htr_confidence(merged)
     return merged
 
@@ -495,9 +493,14 @@ def run_mode(
         raw, stats = ollama_vision_chat(
             image_b64, user_prompt, system, model, num_predict, temperature,
         )
-        parsed = extract_json_from_response(raw)
-        if parsed is None and raw.strip():
-            parsed = {"_parse_failed": True, "_raw_preview": raw[:500]}
+        if mode in ("transcribe", "pipeline"):
+            parsed = parse_htr_response(raw)
+            if not parsed and raw.strip():
+                parsed = {"_parse_failed": True, "_raw_preview": raw[:500]}
+        else:
+            parsed = extract_json_from_response(raw)
+            if parsed is None and raw.strip():
+                parsed = {"_parse_failed": True, "_raw_preview": raw[:500]}
     except Exception as e:
         error = str(e)
         log.exception("Modus %s Seite %d fehlgeschlagen", mode, page)
@@ -709,9 +712,15 @@ def main() -> int:
                     page_parsed.append(res.parsed)
 
             if eff == "pipeline" and page_parsed:
-                htr = merge_transcribe_pages(page_parsed)
+                htr = merge_transcribe_pages(page_parsed, pages_total=pdf_total)
                 log.info("─" * 72)
-                log.info("HTR MERGED (%d Seiten, confidence=%.2f):", len(page_parsed), htr.get("htr_confidence", 0))
+                log.info(
+                    "HTR MERGED (%d/%d Seiten ok, %d salvaged, confidence=%.2f):",
+                    htr.get("pages_ok", 0),
+                    htr.get("pages_total", pdf_total),
+                    htr.get("pages_salvaged", 0),
+                    htr.get("htr_confidence", 0),
+                )
                 log.info("%s", json.dumps(htr, ensure_ascii=False, indent=2)[:3000])
                 transcript = htr.get("volltext") or ""
                 npred = args.num_predict or DEFAULT_NUM_PREDICT["extract"]
@@ -740,9 +749,14 @@ def main() -> int:
                     "vision_meta": vision,
                 })
             elif eff == "transcribe" and page_parsed:
-                merged = merge_transcribe_pages(page_parsed)
+                merged = merge_transcribe_pages(page_parsed, pages_total=pdf_total)
                 log.info("─" * 72)
-                log.info("HTR MERGED (%d Seiten, confidence=%.2f):", len(page_parsed), merged.get("htr_confidence", 0))
+                log.info(
+                    "HTR MERGED (%d/%d Seiten ok, confidence=%.2f):",
+                    merged.get("pages_ok", 0),
+                    merged.get("pages_total", pdf_total),
+                    merged.get("htr_confidence", 0),
+                )
                 log.info("%s", json.dumps(merged, ensure_ascii=False, indent=2))
                 all_results.append({"mode": "transcribe_merged", "parsed": merged})
 

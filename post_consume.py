@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.65"  # 12.65: Schulbericht zweistufig HTR → Text-Extract
+POST_CONSUME_VERSION = "12.66"  # 12.66: HTR-Prompt ohne unsichere_woerter, salvage + Confidence
 import re
 import sys
 import json
@@ -78,6 +78,7 @@ from schulbericht_vision import (
     build_htr_transcribe_prompt,
     build_extract_from_transcript_prompt,
     build_schulbericht_vision_prompt,
+    parse_htr_response,
     looks_like_schulbericht,
     schulbericht_to_vision_meta,
 )
@@ -1944,8 +1945,7 @@ def vision_htr_page(image_b64: str, page: int, page_total: int) -> dict:
             timeout=VISION_TIMEOUT,
         )
         raw = resp.get("message", {}).get("content", "")
-        data = extract_json_from_response(raw)
-        return data if isinstance(data, dict) else {}
+        return parse_htr_response(raw)
     except Exception as e:
         log.warning("Schulbericht-HTR Seite %d/%d fehlgeschlagen: %s", page, page_total, e)
         return {}

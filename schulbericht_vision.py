@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 from typing import Callable, Optional
 
@@ -12,7 +13,7 @@ log = logging.getLogger(__name__)
 SCHULBERICHT_NUM_PREDICT = int(
     os.environ.get("SCHULBERICHT_VISION_NUM_PREDICT", "800")
 )
-HTR_NUM_PREDICT = int(os.environ.get("SCHULBERICHT_HTR_NUM_PREDICT", "2048"))
+HTR_NUM_PREDICT = int(os.environ.get("SCHULBERICHT_HTR_NUM_PREDICT", "1200"))
 SCHULBERICHT_DPI = int(os.environ.get("SCHULBERICHT_DPI", "220"))
 
 SCHULBERICHT_VISION_SYSTEM = (
@@ -107,16 +108,16 @@ def build_htr_transcribe_prompt(page: int = 1, page_total: int = 1) -> str:
         "- Erfinde keine fehlenden Wörter.\n"
         "- Fasse nichts zusammen.\n"
         "- Normalisiere keine Rechtschreibung.\n"
-        "- Wenn ein Wort unsicher ist, markiere es mit [?].\n"
+        "- Wenn ein Wort unsicher ist, markiere es mit [?] direkt im Wort.\n"
         "- Wenn ein Wort nicht lesbar ist, schreibe [unleserlich].\n"
-        "- Trenne gedruckten Text und handschriftlichen Text, wenn erkennbar.\n\n"
-        "Antworte exakt als JSON:\n"
+        "- Trenne gedruckten Text und handschriftlichen Text.\n"
+        "- KEINE separate Wortliste — Unsicherheit nur als [?] im Fliesstext.\n\n"
+        "Antworte exakt als JSON (kompakt, keine langen Listen am Ende):\n"
         "{\n"
         f'  "seite": {page},\n'
         '  "gedruckt": ["..."],\n'
-        '  "handschrift_zeilen": ["...", "..."],\n'
-        '  "unsichere_woerter": ["..."],\n'
-        '  "unleserliche_stellen": 0,\n'
+        '  "handschrift_zeilen": ["eine Zeile pro Array-Eintrag"],\n'
+        '  "unsicherheit": "kurzer Hinweis oder null",\n'
         '  "qualitaet": "gut|mittel|schlecht"\n'
         "}\n"
     )
@@ -126,6 +127,7 @@ def build_extract_from_transcript_prompt(transcript: str) -> str:
     return (
         "Extrahiere aus dieser zeilengetreuen Transkription eines Schulberichts "
         "die folgenden Felder. Nutze nur den gegebenen Text. Erfinde nichts.\n"
+        "Korrigiere KEINE Tippfehler aus der Transkription — zitiere wörtlich.\n"
         "Wenn ein Feld im Text nicht vorkommt: null.\n\n"
         "Antworte als JSON:\n"
         "{\n"
@@ -161,39 +163,138 @@ def looks_like_schulbericht(vision_meta: dict | None, ocr_text: str = "") -> boo
     return False
 
 
-def merge_htr_transcribe_pages(pages: list[dict]) -> dict:
+def _find_json_object(text: str) -> str:
+    depth = 0
+    start: Optional[int] = None
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                return text[start : i + 1]
+    if start is not None:
+        return text[start:]
+    return ""
+
+
+def _parse_json_loose(raw: str) -> dict | None:
+    raw = raw.strip()
+    for candidate in (raw,):
+        try:
+            val = json.loads(candidate)
+            return val if isinstance(val, dict) else None
+        except json.JSONDecodeError:
+            pass
+    brace = _find_json_object(raw)
+    if brace:
+        try:
+            val = json.loads(brace)
+            return val if isinstance(val, dict) else None
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _extract_string_array(raw: str, key: str) -> list[str]:
+    m = re.search(rf'"{key}"\s*:\s*\[(.*)', raw, re.DOTALL)
+    if not m:
+        return []
+    chunk = m.group(1)
+    return [s for s in re.findall(r'"((?:[^"\\]|\\.)*)"', chunk) if s.strip()]
+
+
+def salvage_htr_json(raw: str) -> dict | None:
+    """Abgeschnittenes HTR-JSON retten (Token-Limit / unsichere_woerter-Endlosliste)."""
+    if not raw.strip():
+        return None
+    gedruckt = _extract_string_array(raw, "gedruckt")
+    lines = _extract_string_array(raw, "handschrift_zeilen")
+    if not gedruckt and not lines:
+        return None
+    seite_m = re.search(r'"seite"\s*:\s*(\d+)', raw)
+    qual_m = re.search(r'"qualitaet"\s*:\s*"([^"]+)"', raw)
+    return {
+        "seite": int(seite_m.group(1)) if seite_m else None,
+        "gedruckt": gedruckt,
+        "handschrift_zeilen": lines,
+        "qualitaet": qual_m.group(1) if qual_m else "mittel",
+        "_salvaged": True,
+    }
+
+
+def normalize_htr_page(data: dict | None) -> dict:
+    """Legacy-Felder bereinigen, leere unsichere_woerter ignorieren."""
+    if not data:
+        return {}
+    out = dict(data)
+    legacy = out.pop("unsichere_woerter", None)
+    if isinstance(legacy, list):
+        cleaned = []
+        for x in legacy:
+            s = str(x).strip()
+            if s and s not in cleaned:
+                cleaned.append(s)
+        if cleaned and _nullish(out.get("unsicherheit")):
+            out["unsicherheit"] = ", ".join(cleaned[:8])
+    return out
+
+
+def parse_htr_response(raw: str) -> dict:
+    """Vollständiges oder abgeschnittenes HTR-JSON parsen."""
+    data = _parse_json_loose(raw)
+    if isinstance(data, dict) and (data.get("handschrift_zeilen") or data.get("gedruckt")):
+        return normalize_htr_page(data)
+    salvaged = salvage_htr_json(raw)
+    return normalize_htr_page(salvaged) if salvaged else {}
+
+
+def merge_htr_transcribe_pages(
+    pages: list[dict],
+    *,
+    pages_total: int | None = None,
+) -> dict:
     """Nur Zeilen mergen — keine Feld-Fusion aus Einzelseiten."""
     if not pages:
         return {}
     printed: list[str] = []
     lines: list[str] = []
-    uncertain: list[str] = []
-    unles = 0
+    notes: list[str] = []
+    salvaged = 0
     for p in pages:
+        p = normalize_htr_page(p)
+        if p.get("_salvaged"):
+            salvaged += 1
         for item in p.get("gedruckt") or []:
             if item and str(item).strip():
                 printed.append(str(item).strip())
         for item in p.get("handschrift_zeilen") or []:
             if item and str(item).strip():
                 lines.append(str(item).strip())
-        uncertain.extend(p.get("unsichere_woerter") or [])
-        unles += int(p.get("unleserliche_stellen") or 0)
-        if not lines and p.get("volltext"):
-            lines.extend(str(p["volltext"]).splitlines())
+        u = p.get("unsicherheit")
+        if u and not _nullish(u):
+            notes.append(str(u).strip())
     volltext = "\n".join([*printed, *lines])
+    total = pages_total if pages_total is not None else len(pages)
+    ok = len(pages)
     return {
         "gedruckt": printed,
         "handschrift_zeilen": lines,
-        "unsichere_woerter": uncertain,
-        "unleserliche_stellen": unles,
+        "unsicherheit": "; ".join(notes) if notes else None,
         "volltext": volltext,
-        "seiten_anzahl": len(pages),
+        "seiten_anzahl": ok,
+        "pages_ok": ok,
+        "pages_total": total,
+        "pages_failed": max(0, total - ok),
+        "pages_salvaged": salvaged,
         "qualitaet": pages[-1].get("qualitaet") if pages else "schlecht",
     }
 
 
 def estimate_htr_confidence(htr: dict) -> float:
-    """Eigene Confidence — nicht die (zu optimistische) Modell-Angabe."""
+    """Eigene Confidence — Seiten-Ausfälle und [?] einbeziehen."""
     lines = htr.get("handschrift_zeilen") or []
     text = htr.get("volltext") or "\n".join(lines)
     if not text.strip():
@@ -201,13 +302,21 @@ def estimate_htr_confidence(htr: dict) -> float:
     tokens = text.split()
     if not tokens:
         return 0.0
+
+    pages_total = int(htr.get("pages_total") or htr.get("seiten_anzahl") or 1)
+    pages_ok = int(htr.get("pages_ok") or htr.get("seiten_anzahl") or 0)
+    penalty = 0.0
+    if pages_total > pages_ok:
+        penalty += (pages_total - pages_ok) / pages_total * 0.45
+    penalty += int(htr.get("pages_salvaged") or 0) * 0.06
+
     markers = text.count("[?]") + text.count("[unleserlich]")
-    unles = int(htr.get("unleserliche_stellen") or 0)
-    penalty = min(0.65, (markers + unles) / max(1, len(tokens)) * 4)
-    base = {"gut": 0.75, "mittel": 0.55, "schlecht": 0.35}.get(
-        str(htr.get("qualitaet") or "mittel").lower(), 0.5,
+    penalty += min(0.35, markers / max(1, len(tokens)) * 3)
+
+    base = {"gut": 0.58, "mittel": 0.48, "schlecht": 0.32}.get(
+        str(htr.get("qualitaet") or "mittel").lower(), 0.42,
     )
-    return round(max(0.05, base - penalty), 2)
+    return round(max(0.05, min(0.85, base - penalty)), 2)
 
 
 def normalize_extracted_schulbericht(
@@ -373,7 +482,8 @@ def analyze_schulbericht_two_stage(
         pdf_to_b64=pdf_to_b64,
         page_analyze=htr_page,
     )
-    htr = merge_htr_transcribe_pages(pages)
+    total = pdf_page_count(pdf_path)
+    htr = merge_htr_transcribe_pages(pages, pages_total=total)
     transcript = (htr.get("volltext") or "").strip()
     if not transcript:
         log.warning("Schulbericht-HTR: leere Transkription")
