@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.66"  # 12.66: HTR-Prompt ohne unsichere_woerter, salvage + Confidence
+POST_CONSUME_VERSION = "12.67"  # 12.67: HTR-Profil-Routing (default/schulbericht) per Dokumenttyp
 import re
 import sys
 import json
@@ -65,6 +65,11 @@ from document_date import (
     birth_dates_from_family,
     extract_document_issue_date,
     validate_issue_date,
+)
+from handwriting_vision import (
+    HtrPipelineDeps,
+    resolve_htr_profile,
+    run_htr_pipeline,
 )
 from schulbericht_vision import (
     EXTRACT_SYSTEM,
@@ -3970,11 +3975,21 @@ def main():
         image_b64 = pdf_to_base64_image(pdf_path)
     log.info("Schritt 2: Vision-LLM (%s)", MODEL_VISION)
     vision_meta = _disambiguate_vision_money_fields(vision_analyze(image_b64, ocr_text))
-    if pdf_path and looks_like_schulbericht(vision_meta, ocr_text):
-        log.info("Schulbericht erkannt — Pipeline HTR → Extract (%d dpi)", SCHULBERICHT_DPI)
-        sb_data = vision_schulbericht_pipeline(pdf_path)
-        if sb_data:
-            vision_meta = {**vision_meta, **schulbericht_to_vision_meta(sb_data)}
+    htr_profile = resolve_htr_profile(vision_meta, ocr_text)
+    if pdf_path and htr_profile:
+        log.info(
+            "Handschrift erkannt — HTR-Profil '%s' (%d dpi)",
+            htr_profile, SCHULBERICHT_DPI,
+        )
+        htr_deps = HtrPipelineDeps(
+            pdf_to_b64=_schulbericht_pdf_to_b64,
+            htr_page=vision_htr_page,
+            schulbericht_page_e2e=vision_schulbericht_page,
+            extract_schulbericht=extract_schulbericht_from_transcript,
+        )
+        htr_meta = run_htr_pipeline(htr_profile, pdf_path, ocr_text, htr_deps)
+        if htr_meta:
+            vision_meta = {**vision_meta, **htr_meta}
     log.info("Vision: %s", json.dumps(vision_meta, ensure_ascii=False))
     write_audit_entry(document_id, "vision", vision_meta)
 
