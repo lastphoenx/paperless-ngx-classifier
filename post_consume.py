@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.62"  # 12.62: Fahrzeug default_tag aus family.json (kein Hardcoding)
+POST_CONSUME_VERSION = "12.63"  # 12.63: sanitize_decision None-sicher bei korrespondent/titel
 import re
 import sys
 import json
@@ -2709,9 +2709,10 @@ def sanitize_decision(decision: dict, manifest: list[dict], similar_entries: lis
     if dt_final:
         _load_ausschluss_map()
         # Kontext aus decision (kein ocr/vision hier) — nutze verfügbare Felder
-        _pseudo_ocr  = decision.get("korrespondent", "") + " " + decision.get("titel", "")
-        _pseudo_vision = {"absender": decision.get("korrespondent", ""),
-                          "dokumenttyp_visuell": decision.get("dokumenttyp_semantisch", "")}
+        _pseudo_ocr  = " ".join(filter(None, [str(decision.get("korrespondent") or ""),
+                                              str(decision.get("titel") or "")]))
+        _pseudo_vision = {"absender": str(decision.get("korrespondent") or ""),
+                          "dokumenttyp_visuell": str(decision.get("dokumenttyp_semantisch") or "")}
         if _doctype_is_excluded(dt_final, _pseudo_ocr, _pseudo_vision):
             violations.append(f"Dokumenttyp '{dt_final}' durch Ausschluss-Keyword verworfen")
             log.warning("Sanitize: Dokumenttyp '%s' via Ausschluss-Check entfernt", dt_final)

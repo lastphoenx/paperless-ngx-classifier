@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pre-Consume Skript für Paperless-NGX
-# VERSION: 1.5 — Tagged PDF: --skip-text / --force-ocr Fallback, Exit 2 nicht fatal
+# VERSION: 1.6 — OCR-Tmp in /tmp (nicht consume/) — verhindert Doppel-Tasks
 # Schritt 1: PDF-Qualität via ocrmypdf verbessern
 # Schritt 2: Swiss QR Bill Daten extrahieren (Sidecar JSON)
 # Läuft auf CT 121
@@ -73,7 +73,8 @@ if [ -f "$qr_meta" ]; then
 fi
 
 # ── Schritt 1: OCR-Optimierung via ocrmypdf ───────────────────────────────────
-tmp_file="${file%.pdf}_ocr_tmp.pdf"
+# Tmp ausserhalb consume/: *_ocr_tmp.pdf im Watch-Ordner löst Doppel-Tasks aus
+tmp_file="$(mktemp /tmp/paperless-pre-ocr-XXXXXX.pdf)"
 cleanup() {
     if [ -f "$tmp_file" ]; then
         rm -f "$tmp_file"
