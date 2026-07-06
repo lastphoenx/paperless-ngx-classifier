@@ -62,7 +62,9 @@ for f in "${FILES[@]}"; do
   dest_name="$(basename "$f")"
   [[ -f "$src" ]] || { echo "FEHLER: $src fehlt" >&2; exit 1; }
   cp -v "$src" "$TARGET/$dest_name"
-  [[ "$dest_name" == *.sh ]] && chmod +x "$TARGET/$dest_name"
+  if [[ "$dest_name" == *.sh || "$dest_name" == legacy_qr_split_test.py ]]; then
+    chmod +x "$TARGET/$dest_name"
+  fi
 done
 
 if [[ "$RESTART" -eq 1 ]] && systemctl is-active --quiet correspondent-manager 2>/dev/null; then
