@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.53"  # 2.53: Brillenpass Korrespondent-Dropdown + Giulia-Patch
-UI_VERSION = "2.95"
+UI_VERSION = "2.96"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -3769,10 +3769,10 @@ def api_manifest_create_ordner(body: dict = Body(...)):
     pfad = (body.get("pfad") or "").strip()
     if not pfad:
         raise HTTPException(400, "pfad fehlt")
-    # Format-Validierung: nur Buchstaben, Zahlen, /, Umlaute, Leerzeichen, -
+    # Format-Validierung: Buchstaben, Zahlen, /, Umlaute, Leerzeichen, -, _
     import re as _re
-    if not _re.match(r'^[A-Za-zÄÖÜäöüß0-9/\s\-]+$', pfad):
-        raise HTTPException(400, "Ungültiges Pfad-Format. Erlaubt: Buchstaben, Zahlen, /, - (z.B. Person/Kategorie)")
+    if not _re.match(r'^[A-Za-zÄÖÜäöüß0-9/\s\-_]+$', pfad):
+        raise HTTPException(400, "Ungültiges Pfad-Format. Erlaubt: Buchstaben, Zahlen, /, -, _ (z.B. Person/Kategorie)")
     if pfad.startswith("/") or pfad.endswith("/") or "//" in pfad:
         raise HTTPException(400, "Pfad darf nicht mit / beginnen/enden oder // enthalten")
 
