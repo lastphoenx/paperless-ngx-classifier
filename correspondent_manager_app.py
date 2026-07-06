@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.55"  # 2.55: Fahrzeug-Tag-Dropdown, UI-Kontrast, Synonym-Warnung
-UI_VERSION = "3.00"
+UI_VERSION = "3.01"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -4093,7 +4093,7 @@ def _load_ui_html() -> str:
     return _UI_FALLBACK
 
 
-_UI_HTML = _load_ui_html()
+_UI_HTML = _load_ui_html()  # Fallback; Live-Route lädt Datei bei jedem Request
 
 
 @app.get("/api/proxy/document/{doc_id}/preview/")
@@ -4153,5 +4153,5 @@ def proxy_document_thumb(doc_id: int):
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """HTML UI aus Speicher — kein Thread-Pool, sofortige Antwort auch während Vision."""
-    return HTMLResponse(content=_UI_HTML)
+    """HTML UI — bei jedem Request frisch von Disk (Deploy ohne Service-Restart sichtbar)."""
+    return HTMLResponse(content=_load_ui_html())
