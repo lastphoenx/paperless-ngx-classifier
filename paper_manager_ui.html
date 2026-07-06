@@ -914,7 +914,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.05';
+const UI_VERSION = '3.06';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2808,7 +2808,6 @@ const CUSTOM_FIELD_OPTIONS = [
   {id: 14, name: "Verarbeitung",     type: "select"},
   {id: 15, name: "Person",           type: "select"},
   {id: 17, name: "Steuerjahr",       type: "integer"},
-  {id: 18, name: "Ausgestellt",      type: "date"},
 ];
 
 function renderFeldprofilEdit(feldprofil, dtId) {
@@ -2932,22 +2931,7 @@ function readDateInputCh(el) {
   return datumChToIso(raw) || raw;
 }
 
-function _cfIdByName(name) {
-  const n = (name || '').toLowerCase();
-  const def = (window._cfDefs || []).find(c => (c.name || '').toLowerCase() === n);
-  if (def) return def.id;
-  const fb = CUSTOM_FIELD_OPTIONS.find(c => (c.name || '').toLowerCase() === n);
-  return fb?.id ?? null;
-}
-
-function _isBelegdatumCf(meta) {
-  const n = (meta?.name || '').toLowerCase();
-  return n === 'ausgestellt' || n === 'belegdatum';
-}
-
-function _belegdatumFromDoc(doc, cfMapRaw) {
-  const cfId = _cfIdByName('Ausgestellt');
-  if (cfId && cfMapRaw[cfId]) return cfMapRaw[cfId];
+function _belegdatumFromDoc(doc) {
   return doc?.created || '';
 }
 
@@ -2959,7 +2943,6 @@ function renderDocReviewCfInputs(cfMapRaw) {
 
   const inputs = defs.map(meta => {
     const id = meta.id;
-    if (_isBelegdatumCf(meta)) return '';
     const label = meta.name || ('CF' + id);
     const rawVal = cfMapRaw[id] ?? '';
     const ftype = _cfFieldType(id);
@@ -4017,7 +4000,7 @@ async function selectDocReview(i) {
 
   // Kundenfelder — immer alle Felder aus Paperless, unabhängig von KI/Feldprofil
   const cfFormHtml = renderDocReviewCfInputs(cfMapRaw);
-  const belegdatumIso = _belegdatumFromDoc(doc, cfMapRaw);
+  const belegdatumIso = _belegdatumFromDoc(doc);
   const drTitleRaw = (doc?.title || entry.title || '').trim();
   const drTitleEsc = drTitleRaw
     .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
