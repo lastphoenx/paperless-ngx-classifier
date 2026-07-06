@@ -890,7 +890,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.88';
+const UI_VERSION = '2.89';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5513,6 +5513,54 @@ function _lsplitSetBusy(busy) {
   });
 }
 
+function _lsplitApplyResult(d, dryRun, status) {
+  const meta = d.scan_meta || {};
+  const renderHint = meta.backend ? ` · ${meta.backend}@${meta.dpi || '?'}dpi` : '';
+  const timeHint = d.scan_seconds != null ? ` · ${d.scan_seconds}s` : '';
+  if (dryRun) {
+    if (!d.ok || !(d.splits || []).filter(s => !s.is_prefix).length) {
+      let msg = d.message || d.error || 'Kein passender Metadaten-QR gefunden';
+      const other = (d.qr_debug || []).filter(x => !x.matched).slice(0, 4);
+      if (other.length) {
+        msg += '\nAndere QR: ' + other.map(x =>
+          `S.${x.page} «${String(x.raw).slice(0, 48)}»`).join('; ');
+      } else if (d.qr_seen === 0) {
+        msg += '\nAuf keiner Seite ein QR erkannt — gs installiert?';
+      }
+      if (status) status.textContent = `${d.pages || '?'} Seiten (${d.source || '?'})${timeHint}: ${msg}`;
+      _lsplitRenderPlan([], 0);
+      showToast('Kein Split möglich', 'error');
+      return;
+    }
+    _lsplitRenderPlan(d.splits, d.pages);
+    if (status) status.textContent = (d.message || 'OK') + renderHint + timeHint;
+    showToast(`${(d.splits||[]).filter(s => !s.is_prefix).length} Teile — Vorschau OK`, 'success');
+    return;
+  }
+  _lsplitRenderPlan([], 0);
+  const lines = (d.parts || []).map(p =>
+    `• ${p.barcode}: S.${p.from_page}–${p.to_page} → ${p.filename}`).join('\n');
+  if (status) status.textContent = (d.message || 'OK') + (lines ? `\n${lines}` : '');
+  showToast(d.message || 'Split eingereiht', 'success');
+}
+
+async function _pollLegacySplit(docId, dryRun, statusEl) {
+  for (let n = 0; n < 90; n++) {
+    await new Promise(r => setTimeout(r, 1500));
+    const j = await _fetchJson(
+      `${API_BASE}/legacy-split/trigger-status/${docId}?dry_run=${dryRun ? 'true' : 'false'}`,
+    );
+    if (j.status === 'running') {
+      if (statusEl) statusEl.textContent = j.message || `QR-Scan… (${Math.round(n * 1.5)}s)`;
+      continue;
+    }
+    if (j.status === 'done') return j;
+    if (j.status === 'error') throw new Error(j.error || j.message || 'Fehler');
+    if (j.status === 'unknown' && n > 2) throw new Error(j.message || 'Job verloren');
+  }
+  throw new Error('Timeout nach 2 Min — journalctl -u correspondent-manager');
+}
+
 async function triggerLegacySplit(dryRun) {
   const id = parseInt(document.getElementById('lsplit-id')?.value || '', 10);
   const status = document.getElementById('lsplit-status');
@@ -5528,47 +5576,24 @@ async function triggerLegacySplit(dryRun) {
   }
   _lsplitSetBusy(true);
   if (status) status.textContent = dryRun
-    ? `Analysiere Dok #${id} (Original+Archiv, Ghostscript ~10–20s)…`
-    : `Schreibe Teile nach consume/…`;
+    ? `Starte Vorschau Dok #${id}…`
+    : `Starte Split Dok #${id}…`;
   if (!dryRun) {
     const plan = document.getElementById('lsplit-plan');
     if (plan) { plan.style.display = 'none'; plan.innerHTML = ''; }
   }
   try {
-    const d = await _fetchJson(`${API_BASE}/legacy-split/trigger/${id}`, {
+    const start = await _fetchJson(`${API_BASE}/legacy-split/trigger/${id}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       credentials: 'same-origin',
       body: JSON.stringify({dry_run: dryRun}),
     });
-    const meta = d.scan_meta || {};
-    const renderHint = meta.backend ? ` · ${meta.backend}@${meta.dpi || '?'}dpi` : '';
-    const timeHint = d.scan_seconds != null ? ` · ${d.scan_seconds}s` : '';
-    if (dryRun) {
-      if (!d.ok || !(d.splits || []).filter(s => !s.is_prefix).length) {
-        let msg = d.message || 'Kein passender Metadaten-QR gefunden';
-        const other = (d.qr_debug || []).filter(x => !x.matched).slice(0, 4);
-        if (other.length) {
-          msg += '\nAndere QR: ' + other.map(x =>
-            `S.${x.page} «${String(x.raw).slice(0, 48)}»`).join('; ');
-        } else if (d.qr_seen === 0) {
-          msg += '\nAuf keiner Seite ein QR erkannt — gs installiert? (ensure-legacy-qr-deps.sh)';
-        }
-        if (status) status.textContent = `${d.pages} Seiten (${d.source || '?'})${timeHint}: ${msg}`;
-        _lsplitRenderPlan([], 0);
-        showToast('Kein Split möglich', 'error');
-        return;
-      }
-      _lsplitRenderPlan(d.splits, d.pages);
-      if (status) status.textContent = (d.message || 'OK') + renderHint + timeHint;
-      showToast(`${(d.splits||[]).filter(s => !s.is_prefix).length} Teile — Vorschau OK`, 'success');
-    } else {
-      _lsplitRenderPlan([], 0);
-      const lines = (d.parts || []).map(p =>
-        `• ${p.barcode}: S.${p.from_page}–${p.to_page} → ${p.filename}`).join('\n');
-      if (status) status.textContent = (d.message || 'OK') + (lines ? `\n${lines}` : '');
-      showToast(d.message || 'Split eingereiht', 'success');
+    let d = start;
+    if (start.async) {
+      d = await _pollLegacySplit(id, dryRun, status);
     }
+    _lsplitApplyResult(d, dryRun, status);
   } catch (e) {
     if (status) status.textContent = String(e.message || e);
     showToast('QR-Split: ' + (e.message || e), 'error');
