@@ -179,6 +179,8 @@ def split_pdf_by_qr(
             writer.add_page(reader.pages[p])
         with open(out_path, "wb") as f:
             writer.write(f)
+            f.flush()
+            os.fsync(f.fileno())
 
         results.append({
             "barcode": barcode,
