@@ -313,6 +313,21 @@ def test_merge_brillenpass_version_collects_document_ids():
     assert m["extraktion"]["dedup_merged"] is True
 
 
+def test_apply_brillenpass_doc_patch_3568_korrespondent():
+    from brillenpass_parser import apply_brillenpass_doc_patches
+
+    version = {
+        "id": "bp-2025-03-27-optik-meyer-m-hlin",
+        "gueltig_ab": "2025-03-27",
+        "korrespondent": "Dr. med. Christian Mauch",
+        "document_id": 3568,
+        "document_ids": [3568],
+        "messung": {"rechts": None, "links": None},
+    }
+    assert apply_brillenpass_doc_patches(version) is True
+    assert version["korrespondent"] == "Optik Meyer Möhlin GmbH"
+
+
 def test_dedupe_brillenpass_versions_by_document():
     from brillenpass_parser import dedupe_brillenpass_versions_by_document
 

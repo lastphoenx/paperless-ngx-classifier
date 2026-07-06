@@ -771,7 +771,12 @@
         </div>
         <div class="field-group">
           <label>Korrespondent</label>
-          <input id="bp-man-korr" placeholder="z. B. McOptic" style="font-size:13px">
+          <select id="bp-man-korr" style="font-size:13px">
+            <option value="">— Optiker wählen —</option>
+          </select>
+          <p style="color:var(--muted);font-size:11px;margin:4px 0 0;line-height:1.4">
+            Nur Korrespondenten mit <code>brillenpass.aktiv</code> (Tab Korrespondenten → Edit).
+          </p>
         </div>
         <div class="field-group">
           <label>Gültig ab</label>
@@ -893,7 +898,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.93';
+const UI_VERSION = '2.94';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -4938,12 +4943,12 @@ async function parseBrillenpassManual() {
 async function submitBrillenpassManual() {
   const status = document.getElementById('bp-man-status');
   const person_id = document.getElementById('bp-man-person')?.value || '';
-  const korrespondent = (document.getElementById('bp-man-korr')?.value || '').trim();
+  const korrespondent = document.getElementById('bp-man-korr')?.value || '';
   const gueltig_ab = document.getElementById('bp-man-datum')?.value || '';
   const docRaw = document.getElementById('bp-man-dokid')?.value;
   const parser = document.getElementById('bp-man-parser')?.value || '';
   if (!person_id || !korrespondent) {
-    showToast('Person und Korrespondent erforderlich', 'error');
+    showToast('Person und Korrespondent wählen', 'error');
     return;
   }
   const vorschlag = {
@@ -5446,9 +5451,25 @@ async function rejectBrillenpassReview(index) {
   }
 }
 
+async function _loadBpBrillenpassCorrespondents() {
+  const sel = document.getElementById('bp-man-korr');
+  if (!sel) return;
+  const prev = sel.value;
+  try {
+    const d = await _fetchJson(`${API_BASE}/brillenpass/correspondents`);
+    const list = d.eintraege || [];
+    sel.innerHTML = '<option value="">— Optiker wählen —</option>'
+      + list.map(e => `<option value="${_escAttr(e.name)}">${_escAttr(e.name)}</option>`).join('');
+    if (prev && list.some(e => e.name === prev)) sel.value = prev;
+  } catch (e) {
+    sel.innerHTML = '<option value="">— laden fehlgeschlagen —</option>';
+  }
+}
+
 async function loadBrillenpassView() {
   try {
     await _loadBpParsers();
+    await _loadBpBrillenpassCorrespondents();
     _bpInitManualForm();
     const fam = await fetch(`${API_BASE}/family`).then(r => r.json()).catch(() => ({personen:[]}));
     const ps = document.getElementById('bp-man-person');
