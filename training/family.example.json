@@ -48,6 +48,7 @@
       "kennzeichen": "AG 999999",
       "person_id": "person1",
       "typ": "mofa",
+      "default_tag": "Mofa",
       "ordner": "",
       "routing_ordner": false,
       "beschreibung": "Gemeinsames Mofa-Kennzeichen — nur CF/Person, kein Ordner-Routing"

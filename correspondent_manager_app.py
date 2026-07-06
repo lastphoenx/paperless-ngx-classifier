@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.54"  # 2.54: Manifest-Pending-Badge, Storage-Path {{ }} Syntax
-UI_VERSION = "2.97"
+__version__ = "2.55"  # 2.55: Fahrzeug-Tag-Dropdown, UI-Kontrast, Synonym-Warnung
+UI_VERSION = "2.98"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -3958,6 +3958,7 @@ def api_patch_family(body: dict = Body(...)):
                 raise HTTPException(400, f"Ziel-Ordner fehlt bei Kennzeichen «{fz.get('kennzeichen', '?')}» (routing_ordner aktiv)")
             if not routing:
                 fz["ordner"] = ""
+            fz["default_tag"] = (fz.get("default_tag") or "").strip()
 
     # Validierung: Beziehungen
     if "beziehungen" in body:
