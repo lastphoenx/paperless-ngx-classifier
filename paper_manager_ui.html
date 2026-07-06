@@ -906,7 +906,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.99';
+const UI_VERSION = '3.00';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -3689,7 +3689,7 @@ async function saveMfEditCb(pfad, eid) {
   const max_tags    = parseInt(document.getElementById(`mfmax-${eid}`)?.value || '4');
   const abgrenzung  = document.getElementById(`mfabgr-${eid}`)?.value || '';
 
-  const body = { erlaubte_tags, erlaubte_dokumenttypen, max_tags, abgrenzung };
+  const body = { erlaubte_tags, erlaubte_dokumenttypen, max_tags, abgrenzung, pending: false };
   const r = await fetch(`${API_BASE}/manifest/ordner/${encodeURIComponent(pfad)}`,{
     method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   if (r.ok) {

@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.55"  # 2.55: Fahrzeug-Tag-Dropdown, UI-Kontrast, Synonym-Warnung
-UI_VERSION = "2.99"
+UI_VERSION = "3.00"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
