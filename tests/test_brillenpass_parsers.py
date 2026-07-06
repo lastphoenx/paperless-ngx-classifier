@@ -396,8 +396,8 @@ def test_mcoptic_card_doc3563_both_pd():
     assert r["fern"]["rechts"]["sph"] == "-2.75"
     assert r["fern"]["links"]["sph"] == "-1.00"
     assert r["fern"]["links"]["achse"] == "0"
-    assert r["pd"]["rechts"] == "+29.5"
-    assert r["pd"]["links"] == "+31.0"
+    assert r["pd"]["rechts"] == "29.5"
+    assert r["pd"]["links"] == "31.0"
     assert r["gueltig_ab"] == "2015-06-10"
 
 
