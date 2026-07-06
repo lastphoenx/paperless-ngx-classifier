@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.49"  # 2.49: Legacy-Split PDF nach /tmp, Scan lokal, dann consume
-UI_VERSION = "2.90"
+__version__ = "2.50"  # 2.50: Legacy-QR Scan im Subprocess (pyzbar-Deadlock im UI-Thread)
+UI_VERSION = "2.91"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -858,7 +858,9 @@ def _legacy_split_resolve_document(
     local_pdf, work_dir, source, orig_name = materialized
     _legacy_split_progress(job_key, f"Dok #{doc_id}: QR scannen (lokal, Ghostscript ~10s)…")
 
-    best = scan_pdf_file(str(local_pdf), source, regex=regex, dpi=DEFAULT_DPI)
+    best = scan_pdf_file(
+        str(local_pdf), source, regex=regex, dpi=DEFAULT_DPI, isolated=True,
+    )
     if _marker_score(best["markers"]) >= 1:
         log.info(
             "Legacy-Split #%s: %d Marker in %s",
@@ -872,7 +874,9 @@ def _legacy_split_resolve_document(
             arch_bytes, arch_name = pl_download_pdf(doc_id, original=False)
             arch_local = work_dir / "archiv.pdf"
             arch_local.write_bytes(arch_bytes)
-            cand = scan_pdf_file(str(arch_local), "archiv", regex=regex, dpi=DEFAULT_DPI, quick=True)
+            cand = scan_pdf_file(
+                str(arch_local), "archiv", regex=regex, dpi=DEFAULT_DPI, quick=True, isolated=True,
+            )
             if _marker_score(cand["markers"]) > _marker_score(best["markers"]):
                 return cand, arch_name, arch_local, work_dir
         except Exception as e:
