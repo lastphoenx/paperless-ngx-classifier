@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.55"  # 2.55: Fahrzeug-Tag-Dropdown, UI-Kontrast, Synonym-Warnung
-UI_VERSION = "3.02"
+UI_VERSION = "3.03"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -3405,6 +3405,12 @@ def api_document_review_action(index: int, body: dict = Body(...)):
             if "custom_fields" in body:
                 merged_cfs = _merge_custom_fields(doc_id, body.get("custom_fields") or [])
                 patch["custom_fields"] = merged_cfs
+
+            # Dokumenttitel (approve + reclassify)
+            if body.get("title") is not None:
+                new_title = str(body.get("title") or "").strip()
+                if new_title:
+                    patch["title"] = new_title[:128]
 
             # pending Tags entfernen (alle drei)
             try:
