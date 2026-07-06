@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.54"  # 12.54: TSV Best-of + strikte Dioptrien + Vision bei Lücken
+POST_CONSUME_VERSION = "12.55"  # 12.55: kein Dioptrie-Raten, Kreuz-Auge-Check, Vision bei Müll
 import re
 import sys
 import json
@@ -1913,16 +1913,27 @@ def _brillenpass_missing_fern_eye(data: dict | None) -> bool:
     return bool(r) != bool(l) or not (r and l)
 
 
+def _brillenpass_suspicious_primary(data: dict | None) -> bool:
+    if not data or not has_brillenpass_values(data):
+        return True
+    from brillenpass_parser import plausible_brillenpass_data, _cross_eye_suspicious  # noqa: WPS433
+    if not plausible_brillenpass_data(data):
+        return True
+    if _cross_eye_suspicious(data):
+        return True
+    return False
+
+
 def should_use_brillenpass_vision_fallback(
     header_anchors: int,
     primary_data: dict | None,
     *,
     has_image: bool,
 ) -> bool:
-    """Vision wenn Lücken (fehlendes Auge) oder klassischer Notnagel (Flag + wenig Anker)."""
+    """Vision bei Lücken, Müll-Werten oder widersprüchlichen Augen."""
     if not has_image:
         return False
-    if BRILLENPASS_VISION_ON_GAPS and _brillenpass_missing_fern_eye(primary_data):
+    if BRILLENPASS_VISION_ON_GAPS and _brillenpass_suspicious_primary(primary_data):
         return True
     if not BRILLENPASS_VISION_FALLBACK:
         return False
@@ -1943,6 +1954,9 @@ def _brillenpass_extraction_confidence(
     if vision_used:
         return "niedrig"
     if has_brillenpass_values(merged or {}):
+        tsv_conf = tsv_meta.get("confidence")
+        if tsv_conf:
+            return tsv_conf
         if tsv_meta.get("header_anchors", 0) >= BRILLENPASS_MIN_HEADER_ANCHORS:
             return "hoch"
         if regex_data and has_brillenpass_values(regex_data):
