@@ -898,7 +898,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.94';
+const UI_VERSION = '2.95';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -4208,6 +4208,22 @@ function fzSetRouting(i, on) {
   renderFamilyFahrzeuge(_familyData);
 }
 
+function fzOrdnerSelectOptions(current) {
+  const paths = (window.allStoragePaths || allStoragePaths || [])
+    .slice()
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'de'));
+  const cur = (current || '').trim();
+  let html = '<option value="">— Ordner wählen —</option>';
+  if (cur && !paths.some(p => p.name === cur)) {
+    html += `<option value="${_escAttr(cur)}" selected>${_escAttr(cur)} (nicht in Paperless)</option>`;
+  }
+  html += paths.map(p => {
+    const n = p.name || '';
+    return `<option value="${_escAttr(n)}" ${n === cur ? 'selected' : ''}>${_escAttr(n)}</option>`;
+  }).join('');
+  return html;
+}
+
 function renderFamilyFahrzeuge(d) {
   const fContainer = document.getElementById('family-fahrzeuge');
   if (!fContainer) return;
@@ -4253,10 +4269,12 @@ function renderFamilyFahrzeuge(d) {
         <input type="checkbox" ${fz.routing_ordner?'checked':''} onchange="fzSetRouting(${i}, this.checked)">
         Ordner autom.
       </label>
-      <input type="text" placeholder="Vorname/Auto" value="${fz.ordner||''}"
-        ${fz.routing_ordner?'':'disabled'}
-        style="${fz.routing_ordner?'':'opacity:0.45'}"
-        oninput="_familyData.fahrzeuge[${i}].ordner=this.value">
+      <select
+        ${fz.routing_ordner ? '' : 'disabled'}
+        style="font-size:12px;${fz.routing_ordner ? '' : 'opacity:0.45'}"
+        onchange="_familyData.fahrzeuge[${i}].ordner=this.value">
+        ${fzOrdnerSelectOptions(fz.ordner)}
+      </select>
       <button class="btn btn-ghost" style="padding:3px 8px;color:#f87171" onclick="removeFamilyFahrzeug(${i})">×</button>
     </div>`).join('');
 }
@@ -4405,6 +4423,14 @@ async function saveFamilyFahrzeuge() {
     }
     if (fz.routing_ordner && !fz.ordner.trim()) {
       _showFamilyError('family-fahrzeuge-error', `Ziel-Ordner fehlt bei «${fz.kennzeichen}» (Ordner automatisch aktiv).`); return;
+    }
+    if (fz.routing_ordner && fz.ordner.trim()) {
+      const known = new Set((window.allStoragePaths || allStoragePaths || []).map(p => p.name));
+      if (known.size && !known.has(fz.ordner.trim())) {
+        _showFamilyError('family-fahrzeuge-error',
+          `Ziel-Ordner «${fz.ordner}» bei «${fz.kennzeichen}» ist kein Paperless-Speicherpfad — bitte aus Liste wählen.`);
+        return;
+      }
     }
     if (!fz.routing_ordner) fz.ordner = '';
   }
