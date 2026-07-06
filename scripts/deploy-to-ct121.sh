@@ -50,6 +50,8 @@ FILES=(
   scripts/legacy-nas-sha256.sh
   scripts/legacy-prepare-pdf.sh
   scripts/backfill_dok_id.py
+  scripts/repair_brillenpaesse.py
+  scripts/legacy_qr_split_test.py
 )
 
 echo "==> Repo:   $REPO_DIR"
