@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.53"  # 2.53: Brillenpass Korrespondent-Dropdown + Giulia-Patch
-UI_VERSION = "2.94"
+UI_VERSION = "2.95"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body

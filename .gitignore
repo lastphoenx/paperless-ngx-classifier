@@ -20,3 +20,7 @@ venv/
 # Logs
 *.log
 logs/
+
+# Lokale Bedienungsanleitung (Word, haushaltsintern)
+docs/Bedienungsanleitung_paper_manager.*
+scripts/generate_bedienungsanleitung.ps1
