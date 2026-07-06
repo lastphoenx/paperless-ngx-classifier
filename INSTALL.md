@@ -116,7 +116,7 @@ venv/bin/pip install \
 **System-Pakete** (für QR-Split / pre_consume_qr):
 
 ```bash
-apt install -y poppler-utils libzbar0
+apt install -y poppler-utils libzbar0 zbar-tools
 ```
 
 ---
