@@ -5,7 +5,7 @@ from brillenpass_tsv import (
     merge_brillenpass_tsv_with_regex,
     parse_by_anchors,
 )
-from brillenpass_parser import parse_mcoptic_pass
+from brillenpass_parser import _empty_eye_block, parse_mcoptic_pass
 
 
 def _mcoptic_tsv_words() -> list[dict]:
@@ -67,6 +67,31 @@ def test_merge_tsv_wins_over_regex():
     merged = merge_brillenpass_tsv_with_regex(tsv, regex)
     assert merged["fern"]["rechts"]["sph"] == "-2.75"
     assert merged["pd"]["links"] == "31.0"
+
+
+def test_merge_tsv_office_routes_to_naehe():
+    ocr = """
+3850RX Comfort Pro HD 160 MAX CRYSTAL SOLID
+SPH ZYL ACHSE ADD PD
+R +0.25 -0.25 57 1.50 31.5
+L 0.00 -0.25 110 1.50 31.5
+14.10.2023
+"""
+    tsv = {
+        "parser": "tsv_positional",
+        "fern": {
+            "rechts": {"sph": "+0.25", "cyl": "-0.25", "achse": "57"},
+            "links": {"sph": "+0.00", "cyl": "-0.25", "achse": "110"},
+        },
+        "naehe": _empty_eye_block(),
+        "pd": {"rechts": "31.5", "links": "31.5"},
+    }
+    regex = parse_mcoptic_pass(ocr)
+    merged = merge_brillenpass_tsv_with_regex(tsv, regex, ocr_text=ocr)
+    assert merged["extraktion"]["nutzung"] == "office"
+    assert merged["fern"]["rechts"] is None
+    assert merged["naehe"]["rechts"]["sph"] == "+0.25"
+    assert merged["naehe"]["links"]["sph"] == "+0.00"
 
 
 def test_parse_positional_without_full_header():

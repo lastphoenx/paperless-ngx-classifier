@@ -609,8 +609,15 @@ def extract_brillenpass_from_image(
     return {}, "keine_extraktion", meta
 
 
-def merge_brillenpass_tsv_with_regex(tsv_data: dict | None, regex_data: dict | None) -> dict:
-    """TSV gewinnt bei Refraktion; Regex füllt Glas/Auftrag/Datum."""
+def merge_brillenpass_tsv_with_regex(
+    tsv_data: dict | None,
+    regex_data: dict | None,
+    *,
+    ocr_text: str = "",
+) -> dict:
+    """TSV gewinnt bei Refraktion; Regex füllt Glas/Auftrag/Datum; Nutzung routen."""
+    from brillenpass_parser import finalize_brillenpass_buckets  # noqa: WPS433
+
     base = deepcopy(regex_data) if regex_data else {
         "fern": _empty_eye_block(),
         "naehe": _empty_eye_block(),
@@ -656,4 +663,6 @@ def merge_brillenpass_tsv_with_regex(tsv_data: dict | None, regex_data: dict | N
     }
     if tsv_data.get("parser"):
         base["parser"] = tsv_data["parser"]
-    return base
+    if regex_data and regex_data.get("parser", "").startswith("mcoptic"):
+        base["parser"] = regex_data["parser"]
+    return finalize_brillenpass_buckets(base, ocr_text=ocr_text)

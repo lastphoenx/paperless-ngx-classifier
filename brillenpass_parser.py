@@ -778,7 +778,7 @@ def merge_brillenpass(
         "extraktion": {"quelle": "vision", "confidence": "tief"},
     }
     if not vision_data:
-        return base
+        return finalize_brillenpass_buckets(base)
 
     for dist in ("fern", "naehe"):
         for side in ("rechts", "links"):
@@ -811,7 +811,7 @@ def merge_brillenpass(
             p_out[side] = v_pd[side]
 
     base = _reconcile_split_eyes(base, parser_data)
-    base = _consolidate_near_bucket(base, parser_data)
+    base = finalize_brillenpass_buckets(base)
 
     sources = [base.get("extraktion", {}).get("quelle", "")]
     if vision_data:
@@ -1592,8 +1592,91 @@ def _fill_naehe_from_matches(text: str, pattern: re.Pattern) -> dict[str, dict |
     return _fill_eye_block_from_matches(text, pattern)
 
 
+_OFFICE_GLAS_RE = re.compile(
+    r"comfort\s*pro|inside(?:\s+lens)?|\bdesk\b|bildschirm|arbeitsplatz|"
+    r"computerbrille|b[üu]robrille|office(?!\s*sv)",
+    re.IGNORECASE,
+)
+_PROGRESSIVE_GLAS_RE = re.compile(
+    r"gleitsicht|progressiv(?:e)?|varilux|eyezen|syncr|verlauf(?:sglas)?",
+    re.IGNORECASE,
+)
+_FERN_GLAS_RE = re.compile(
+    r"einst[äa]rke|messungsart:\s*ferne|\bferne\b|single\s*vision|\bsv\s+demo",
+    re.IGNORECASE,
+)
+
+
+def detect_brillen_nutzung(text: str = "", glas: dict | None = None) -> str:
+    """Office vs. Gleitsicht vs. Fern — aus Produkt/OCR, nicht aus Sph allein."""
+    blob = " ".join(filter(None, [
+        text or "",
+        (glas or {}).get("beschreibung") or "",
+    ]))
+    if _OFFICE_GLAS_RE.search(blob):
+        return "office"
+    if _PROGRESSIVE_GLAS_RE.search(blob):
+        return "progressive"
+    if _FERN_GLAS_RE.search(blob):
+        return "fern"
+    if re.search(r"\bmultifokal\b", blob, re.IGNORECASE):
+        return "unknown"
+    return "unknown"
+
+
+def _collect_merged_eyes(data: dict) -> dict[str, dict]:
+    """Fern+Nähe pro Seite zusammenführen (TSV/Regex-Split auflösen)."""
+    out: dict[str, dict] = {}
+    for side in ("rechts", "links"):
+        fe = (data.get("fern") or {}).get(side)
+        ne = (data.get("naehe") or {}).get(side)
+        eye = _merge_eye(fe, ne) or _merge_eye(ne, fe)
+        if eye and eye.get("sph"):
+            out[side] = eye
+    return out
+
+
+def apply_brillen_nutzung_routing(data: dict, nutzung: str) -> dict:
+    """McOptic-Einstabelle → fern oder naehe je nach Glasnutzung."""
+    eyes = _collect_merged_eyes(data)
+    fern = _empty_eye_block()
+    naehe = _empty_eye_block()
+    has_add = any(_add_is_near((e or {}).get("add")) for e in eyes.values())
+
+    if nutzung == "office":
+        target = naehe
+    elif nutzung == "progressive":
+        target = fern
+    elif nutzung == "fern" or (not has_add and nutzung == "unknown"):
+        target = fern
+    else:
+        # Multifokal/unbekannt + ADD: nicht in fern raten → naehe + Review
+        target = naehe
+
+    for side, eye in eyes.items():
+        target[side] = eye
+
+    data["fern"] = fern
+    data["naehe"] = naehe
+    ext = data.setdefault("extraktion", {})
+    ext["nutzung"] = nutzung
+    if nutzung == "unknown" and ext.get("confidence") == "hoch":
+        ext["confidence"] = "mittel"
+    return data
+
+
+def finalize_brillenpass_buckets(data: dict | None, *, ocr_text: str = "") -> dict:
+    """Nach TSV/Regex/Vision: McOptic-Werte in passenden Block legen."""
+    if not data:
+        return {}
+    out = deepcopy(data)
+    blob = ocr_text or " ".join(str(out.get(k) or "") for k in ("auftrag", "rechnung"))
+    nutzung = detect_brillen_nutzung(blob, out.get("glas"))
+    return apply_brillen_nutzung_routing(out, nutzung)
+
+
 def _mcoptic_pass_buckets(eyes: dict[str, dict | None]) -> tuple[dict, dict]:
-    """McOptic-Karte: Einstärke/Ferne wenn Add≈0, sonst Nähe (Lesewert)."""
+    """Legacy — finalize_brillenpass_buckets ersetzt diese Logik."""
     if any(_add_is_near((eyes.get(s) or {}).get("add")) for s in ("rechts", "links")):
         return _empty_eye_block(), eyes
     return eyes, _empty_eye_block()
@@ -1649,7 +1732,7 @@ def parse_mcoptic_pass(ocr_text: str) -> dict:
     """McOptic Brillenpass-Karte (SPH ZYL ACHSE ADD PD)."""
     text = ocr_text or ""
     eyes, pd = _fill_mcoptic_pass_rows(text)
-    fern, naehe = _mcoptic_pass_buckets(eyes)
+    fern = {"rechts": eyes.get("rechts"), "links": eyes.get("links")}
 
     glas_desc = ""
     for pat in [
@@ -1662,14 +1745,15 @@ def parse_mcoptic_pass(ocr_text: str) -> dict:
             glas_desc = re.sub(r"\s+", " ", (gm.group(1) if gm.lastindex else gm.group(0)).strip())[:500]
             break
 
-    return _bp_base(
+    base = _bp_base(
         "mcoptic_brillenpass",
         gueltig_ab=_parse_pass_date(text),
         fern=fern,
-        naehe=naehe,
+        naehe=_empty_eye_block(),
         pd=pd,
         glas={"beschreibung": glas_desc, "index": None, "durchmesser": None, "beschichtungen": []},
     )
+    return finalize_brillenpass_buckets(base, ocr_text=text)
 
 
 _MCOPTIC_RECHNUNG_RL = re.compile(
@@ -1690,16 +1774,16 @@ def parse_mcoptic_rechnung(ocr_text: str) -> dict:
     text = ocr_text or ""
     # Stufe 1a: Tabellenzeilen R/L ohne Sph./Cyl.-Labels (häufig auf Rechnung)
     eyes, pd = _fill_mcoptic_pass_rows(text)
-    fern, naehe = _mcoptic_pass_buckets(eyes)
+    fern = {"rechts": eyes.get("rechts"), "links": eyes.get("links")}
+    naehe = _empty_eye_block()
     # Stufe 1b: explizite Labels (Sph. Cyl. A°) ergänzen
     labeled = _fill_naehe_from_matches(text, _MCOPTIC_RECHNUNG_RL)
     for side in ("rechts", "links"):
         le = labeled.get(side)
         if not le:
             continue
-        bucket = naehe if _add_is_near(le.get("add")) else fern
-        if not bucket.get(side):
-            bucket[side] = le
+        cur = fern.get(side)
+        fern[side] = _merge_eye(cur, le) if cur else le
 
     glas_desc = ""
     for pat in [
@@ -1717,7 +1801,7 @@ def parse_mcoptic_rechnung(ocr_text: str) -> dict:
     if rm:
         rechnung = rm.group(1).strip()
 
-    return _bp_base(
+    base = _bp_base(
         "mcoptic_rechnung",
         gueltig_ab=_parse_pass_date(text),
         fern=fern,
@@ -1726,6 +1810,7 @@ def parse_mcoptic_rechnung(ocr_text: str) -> dict:
         rechnung=rechnung,
         glas={"beschreibung": glas_desc, "index": None, "durchmesser": None, "beschichtungen": []},
     )
+    return finalize_brillenpass_buckets(base, ocr_text=text)
 
 
 def parse_augenarzt(ocr_text: str) -> dict:

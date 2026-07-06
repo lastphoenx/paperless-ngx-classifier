@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.56"  # 12.56: McOptic Anker pro Auge, PD mm, Rotkanal, Viertel-Raster
+POST_CONSUME_VERSION = "12.57"  # 12.57: Glas-Nutzung routet fern/naehe (Office vs. Gleitsicht)
 import re
 import sys
 import json
@@ -2020,7 +2020,7 @@ def run_brillenpass_extraction_stages(
             "snapshot": snapshot_brillenpass(regex_data),
         })
 
-    parser_data = merge_brillenpass_tsv_with_regex(tsv_data, regex_data)
+    parser_data = merge_brillenpass_tsv_with_regex(tsv_data, regex_data, ocr_text=ocr_text)
     header_anchors = int(tsv_meta.get("header_anchors") or 0)
 
     if not image_b64 and pdf_path:
