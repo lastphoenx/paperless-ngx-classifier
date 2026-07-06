@@ -889,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.82';
+const UI_VERSION = '2.83';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -4841,7 +4841,11 @@ function _bpParserOptionsHtml(selected) {
 }
 
 async function _fetchJson(url, options) {
-  const r = await fetch(url, options);
+  const r = await fetch(url, {credentials: 'same-origin', ...options});
+  if (r.status === 401) {
+    window.location.href = `${effectivePaperlessBase()}/accounts/login/?next=${encodeURIComponent(window.location.href)}`;
+    throw new Error('Nicht authentifiziert — bitte erneut anmelden');
+  }
   const text = await r.text();
   let data = {};
   if (text) {
@@ -5495,7 +5499,9 @@ async function triggerLegacySplit(dryRun) {
       if (status) status.textContent = `${d.pages} Seiten → ${(d.splits||[]).length} Teile: ${lines}`;
       showToast('Split-Vorschau OK', 'success');
     } else {
-      if (status) status.textContent = d.message || 'OK';
+      const lines = (d.parts || []).map(p =>
+        `${p.barcode}: S.${p.from_page}–${p.to_page} → ${p.filename}`).join('\n');
+      if (status) status.textContent = (d.message || 'OK') + (lines ? `\n${lines}` : '');
       showToast(d.message || 'Split eingereiht', 'success');
     }
   } catch (e) {

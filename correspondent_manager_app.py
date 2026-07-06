@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.41"  # 2.41: needs_add Schleife — IndentationError behoben
-UI_VERSION = "2.82"
+__version__ = "2.42"  # 2.42: Auth-Cache nur Erfolg; Legacy-Split Executor
+UI_VERSION = "2.83"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -125,10 +125,12 @@ app = FastAPI(title="paper.manager", version="2.0.0")
 _BG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pm-bg")
 # Session-Prüfung — eigener Pool (nicht asyncio.to_thread / Default-Pool)
 _AUTH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pm-auth")
+# Legacy QR-Split — pro Seite 600 DPI, kann Minuten dauern
+_LEGACY_SPLIT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pm-lsplit")
 
 # Session-Cache — reduziert Paperless-Profile-Calls bei init()-API-Burst
 _SESSION_CACHE: dict[str, tuple[bool, float]] = {}
-_SESSION_CACHE_TTL = 30.0
+_SESSION_CACHE_TTL = 60.0
 _session_cache_lock = threading.Lock()
 
 
@@ -151,23 +153,28 @@ def _validate_paperless_session(
     if csrf:
         cookie_hdr += f"; csrftoken={csrf}"
     headers = {"Cookie": cookie_hdr}
+    bases = [b for b in (paperless_base, paperless_internal) if b]
     valid = False
-    for base in (paperless_base, paperless_internal):
-        if not base:
-            continue
-        try:
-            r = requests.get(
-                f"{base.rstrip('/')}/api/profile/",
-                headers=headers,
-                timeout=(2, 3),
-            )
-            if r.status_code == 200:
-                valid = True
-                break
-        except Exception:
-            continue
-    with _session_cache_lock:
-        _SESSION_CACHE[cache_key] = (valid, time.monotonic() + _SESSION_CACHE_TTL)
+    for attempt in range(2):
+        for base in bases:
+            try:
+                r = requests.get(
+                    f"{base.rstrip('/')}/api/profile/",
+                    headers=headers,
+                    timeout=(3, 8),
+                )
+                if r.status_code == 200:
+                    valid = True
+                    break
+            except Exception:
+                continue
+        if valid:
+            break
+        if attempt == 0:
+            time.sleep(0.3)
+    if valid:
+        with _session_cache_lock:
+            _SESSION_CACHE[cache_key] = (True, time.monotonic() + _SESSION_CACHE_TTL)
     return valid
 
 
@@ -2201,9 +2208,9 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
 
 
 @app.post("/api/legacy-split/trigger/{doc_id}")
-def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
+async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
     """Paperless-Dokument per QR splitten → Teile nach consume/ (volle Pipeline)."""
-    from legacy_split_by_qr import split_paperless_document
+    from legacy_split_by_qr import split_paperless_document, find_split_markers, has_real_qr_splits
 
     dry_run = bool(body.get("dry_run", False))
     regex = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
@@ -2214,14 +2221,18 @@ def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
     except Exception as e:
         raise HTTPException(400, f"Dokument #{doc_id} laden fehlgeschlagen: {e}") from e
 
+    loop = asyncio.get_running_loop()
+
     if dry_run:
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
             tf.write(pdf_bytes)
             tmp = tf.name
         try:
-            from legacy_split_by_qr import find_split_markers, has_real_qr_splits
-            markers, total, qr_debug = find_split_markers(tmp, regex=regex)
+            markers, total, qr_debug = await loop.run_in_executor(
+                _LEGACY_SPLIT_EXECUTOR,
+                functools.partial(find_split_markers, tmp, regex=regex),
+            )
             qr_matched = sum(1 for x in qr_debug if x.get("matched"))
             if not has_real_qr_splits(markers):
                 return {
@@ -2249,6 +2260,10 @@ def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
                 "pages": total,
                 "splits": preview,
                 "qr_matched": qr_matched,
+                "message": (
+                    f"{total} Seiten → {len(preview)} Teile "
+                    f"({qr_matched} QR-Treffer, Regex: {regex})"
+                ),
             }
         finally:
             Path(tmp).unlink(missing_ok=True)
@@ -2257,9 +2272,15 @@ def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
         raise HTTPException(400, f"Consume-Ordner nicht gefunden: {consume_dir}")
 
     try:
-        parts = split_paperless_document(
-            pdf_bytes, consume_dir,
-            original_filename=orig_name, regex=regex,
+        parts = await loop.run_in_executor(
+            _LEGACY_SPLIT_EXECUTOR,
+            functools.partial(
+                split_paperless_document,
+                pdf_bytes,
+                consume_dir,
+                original_filename=orig_name,
+                regex=regex,
+            ),
         )
     except Exception as e:
         raise HTTPException(500, f"Split fehlgeschlagen: {e}") from e
@@ -2271,9 +2292,15 @@ def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
             f"Metadaten-QR-Codes (Regex: {regex}, Scan 600 DPI)",
         )
 
+    detail = "; ".join(
+        f"{p['barcode']} S.{p['from_page']}–{p['to_page']}" for p in parts
+    )
     return {
         "ok": True,
-        "message": f"{len(parts)} Teile nach {consume_dir} geschrieben — Pipeline startet automatisch",
+        "message": (
+            f"{len(parts)} Teil(e) nach {consume_dir} geschrieben — "
+            f"Pipeline startet automatisch ({detail})"
+        ),
         "document_id": doc_id,
         "parts": parts,
     }
