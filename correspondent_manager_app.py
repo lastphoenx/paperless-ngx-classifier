@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.50"  # 2.50: Legacy-QR Scan im Subprocess (pyzbar-Deadlock im UI-Thread)
-UI_VERSION = "2.91"
+__version__ = "2.51"  # 2.51: Legacy-QR Regex .env \\s-Fix (sonst ewiger Scan)
+UI_VERSION = "2.92"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -87,7 +87,10 @@ BRILLENPASS_DEDUP_DAYS     = int(os.environ.get("BRILLENPASS_DEDUP_DAYS", "21"))
 PAPERLESS_CONSUME_DIR      = os.environ.get("PAPERLESS_CONSUME_DIR", "/mnt/paperless-data/consume")
 PAPERLESS_MEDIA_ROOT       = os.environ.get("PAPERLESS_MEDIA_ROOT", "/mnt/paperless-media")
 LEGACY_SPLIT_TMP           = Path(os.environ.get("LEGACY_SPLIT_TMP", "/tmp/legacy-qr-split"))
-LEGACY_SPLIT_QR_REGEX      = os.environ.get("LEGACY_SPLIT_QR_REGEX", r"^[0-9]{6}_[^\s]+$")
+from legacy_split_by_qr import DEFAULT_QR_REGEX as _LEGACY_QR_DEFAULT, normalize_legacy_qr_regex
+LEGACY_SPLIT_QR_REGEX      = normalize_legacy_qr_regex(
+    os.environ.get("LEGACY_SPLIT_QR_REGEX", _LEGACY_QR_DEFAULT),
+)
 ALL_PENDING_TAGS         = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG, PENDING_BRILLENPASS_TAG}
 
 PAPERLESS_HEADERS = {
@@ -2564,7 +2567,7 @@ async def api_legacy_split_trigger(
     """Paperless-Dokument per QR splitten — async (UI pollt Status, kein nginx-Timeout)."""
     dry_run = bool(body.get("dry_run", False))
     sync = bool(body.get("sync", False))
-    regex = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
+    regex = normalize_legacy_qr_regex((body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip())
     consume_dir = str(body.get("consume_dir") or PAPERLESS_CONSUME_DIR)
     job_key = _lsplit_job_key(doc_id, dry_run)
 

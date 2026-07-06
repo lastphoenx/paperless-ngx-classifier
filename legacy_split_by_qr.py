@@ -21,6 +21,27 @@ from pathlib import Path
 log = logging.getLogger("legacy_split_by_qr")
 
 DEFAULT_QR_REGEX = r"^[0-9]{6}_[^\s]+$"
+
+
+def normalize_legacy_qr_regex(regex: str | None) -> str:
+    """
+    .env ohne Quotes frisst \\s → «[^s]» und $ → «\\$» — dann 0 Treffer, Scan ewig.
+  In /opt/paperless/.env: LEGACY_SPLIT_QR_REGEX='^[0-9]{6}_[^\\s]+$'
+    """
+    s = (regex or "").strip()
+    if not s:
+        return DEFAULT_QR_REGEX
+    if "[^s]" in s and "[^\s]" not in s and r"\s" not in s:
+        log.warning(
+            "LEGACY_SPLIT_QR_REGEX fehlerhaft (%r) — \\s in .env mit Quotes setzen, nutze Default",
+            s,
+        )
+        return DEFAULT_QR_REGEX
+    if s.endswith(r"\$"):
+        s = s[:-2] + "$"
+    return s
+
+
 DEFAULT_DPI = 150  # Legacy-Trennseiten: QR reicht ab ~150 dpi (Smartphone-Niveau)
 _FALLBACK_DPIS = (150, 200, 300, 400, 600)
 _DECODE_TIMEOUT = 15
@@ -481,15 +502,19 @@ def _scan_pdf_file_isolated(
     if not worker.is_file():
         raise RuntimeError(f"legacy_qr_scan_worker.py fehlt neben {__file__}")
     python = os.environ.get("LEGACY_QR_PYTHON", sys.executable)
-    cmd = [python, str(worker), pdf_path, "--regex", regex]
+    regex = normalize_legacy_qr_regex(regex)
+    cmd = [python, str(worker), pdf_path]
     if quick:
         cmd.append("--quick")
+    env = os.environ.copy()
+    env["LEGACY_SPLIT_QR_REGEX"] = regex
     proc = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=180,
         cwd=str(worker.parent),
+        env=env,
     )
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()

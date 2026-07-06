@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -20,21 +21,22 @@ from legacy_split_by_qr import (  # noqa: E402
     DEFAULT_DPI,
     DEFAULT_QR_REGEX,
     find_split_markers,
+    normalize_legacy_qr_regex,
 )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Legacy QR scan worker (JSON stdout)")
     parser.add_argument("pdf", type=Path)
-    parser.add_argument("--regex", default=DEFAULT_QR_REGEX)
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
 
+    regex = normalize_legacy_qr_regex(os.environ.get("LEGACY_SPLIT_QR_REGEX", DEFAULT_QR_REGEX))
     backends = ("ghostscript",) if args.quick else None
     dpis = (150, 300) if args.quick else None
     markers, total, qr_debug, scan_meta = find_split_markers(
         str(args.pdf),
-        regex=args.regex,
+        regex=regex,
         dpi=DEFAULT_DPI,
         backends=backends,
         dpis=dpis,
