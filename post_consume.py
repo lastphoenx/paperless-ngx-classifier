@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.53"  # 12.53: TSV R/L-Zeilen-Merge + Plausibilität Dioptrien
+POST_CONSUME_VERSION = "12.54"  # 12.54: TSV Best-of + strikte Dioptrien + Vision bei Lücken
 import re
 import sys
 import json
@@ -1086,7 +1086,12 @@ BRILLENPASS_VISION_FALLBACK = os.environ.get("BRILLENPASS_VISION_FALLBACK", "0")
 BRILLENPASS_TESSERACT = os.environ.get("BRILLENPASS_TESSERACT", "1").strip().lower() not in (
     "0", "false", "no",
 )
-BRILLENPASS_MIN_HEADER_ANCHORS = int(os.environ.get("BRILLENPASS_MIN_HEADER_ANCHORS", "3"))
+BRILLENPASS_VISION_ON_GAPS = os.environ.get("BRILLENPASS_VISION_ON_GAPS", "1").strip().lower() not in (
+    "0", "false", "no",
+)
+BRILLENPASS_MIN_HEADER_ANCHORS = int(
+    os.environ.get("BRILLENPASS_MIN_HEADER_ANCHORS", "3").split("#")[0].strip() or "3"
+)
 
 MEDIA_ROOT = os.environ.get(
     "PAPERLESS_MEDIA_ROOT",
@@ -1899,14 +1904,27 @@ def vision_brillenpass_analyze(
         return {}
 
 
+def _brillenpass_missing_fern_eye(data: dict | None) -> bool:
+    if not data or not has_brillenpass_values(data):
+        return True
+    fern = data.get("fern") or {}
+    r = (fern.get("rechts") or {}).get("sph")
+    l = (fern.get("links") or {}).get("sph")
+    return bool(r) != bool(l) or not (r and l)
+
+
 def should_use_brillenpass_vision_fallback(
     header_anchors: int,
     primary_data: dict | None,
     *,
     has_image: bool,
 ) -> bool:
-    """Vision nur als Notnagel: Flag an, Bild da, wenig Header-Anker, keine Primärdaten."""
-    if not BRILLENPASS_VISION_FALLBACK or not has_image:
+    """Vision wenn Lücken (fehlendes Auge) oder klassischer Notnagel (Flag + wenig Anker)."""
+    if not has_image:
+        return False
+    if BRILLENPASS_VISION_ON_GAPS and _brillenpass_missing_fern_eye(primary_data):
+        return True
+    if not BRILLENPASS_VISION_FALLBACK:
         return False
     if header_anchors >= BRILLENPASS_MIN_HEADER_ANCHORS:
         return False

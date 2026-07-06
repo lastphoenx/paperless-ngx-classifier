@@ -14,7 +14,6 @@ from copy import deepcopy
 from typing import Any
 
 from brillenpass_parser import (
-    _coerce_ocular_diopter,
     _empty_eye_block,
     _norm_val,
     has_brillenpass_values,
@@ -227,9 +226,38 @@ def header_field_names(fields: dict[str, dict]) -> list[str]:
     return sorted(fields.keys())
 
 
-def tsv_words_to_text(words: list[dict]) -> str:
-    """TSV-Wörter → mehrzeiliger Text für Regex-Parser."""
-    return "\n".join(" ".join(w["text"] for w in zeile) for zeile in gruppiere_nach_top(words))
+def _diopter_from_token(raw: str) -> str | None:
+    """Dioptrie strikt — ohne Dezimalpunkt keine grossen Zahlen erraten (293 bleibt Müll)."""
+    raw_s = str(raw or "").strip()
+    if not raw_s:
+        return None
+    nv = _norm_val(raw_s)
+    if not nv:
+        return None
+    if "." not in raw_s and "," not in raw_s:
+        try:
+            if abs(float(nv.replace(",", ".").lstrip("+"))) > 15:
+                return None
+        except ValueError:
+            return None
+    return nv
+
+
+def _both_fern_eyes(data: dict | None) -> bool:
+    fern = (data or {}).get("fern") or {}
+    return bool((fern.get("rechts") or {}).get("sph") and (fern.get("links") or {}).get("sph"))
+
+
+def _score_tsv_extraction(data: dict) -> int:
+    from brillenpass_parser import _parser_completeness_score  # noqa: WPS433
+
+    score = _parser_completeness_score(data)
+    if _both_fern_eyes(data):
+        score += 25
+    pd = data.get("pd") or {}
+    if pd.get("rechts") and pd.get("links"):
+        score += 10
+    return score
 
 
 def count_header_anchors(words: list[dict]) -> int:
@@ -357,7 +385,31 @@ def _parse_rl_rows_positional(zeilen: list[list[dict]]) -> dict | None:
         return None
     if not has_brillenpass_values(result) or not plausible_brillenpass_data(result):
         return None
+    if not _both_fern_eyes(result):
+        return None
     return result
+
+
+def _collect_tsv_candidates(
+    words: list[dict],
+    zeilen: list[list[dict]],
+    parser_names: list[str] | None,
+) -> list[tuple[int, dict, str]]:
+    candidates: list[tuple[int, dict, str]] = []
+    for method, fn in (
+        ("positional", lambda: _parse_rl_rows_positional(zeilen)),
+        ("text", lambda: _parse_tsv_text_fallback(words, parser_names)),
+        ("anchors", lambda: parse_by_anchors(words)),
+    ):
+        try:
+            parsed = fn()
+        except Exception as e:
+            log.debug("TSV %s fehlgeschlagen: %s", method, e)
+            continue
+        if not parsed or not plausible_brillenpass_data(parsed):
+            continue
+        candidates.append((_score_tsv_extraction(parsed), parsed, method))
+    return candidates
 
 
 def _parse_tsv_text_fallback(words: list[dict], parser_names: list[str] | None = None) -> dict | None:
@@ -374,6 +426,8 @@ def _parse_tsv_text_fallback(words: list[dict], parser_names: list[str] | None =
     parsed = parse_brillenpass_with_parsers(flat, allowed)
     if not parsed or not has_brillenpass_values(parsed):
         return None
+    if not _both_fern_eyes(parsed):
+        return None
     parsed = deepcopy(parsed)
     parsed["parser"] = "tsv_text"
     return parsed
@@ -382,17 +436,22 @@ def _parse_tsv_text_fallback(words: list[dict], parser_names: list[str] | None =
 def _eye_from_values(vals: dict[str, str]) -> dict[str, str | None]:
     eye: dict[str, str | None] = {}
     if vals.get("sph"):
-        eye["sph"] = _coerce_ocular_diopter(vals["sph"]) or _norm_val(vals["sph"])
+        eye["sph"] = _diopter_from_token(vals["sph"])
     if vals.get("cyl"):
-        eye["cyl"] = _coerce_ocular_diopter(vals["cyl"]) or _norm_val(vals["cyl"])
+        eye["cyl"] = _diopter_from_token(vals["cyl"])
     if vals.get("achse") is not None:
         achse = re.sub(r"[^\d]", "", vals["achse"])
         eye["achse"] = achse if achse != "" else None
     if vals.get("add"):
-        eye["add"] = _norm_val(vals["add"])
-    if not plausible_refraktion_eye(eye):
+        eye["add"] = _diopter_from_token(vals["add"]) or _norm_val(vals["add"])
+    if not eye.get("sph") or not plausible_refraktion_eye(eye):
         return {}
     return eye
+
+
+def tsv_words_to_text(words: list[dict]) -> str:
+    """TSV-Wörter → mehrzeiliger Text (R/L-Zeilen bereits zusammengeführt)."""
+    return "\n".join(" ".join(w["text"] for w in zeile) for zeile in _prepare_zeilen(words))
 
 
 def _prepare_zeilen(words: list[dict]) -> list[list[dict]]:
@@ -433,6 +492,8 @@ def parse_by_anchors(words: list[dict]) -> dict | None:
 
     if not has_brillenpass_values(result) or not plausible_brillenpass_data(result):
         return None
+    if not _both_fern_eyes(result):
+        return None
     return result
 
 
@@ -451,23 +512,18 @@ def extract_brillenpass_from_image(
         "ocr_source": "jpeg300" if (image_path or "").lower().endswith(".pdf") else "direct",
     }
 
-    parsed = parse_by_anchors(words)
-    method = "anchors" if parsed else None
-    if not parsed:
-        parsed = _parse_rl_rows_positional(zeilen)
-        method = "positional" if parsed else method
-    if not parsed:
-        parsed = _parse_tsv_text_fallback(words, parser_names)
-        if parsed and not plausible_brillenpass_data(parsed):
-            parsed = None
-        method = "text" if parsed else method
+    candidates = _collect_tsv_candidates(words, zeilen, parser_names)
+    if candidates:
+        _score, parsed, method = max(candidates, key=lambda x: x[0])
+        meta["score"] = _score
 
-    if parsed:
         meta["method"] = method
-        if method in ("anchors", "positional") and anchor_count >= 3:
+        if method in ("anchors", "positional") and _both_fern_eyes(parsed):
             meta["confidence"] = "hoch"
-        else:
+        elif _both_fern_eyes(parsed):
             meta["confidence"] = "mittel"
+        else:
+            meta["confidence"] = "niedrig"
         return parsed, meta["confidence"], meta
     if anchor_count >= 3:
         meta["confidence"] = "niedrig"
