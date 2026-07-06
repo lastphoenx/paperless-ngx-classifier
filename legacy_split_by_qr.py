@@ -19,13 +19,42 @@ from pathlib import Path
 log = logging.getLogger("legacy_split_by_qr")
 
 DEFAULT_QR_REGEX = r"^[0-9]{6}_[^\s]+$"
-DEFAULT_DPI = 400  # 400 zuerst (schneller); 600 als Fallback
-_FALLBACK_DPIS = (400, 600, 300)
+DEFAULT_DPI = 150  # Legacy-Trennseiten: QR reicht ab ~150 dpi (Smartphone-Niveau)
+_FALLBACK_DPIS = (150, 200, 300, 400, 600)
 _DECODE_TIMEOUT = 15
+# Original tsa_barcode_split_function.sh: Ghostscript 600 dpi — Poppler rendert manche NAS-Scans ohne QR
+_RENDER_BACKENDS = ("ghostscript", "poppler")
+
+
+def _barcode_text(raw: bytes) -> str | None:
+    for enc in ("utf-8", "latin-1"):
+        try:
+            text = raw.decode(enc, errors="replace").strip()
+        except Exception:
+            continue
+        if text:
+            return text
+    return None
+
+
+def _decode_barcodes_from_pil(image) -> list[str]:
+    """Inline pyzbar — schnell; bei Segfault siehe Subprocess-Fallback."""
+    try:
+        from pyzbar.pyzbar import decode as pyzbar_decode
+    except ImportError:
+        return []
+    codes: list[str] = []
+    seen: set[str] = set()
+    for barcode in pyzbar_decode(image):
+        text = _barcode_text(barcode.data)
+        if text and text not in seen:
+            seen.add(text)
+            codes.append(text)
+    return codes
 
 
 def _decode_barcodes_from_image_path(img_path: str) -> list[str]:
-    """Alle lesbaren Barcode-Texte von PNG (pyzbar, alle Typen)."""
+    """Alle lesbaren Barcode-Texte von PNG (Subprocess-pyzbar, dann zbarimg)."""
     proc = subprocess.run(
         [
             sys.executable, "-c",
@@ -50,7 +79,14 @@ def _decode_barcodes_from_image_path(img_path: str) -> list[str]:
         try:
             return [s for s in json.loads(proc.stdout.strip() or "[]") if s.strip()]
         except json.JSONDecodeError:
-            pass
+            log.debug("pyzbar subprocess: JSON ungültig: %r", proc.stdout[:120])
+    else:
+        err = (proc.stderr or proc.stdout or "").strip()
+        log.debug(
+            "pyzbar subprocess exit %s: %s",
+            proc.returncode,
+            err[:240] or "(keine Ausgabe)",
+        )
     return _zbarimg_decode(img_path)
 
 
@@ -71,29 +107,153 @@ def _zbarimg_decode(img_path: str) -> list[str]:
 
 def _enhance_page_image(image):
     """Kontrast für schwache QR auf Scan/Archiv-PDF."""
-    from PIL import ImageOps
+    from PIL import ImageFilter, ImageOps
     gray = ImageOps.autocontrast(image.convert("L"))
-    return gray.convert("RGB")
+    sharp = gray.filter(ImageFilter.SHARPEN)
+    return sharp.convert("RGB")
+
+
+def _page_scan_variants(image):
+    """Vollseite + Legacy-Trennseite oben rechts (QR neben «010401_Lohn_…»)."""
+    from PIL import Image
+    rgb = image.convert("RGB")
+    w, h = rgb.size
+    yield rgb
+    yield _enhance_page_image(rgb)
+    # Trennseiten: QR typisch oben rechts (~15 % Seitenbreite)
+    for x_frac, y_frac, w_frac, h_frac in (
+        (0.55, 0.0, 0.45, 0.28),
+        (0.45, 0.0, 0.55, 0.35),
+        (0.60, 0.0, 0.40, 0.22),
+        (0.0, 0.0, 1.0, 0.20),
+    ):
+        box = (int(w * x_frac), int(h * y_frac), int(w * (x_frac + w_frac)), int(h * (y_frac + h_frac)))
+        crop = rgb.crop(box)
+        yield crop
+        yield _enhance_page_image(crop)
+        if max(crop.size) < 2400:
+            up = crop.resize((crop.width * 2, crop.height * 2), Image.Resampling.LANCZOS)
+            yield up
+            yield _enhance_page_image(up)
+
+
+def _collect_barcodes(raw_list: list[str], seen: list[str], seen_set: set[str]) -> bool:
+    added = False
+    for raw in raw_list:
+        if raw not in seen_set:
+            seen_set.add(raw)
+            seen.append(raw)
+            added = True
+    return added
 
 
 def _decode_page_image(image) -> list[str]:
     """Barcodes von gerendeter Seite (ohne erneutes PDF-Rendern)."""
     seen: list[str] = []
     seen_set: set[str] = set()
-    for variant in (image.convert("RGB"), _enhance_page_image(image)):
+    for variant in _page_scan_variants(image):
+        if _collect_barcodes(_decode_barcodes_from_pil(variant), seen, seen_set):
+            return seen
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
             tmp = tf.name
         try:
             variant.save(tmp, format="PNG")
-            for raw in _decode_barcodes_from_image_path(tmp):
-                if raw not in seen_set:
-                    seen_set.add(raw)
-                    seen.append(raw)
+            if _collect_barcodes(_decode_barcodes_from_image_path(tmp), seen, seen_set):
+                return seen
         finally:
             Path(tmp).unlink(missing_ok=True)
-        if seen:
-            break
     return seen
+
+
+def _convert_pdf_poppler(
+    pdf_path: str,
+    *,
+    dpi: int,
+    first_page: int | None = None,
+    last_page: int | None = None,
+) -> list:
+    from pdf2image import convert_from_path
+
+    kwargs: dict = {"dpi": dpi, "use_pdftocairo": True}
+    if first_page is not None:
+        kwargs["first_page"] = first_page
+    if last_page is not None:
+        kwargs["last_page"] = last_page
+    return convert_from_path(pdf_path, **kwargs)
+
+
+def _convert_pdf_ghostscript(
+    pdf_path: str,
+    *,
+    dpi: int,
+    first_page: int | None = None,
+    last_page: int | None = None,
+) -> list:
+    """Wie tsa_barcode_split_function.sh — zuverlässiger bei älteren NAS-Scans."""
+    if not shutil.which("gs"):
+        log.debug("ghostscript (gs) nicht installiert")
+        return []
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory(prefix="legacy_qr_gs_") as td:
+        pattern = str(Path(td) / "page-%d.png")
+        cmd = [
+            "gs",
+            "-dNOPAUSE",
+            "-dBATCH",
+            "-dSAFER",
+            "-sDEVICE=png16m",
+            f"-r{dpi}",
+            f"-sOutputFile={pattern}",
+        ]
+        if first_page is not None:
+            cmd.extend([f"-dFirstPage={first_page}", f"-dLastPage={last_page or first_page}"])
+        cmd.append(str(pdf_path))
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            log.warning("Ghostscript dpi=%s fehlgeschlagen: %s", dpi, err[:240])
+            return []
+        paths = sorted(Path(td).glob("page-*.png"), key=lambda p: int(p.stem.split("-")[-1]))
+        return [Image.open(p).copy() for p in paths]
+
+
+def convert_pdf_pages(
+    pdf_path: str,
+    *,
+    dpi: int,
+    backend: str = "poppler",
+    first_page: int | None = None,
+    last_page: int | None = None,
+) -> list:
+    if backend == "ghostscript":
+        return _convert_pdf_ghostscript(
+            pdf_path, dpi=dpi, first_page=first_page, last_page=last_page,
+        )
+    return _convert_pdf_poppler(
+        pdf_path, dpi=dpi, first_page=first_page, last_page=last_page,
+    )
+
+
+def dump_rendered_page(
+    pdf_path: str,
+    page_num: int,
+    out_path: str | Path,
+    *,
+    dpi: int = 150,
+    backend: str = "ghostscript",
+) -> Path:
+    """Gerenderte Seite als PNG speichern (Debug: ist der QR im Raster?)."""
+    images = convert_pdf_pages(
+        pdf_path, dpi=dpi, backend=backend,
+        first_page=page_num, last_page=page_num,
+    )
+    if not images:
+        raise RuntimeError(f"Seite {page_num} nicht gerendert (backend={backend}, dpi={dpi})")
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    images[0].save(out, format="PNG")
+    return out
 
 
 def _markers_from_pages(
@@ -138,20 +298,17 @@ def scan_page_qrs(
     dpis: tuple[int, ...] | None = None,
 ) -> list[str]:
     """Alle Barcode-Texte auf Seite page_num (1-basiert) — Legacy-Einzelaufruf."""
-    try:
-        from pdf2image import convert_from_path
-    except ImportError:
-        raise RuntimeError("pdf2image fehlt — pip install pdf2image") from None
-
     tried = dpis or _FALLBACK_DPIS if dpi == DEFAULT_DPI else (dpi,)
-    for try_dpi in tried:
-        images = convert_from_path(
-            pdf_path, dpi=try_dpi, first_page=page_num, last_page=page_num,
-        )
-        if images:
-            found = _decode_page_image(images[0])
-            if found:
-                return found
+    for backend in _RENDER_BACKENDS:
+        for try_dpi in tried:
+            images = convert_pdf_pages(
+                pdf_path, dpi=try_dpi, backend=backend,
+                first_page=page_num, last_page=page_num,
+            )
+            if images:
+                found = _decode_page_image(images[0])
+                if found:
+                    return found
     return []
 
 
@@ -191,33 +348,44 @@ def find_split_markers(
 ) -> tuple[list[tuple[str, int]], int, list[dict]]:
     """
     [(barcode, start_page), …] — 1-basierte Startseiten.
-    Rendert PDF einmal pro DPI (nicht pro Seite) — deutlich schneller.
+    Rendert PDF einmal pro DPI/Backend (Poppler, dann Ghostscript wie Bash-Original).
     """
     try:
-        from pdf2image import convert_from_path
         from pypdf import PdfReader
     except ImportError as e:
-        raise RuntimeError("pdf2image/pypdf fehlt") from e
+        raise RuntimeError("pypdf fehlt") from e
 
     total = len(PdfReader(pdf_path).pages)
     dpis = _FALLBACK_DPIS if dpi == DEFAULT_DPI else (dpi,)
     best_markers: list[tuple[str, int]] = []
     best_debug: list[dict] = []
 
-    for try_dpi in dpis:
-        try:
-            images = convert_from_path(pdf_path, dpi=try_dpi)
-        except Exception as e:
-            log.warning("PDF render dpi=%s fehlgeschlagen: %s", try_dpi, e)
-            continue
-        if len(images) != total:
-            log.warning("PDF render dpi=%s: %d Bilder, erwartet %d", try_dpi, len(images), total)
-        markers, qr_debug = _markers_from_pages(images, regex=regex)
-        markers = _finalize_markers(markers)
-        if _marker_score(markers) > _marker_score(best_markers):
-            best_markers, best_debug = markers, qr_debug
-        if _marker_score(markers) >= 2:
-            break  # genug Marker — höhere DPI spart Zeit
+    for backend in _RENDER_BACKENDS:
+        for try_dpi in dpis:
+            try:
+                images = convert_pdf_pages(pdf_path, dpi=try_dpi, backend=backend)
+            except Exception as e:
+                log.warning("PDF render %s dpi=%s fehlgeschlagen: %s", backend, try_dpi, e)
+                continue
+            if len(images) != total:
+                log.warning(
+                    "PDF render %s dpi=%s: %d Bilder, erwartet %d",
+                    backend, try_dpi, len(images), total,
+                )
+            markers, qr_debug = _markers_from_pages(images, regex=regex)
+            markers = _finalize_markers(markers)
+            score = _marker_score(markers)
+            if score > _marker_score(best_markers):
+                best_markers, best_debug = markers, qr_debug
+                if score:
+                    log.info(
+                        "Legacy QR: %d Marker via %s @ %d dpi",
+                        score, backend, try_dpi,
+                    )
+            if score >= 2:
+                return best_markers, total, best_debug
+        if _marker_score(best_markers) >= 1:
+            break
 
     return best_markers, total, best_debug
 

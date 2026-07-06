@@ -5,9 +5,9 @@ set -euo pipefail
 TARGET="${PAPERLESS_SCRIPTS_DIR:-/opt/paperless-scripts}"
 VENV="$TARGET/venv"
 
-echo "==> apt: poppler-utils libzbar0 zbar-tools"
+echo "==> apt: poppler-utils libzbar0 zbar-tools ghostscript"
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y poppler-utils libzbar0 zbar-tools
+DEBIAN_FRONTEND=noninteractive apt-get install -y poppler-utils libzbar0 zbar-tools ghostscript
 
 if [[ ! -d "$VENV" ]]; then
   echo "==> venv anlegen: $VENV"
@@ -22,5 +22,6 @@ echo "==> pip (corr-manager requirements)"
 echo "==> Prüfung"
 "$VENV/bin/python3" -c "import pdf2image, pyzbar; print('pdf2image+pyzbar ok')"
 command -v pdftoppm
+command -v gs
 command -v zbarimg
 echo "==> Test mit: $VENV/bin/python3 $TARGET/legacy_qr_split_test.py /pfad/scan.pdf --verbose-pages"
