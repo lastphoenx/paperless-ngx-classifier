@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.46"  # 2.46: Legacy-Split Ghostscript (wie Bash-Original), Scan-Meta in API
-UI_VERSION = "2.87"
+__version__ = "2.47"  # 2.47: Legacy-Split nur Archiv wenn Original ohne QR (UI ~10s)
+UI_VERSION = "2.88"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -768,6 +768,37 @@ def pl_download_pdf_variants(doc_id: int) -> list[tuple[str, bytes, str]]:
         except Exception as e:
             log.warning("Legacy-Split PDF %s für #%s: %s", label, doc_id, e)
     return out
+
+
+def _legacy_split_resolve_document(doc_id: int, regex: str) -> tuple[dict, str] | None:
+    """
+    Original laden & scannen (~10s); Archiv nur wenn Original keine QR-Marker hat.
+    """
+    from legacy_split_by_qr import DEFAULT_DPI, _marker_score, _scan_pdf_bytes
+
+    orig_name = f"{doc_id}.pdf"
+    best: dict | None = None
+
+    try:
+        orig_bytes, orig_name = pl_download_pdf(doc_id, original=True)
+        best = _scan_pdf_bytes("original", orig_bytes, regex=regex, dpi=DEFAULT_DPI)
+        if _marker_score(best["markers"]) >= 1:
+            log.info("Legacy-Split #%s: Original reicht (%d Marker)", doc_id, _marker_score(best["markers"]))
+            return best, orig_name
+    except Exception as e:
+        log.warning("Legacy-Split Original #%s: %s", doc_id, e)
+
+    try:
+        arch_bytes, arch_name = pl_download_pdf(doc_id, original=False)
+        cand = _scan_pdf_bytes("archiv", arch_bytes, regex=regex, dpi=DEFAULT_DPI)
+        if best is None or cand["rank"] > best["rank"]:
+            return cand, arch_name
+    except Exception as e:
+        log.warning("Legacy-Split Archiv #%s: %s", doc_id, e)
+
+    if best:
+        return best, orig_name
+    return None
 
 
 def resolve_group_ids(group_names: list[str]) -> list[int]:
@@ -2229,34 +2260,30 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
     from legacy_split_by_qr import (
         split_paperless_document,
         has_real_qr_splits,
-        resolve_best_pdf_for_split,
     )
 
     dry_run = bool(body.get("dry_run", False))
     regex = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
     consume_dir = Path(body.get("consume_dir") or PAPERLESS_CONSUME_DIR)
 
-    variants = pl_download_pdf_variants(doc_id)
-    if not variants:
-        raise HTTPException(400, f"Dokument #{doc_id} — weder Original noch Archiv-PDF ladbar")
-
-    orig_name = variants[0][2]
     loop = asyncio.get_running_loop()
     t_scan = time.monotonic()
 
-    resolved = await loop.run_in_executor(
+    resolved_pack = await loop.run_in_executor(
         _LEGACY_SPLIT_EXECUTOR,
-        functools.partial(
-            resolve_best_pdf_for_split,
-            [(label, data) for label, data, _ in variants],
-            regex=regex,
-        ),
+        functools.partial(_legacy_split_resolve_document, doc_id, regex),
     )
     scan_seconds = round(time.monotonic() - t_scan, 1)
-    if not resolved:
-        raise HTTPException(400, f"Dokument #{doc_id} — PDF-Analyse fehlgeschlagen")
+    if not resolved_pack:
+        raise HTTPException(400, f"Dokument #{doc_id} — weder Original noch Archiv-PDF ladbar")
 
-    source, pdf_bytes, markers, total, qr_debug, scan_meta = resolved
+    best, orig_name = resolved_pack
+    source = best["label"]
+    pdf_bytes = best["pdf_bytes"]
+    markers = best["markers"]
+    total = best["total"]
+    qr_debug = best["qr_debug"]
+    scan_meta = best.get("scan_meta") or {}
     qr_matched = sum(1 for x in qr_debug if x.get("matched"))
 
     def _split_preview() -> list[dict]:

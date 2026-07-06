@@ -491,25 +491,39 @@ def resolve_best_pdf_for_split(
     *,
     regex: str = DEFAULT_QR_REGEX,
     dpi: int = DEFAULT_DPI,
+    min_score_skip_rest: int = 1,
 ) -> tuple[str, bytes, list[tuple[str, int]], int, list[dict], dict] | None:
-    """Original + Archiv parallel scannen — Variante mit meisten Markern gewinnt."""
+    """
+    PDF-Varianten scannen — Original zuerst.
+    Archiv wird übersprungen, sobald Original genug QR-Marker hat (spart Minuten).
+    """
     if not pdf_variants:
         return None
+    by_label = {label: data for label, data in pdf_variants if data}
+    order: list[tuple[str, bytes]] = []
+    if "original" in by_label:
+        order.append(("original", by_label["original"]))
+    if "archiv" in by_label:
+        order.append(("archiv", by_label["archiv"]))
+    for label, data in pdf_variants:
+        if label not in ("original", "archiv") and data:
+            order.append((label, data))
+
     best: dict | None = None
-    workers = min(2, len(pdf_variants))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(_scan_pdf_bytes, label, data, regex=regex, dpi=dpi): label
-            for label, data in pdf_variants if data
-        }
-        for fut in as_completed(futures):
-            try:
-                candidate = fut.result()
-            except Exception as e:
-                log.warning("Legacy-Split Scan %s fehlgeschlagen: %s", futures[fut], e)
-                continue
-            if best is None or candidate["rank"] > best["rank"]:
-                best = candidate
+    for label, data in order:
+        try:
+            candidate = _scan_pdf_bytes(label, data, regex=regex, dpi=dpi)
+        except Exception as e:
+            log.warning("Legacy-Split Scan %s fehlgeschlagen: %s", label, e)
+            continue
+        if best is None or candidate["rank"] > best["rank"]:
+            best = candidate
+        if label == "original" and candidate["rank"][0] >= min_score_skip_rest:
+            log.info(
+                "Legacy-Split: Original %d Marker — weitere Varianten übersprungen",
+                candidate["rank"][0],
+            )
+            break
     if best is None:
         return None
     return (
