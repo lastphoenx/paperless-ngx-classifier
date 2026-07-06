@@ -1,12 +1,28 @@
-# Brillenpass — Handoff (Chat 2026-07-05)
+# Brillenpass — Handoff (Chat 2026-07-05/06)
 
-Kurzüberblick für Fortsetzung in neuem Chat. Repo: `paperless-ngx-classifier`, Deploy CT121 `/opt/paperless-scripts/`, UI `http://192.168.131.31:8100`.
+Kurzüberblick für Fortsetzung. Repo: `paperless-ngx-classifier`, Deploy CT121 `/opt/paperless-scripts/`, UI `http://192.168.131.31:8100`.
 
-**Stand Git `main`:** Pipeline **v12.50** — Tesseract-TSV Stufe 1a, Regex Stufe 1b, Vision nur mit `BRILLENPASS_VISION_FALLBACK=1` (Default aus).
+**Stand Git `main` (2026-07-06):** Pipeline **v12.60**, paper.manager **BE 2.51 / UI 2.92**.
 
 ---
 
-## Architektur v12.50
+## Erledigt 2026-07-06
+
+### Brillenpass «Keine Glaswerte» (v12.59+)
+
+- **Ursache:** McOptic/Vision schreibt Werte in `messung` + `diagnose.merged`; Freigabe persistierte nur `fern`/`naehe` → Übersicht leer.
+- **Fix:** `correspondent_manager_app.py` speichert `messung` bei Approve; UI-Fallback aus `diagnose.merged`.
+- **Reparatur:** `scripts/repair_brillenpaesse.py` auf CT121; Meyer-Quittungstabelle (12.60).
+
+### Legacy QR-Split (verifiziert Dok #651)
+
+- **CLI:** `legacy_qr_split_test.py` + Ghostscript @ 150 dpi — 4 Marker in ~10 s.
+- **UI:** async Vorschau + Split; PDF → `/tmp/legacy-qr-split/`, Scan via `legacy_qr_scan_worker.py`.
+- **Stolperstein:** `.env` `LEGACY_SPLIT_QR_REGEX` ohne Quotes → `[^s]` statt `[^\s]` → ewiger Scan. Mit Quotes oder BE ≥ 2.51 (`normalize_legacy_qr_regex`).
+
+---
+
+## Architektur v12.60
 
 | Stufe | Quelle | Default |
 |---|---|---|

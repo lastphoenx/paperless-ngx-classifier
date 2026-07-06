@@ -263,7 +263,8 @@ nano /opt/paperless/.env
 | `PENDING_BRILLENPASS_TAG` | `pending_brillenpass` | Tag am Quelldokument während Review |
 | `BRILLENPASS_DEDUP_DAYS` | `21` | Dedup-Fenster bei Freigabe (Rechnung + Pass gleiche Periode) |
 | `PAPERLESS_CONSUME_DIR` | `/mnt/paperless-data/consume` | Ziel für Legacy QR-Split |
-| `LEGACY_SPLIT_QR_REGEX` | `^[0-9]{6}_[^\s]+$` | QR-Metadaten auf Trennseiten (NAS) |
+| `LEGACY_SPLIT_QR_REGEX` | `'^[0-9]{6}_[^\s]+$'` in `.env` **mit Quotes** |
+| `LEGACY_SPLIT_TMP` | `/tmp/legacy-qr-split` — lokales PDF vor Scan |
 | `OLLAMA_REGEX_MODEL` | `llama3.3:70b` | Separates Ollama-Modell für den Regex-Assistenten in paper.manager (Fallback auf `OLLAMA_MODEL`) |
 
 Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VERSIONING.md`.
@@ -282,6 +283,9 @@ Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VE
 | `brillenpass_parser.py` | Brillenpass-Parser-Registry, Auto-Detect, Dedup |
 | `brillenpass_runner.py` | Nachträgliche Brillenpass-Verarbeitung (CLI/API) |
 | `legacy_split_by_qr.py` | Legacy QR-Metadaten-Split → consume/ |
+| `legacy_qr_scan_worker.py` | Subprocess-QR-Scan für paper.manager |
+| `scripts/legacy_qr_split_test.py` | CLI-Test auf CT121 |
+| `scripts/repair_brillenpaesse.py` | `messung` aus diagnose nachziehen |
 | `docker-compose.yml` | Paperless-NGX Stack (Vorlage — Pfade und Passwörter anpassen) |
 | `.env.example` | Alle Konfigurationsvariablen mit Erklärungen |
 | `training/` | Beispiel-Konfigurationsdateien für Korrespondenten, Dokumenttypen, Manifest etc. |

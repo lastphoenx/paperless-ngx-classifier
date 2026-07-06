@@ -358,6 +358,20 @@ systemctl enable --now correspondent-manager
 systemctl status correspondent-manager --no-pager
 ```
 
+### Legacy QR-Split (einmalig)
+
+```bash
+sudo ./scripts/ensure-legacy-qr-deps.sh   # ghostscript, zbar-tools, venv
+```
+
+In `/opt/paperless/.env`:
+
+```bash
+LEGACY_SPLIT_QR_REGEX='^[0-9]{6}_[^\s]+$'
+```
+
+Test: `/opt/paperless-scripts/venv/bin/python3 legacy_qr_split_test.py /opt/scan.pdf --verbose-pages`
+
 ### Backup-Timer (optional, empfohlen)
 
 ```bash
