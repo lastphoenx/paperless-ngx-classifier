@@ -889,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.79';
+const UI_VERSION = '2.80';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5033,10 +5033,31 @@ function _bpFmtPd(pd) {
   return parts.join(' · ');
 }
 
+function _bpEffectiveMessung(v) {
+  const m = v.messung || {};
+  if (m.rechts?.sph || m.links?.sph) return m;
+  if ((v.extraktion || {}).layout === 'fern_naehe') return null;
+  const pick = (side) => {
+    const f = (v.fern || {})[side] || {};
+    const n = (v.naehe || {})[side] || {};
+    const eye = { ...n, ...f };
+    return eye.sph ? eye : (n.sph ? n : (f.sph ? f : null));
+  };
+  const rechts = pick('rechts'), links = pick('links');
+  if (rechts?.sph || links?.sph) return { rechts, links };
+  return null;
+}
+
+function _bpFmtMessungBlock(block) {
+  block = block || {};
+  const r = _bpFmtEyeRow(block.rechts, 'R');
+  const l = _bpFmtEyeRow(block.links, 'L');
+  if (!r && !l) return '';
+  return `<div class="bp-dist-block">${r}${l}</div>`;
+}
+
 function _bpRenderOverviewCard(e) {
   const c = e.current || {};
-  const naehe = c.naehe || {};
-  const fern = c.fern || {};
   const glas = c.glas || {};
   const pd = c.pd || {};
   const badge = e.pending_review && e.is_latest
@@ -5045,7 +5066,10 @@ function _bpRenderOverviewCard(e) {
     ? '<span class="badge" style="background:#22c55e;margin-left:4px">Aktuell</span>'
     : '<span class="badge" style="background:#64748b;margin-left:4px">Archiv</span>';
   const docLink = _bpDocLinks(c);
-  const distHtml = [_bpFmtDistBlock('Nähe', naehe), _bpFmtDistBlock('Fern', fern)].filter(Boolean).join('');
+  const messung = _bpEffectiveMessung(c);
+  const distHtml = messung
+    ? _bpFmtMessungBlock(messung)
+    : [_bpFmtDistBlock('Nähe', c.naehe || {}), _bpFmtDistBlock('Fern', c.fern || {})].filter(Boolean).join('');
   const pdHtml = _bpFmtPd(pd);
   return `<div class="bp-card">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:6px">
@@ -5106,21 +5130,6 @@ function _bpCollectEye(prefix) {
     prisma: g(`${prefix}-prisma`), basis: g(`${prefix}-basis`), add: g(`${prefix}-add`),
   };
   return eye.sph ? eye : null;
-}
-
-function _bpEffectiveMessung(v) {
-  const m = v.messung || {};
-  if (m.rechts?.sph || m.links?.sph) return m;
-  if ((v.extraktion || {}).layout === 'fern_naehe') return null;
-  const pick = (side) => {
-    const f = (v.fern || {})[side] || {};
-    const n = (v.naehe || {})[side] || {};
-    const eye = { ...n, ...f };
-    return eye.sph ? eye : (n.sph ? n : (f.sph ? f : null));
-  };
-  const rechts = pick('rechts'), links = pick('links');
-  if (rechts?.sph || links?.sph) return { rechts, links };
-  return null;
 }
 
 function _bpShowDualDist(v) {

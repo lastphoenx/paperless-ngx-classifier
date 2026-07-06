@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.41"  # 2.41: needs_add Schleife — IndentationError behoben
-UI_VERSION = "2.79"
+UI_VERSION = "2.80"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
