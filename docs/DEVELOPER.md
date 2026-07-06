@@ -194,6 +194,7 @@ grep '"document_id": 3563' /opt/paperless-scripts/training/audit_log.jsonl | gre
 | GET `/` hängt, 0 Bytes | SyntaxError in `brillenpass_parser` ab `57de419` — Import scheitert, Service tot; danach `2.40` |
 | s1 leer, s2 ok | McOptic-OCR-Parser trifft nicht — nur Vision liefert Werte |
 | Kein Review trotz merged | `write_pending` Dedup oder Crash nach s2 |
+| «Keine Glaswerte» in Übersicht | Freigabe speicherte nur `fern`/`naehe`, nicht `messung` — Fix BE 2.59+; `repair_brillenpaesse.py` |
 
 Ausführlicher Handoff: [BRILLENPASS_HANDOFF.md](BRILLENPASS_HANDOFF.md).
 
@@ -209,32 +210,57 @@ Ausführlicher Handoff: [BRILLENPASS_HANDOFF.md](BRILLENPASS_HANDOFF.md).
 | Paperless Barcodes | PATCHT / ASN | Neuer Scan, Trennseiten |
 | `legacy_split_by_qr.py` | `060102_Kategorie_Person` | Nachträglich, NAS-Altbestand |
 
-Port des Bash-Scripts `tsa_barcode_split_function.sh`: Ghostscript 600 dpi → zbar (QR only) → pdftk-ähnliche Seitenlogik.
+Port von `tsa_barcode_split_function.sh`: **Ghostscript** (nicht Poppler allein) + pyzbar/zbar + Seiten-Split.
 
-### 6.2 API
+### 6.2 API (async)
 
-`POST /api/legacy-split/trigger/{doc_id}`
+`POST /api/legacy-split/trigger/{doc_id}` → sofort `{async: true}`; UI pollt:
+
+`GET /api/legacy-split/trigger-status/{doc_id}?dry_run=true`
 
 Body (JSON):
 
 ```json
 {
   "dry_run": true,
+  "sync": false,
   "regex": "^[0-9]{6}_[^\\s]+$",
   "consume_dir": "/mnt/paperless-data/consume"
 }
 ```
 
-- `dry_run: true` → Vorschau `{pages, splits: [{barcode, from_page, to_page}]}`
-- `dry_run: false` → schreibt `ocrscan_{barcode}_{basename}_p{von}_bis_p{bis}.pdf` nach `consume_dir`
+- `dry_run: true` → Vorschau `{ok, pages, splits, scan_seconds, scan_meta}`
+- `dry_run: false` → Split lokal, `shutil.move` nach `consume_dir`
+- `sync: true` → blockierend (curl/Debug), kein Polling
 
-Env: `PAPERLESS_CONSUME_DIR`, `LEGACY_SPLIT_QR_REGEX`
+### 6.3 Architektur (BE 2.51)
 
-### 6.3 Abhängigkeiten
+```
+POST trigger → BackgroundTask → _LEGACY_SPLIT_EXECUTOR
+  → PDF API → /tmp/legacy-qr-split/{id}/source.pdf
+  → subprocess: legacy_qr_scan_worker.py (Hauptthread, pyzbar-sicher)
+  → find_split_markers (ghostscript @ 150 dpi, early exit ab 2 Markern)
+  → split_pdf_at_markers in /tmp/.../parts/ → move nach consume/
+```
 
-- `pdf2image` (poppler)
-- `pyzbar` (oder Subprocess `zbarimg`)
-- Schreibrecht auf `PAPERLESS_CONSUME_DIR`
+**Wichtig:** `LEGACY_SPLIT_QR_REGEX` in `.env` **mit Quotes** — sonst `[^\s]` → `[^s]` und 0 Treffer (Vollscan alle DPI).
+
+`normalize_legacy_qr_regex()` in `legacy_split_by_qr.py` fängt kaputte Werte ab.
+
+### 6.4 Abhängigkeiten & CLI
+
+```bash
+sudo ./scripts/ensure-legacy-qr-deps.sh   # poppler, ghostscript, zbar, venv
+/opt/paperless-scripts/venv/bin/python3 legacy_qr_split_test.py /pfad/scan.pdf --verbose-pages
+```
+
+| Datei | Rolle |
+|---|---|
+| `legacy_split_by_qr.py` | Scan, Marker, Split-Logik |
+| `legacy_qr_scan_worker.py` | Subprocess-Worker für UI |
+| `scripts/legacy_qr_split_test.py` | CT121-Diagnose ohne Paperless |
+
+Env: `PAPERLESS_CONSUME_DIR`, `LEGACY_SPLIT_QR_REGEX`, `LEGACY_SPLIT_TMP`
 
 ---
 
@@ -247,7 +273,8 @@ Env: `PAPERLESS_CONSUME_DIR`, `LEGACY_SPLIT_QR_REGEX`
 | `PAPERLESS_INTERNAL_URL` | Container-zu-Container, Session-Fallback |
 | `PAPER_MANAGER_TOKEN` | Optional: API ohne Browser-Session |
 | `PAPERLESS_CONSUME_DIR` | Legacy QR-Split Ziel |
-| `LEGACY_SPLIT_QR_REGEX` | QR-Metadaten-Regex |
+| `LEGACY_SPLIT_QR_REGEX` | QR-Metadaten-Regex — **in .env mit Quotes:** `'^[0-9]{6}_[^\s]+$'` |
+| `LEGACY_SPLIT_TMP` | Temp für PDF/Scan (Default `/tmp/legacy-qr-split`) |
 | `BRILLENPASS_DEDUP_DAYS` | Perioden-Dedup (Default 21) |
 | `BRILLENPAESSE_JSON` | Gespeicherte Versionen |
 | `PENDING_BRILLENPASS_JSONL` | Review-Queue |

@@ -128,28 +128,59 @@ Neue Scans in `consume/` (ohne `legacy/`) → volle Pipeline unverändert.
 
 Wenn ein **einzelnes Paperless-Dokument** viele Legacy-Einzeldokumente enthält (QR auf jeder Trennseite, z. B. `060102_Gesundheit_Monika`), aber **nicht** beim Bulk-Import gesplittet wurde:
 
-### paper.manager (ab UI 2.47)
+### paper.manager (UI 2.92 / BE 2.51)
 
-Menü **✂ Legacy QR-Split** → Dok-ID → **Vorschau** → **Splitten → consume**
+Menü **✂ Legacy QR-Split** → Dok-ID → **Vorschau** (async, ~10–15 s) → **Splitten → consume**
 
-### API
+- Statuszeile pollt den Job (`GET /api/legacy-split/trigger-status/{id}`)
+- Vorschau zeigt Tabelle: Teil / Seiten / Barcode
+- Ausgabe: `ocrscan_{barcode}_{basename}_p{von}_bis_p{bis}.pdf` in `PAPERLESS_CONSUME_DIR`
+
+### Ablauf technisch (CT121)
+
+1. PDF von Paperless-API nach `/tmp/legacy-qr-split/{doc_id}/source.pdf` (nicht direkt vom NAS-Mount scannen)
+2. QR-Scan via **Ghostscript @ 150 dpi** in Subprocess `legacy_qr_scan_worker.py` (wie CLI)
+3. Split lokal in `/tmp/.../parts/`, dann `move` nach `consume/`
+
+### CLI-Test (ohne UI)
 
 ```bash
-curl -X POST "http://localhost:8100/api/legacy-split/trigger/651" \
-  -H "Content-Type: application/json" \
-  -H "Cookie: sessionid=..." \
-  -d '{"dry_run": true}'
+sudo ./scripts/ensure-legacy-qr-deps.sh   # einmalig: gs, zbar, venv
+/opt/paperless-scripts/venv/bin/python3 \
+  /opt/paperless-scripts/legacy_qr_split_test.py \
+  /opt/scan.pdf --verbose-pages
 ```
 
-### `.env`
+Paperless-Dok per API (sync):
+
+```bash
+curl -s -X POST "http://127.0.0.1:8100/api/legacy-split/trigger/651" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: sessionid=..." \
+  -d '{"dry_run": true, "sync": true}' | python3 -m json.tool
+```
+
+### `.env` (CT121)
 
 ```bash
 PAPERLESS_CONSUME_DIR=/mnt/paperless-data/consume
-LEGACY_SPLIT_QR_REGEX=^[0-9]{6}_[^\s]+$
+# WICHTIG: Quotes — sonst wird \s zu «s» und der Scan läuft ewig ohne Treffer
+LEGACY_SPLIT_QR_REGEX='^[0-9]{6}_[^\s]+$'
 ```
 
-Modul: `legacy_split_by_qr.py` — Port des früheren `tsa_barcode_split_function.sh`.
+Optional: `LEGACY_SPLIT_TMP=/tmp/legacy-qr-split`
 
-**Hinweis:** Original-Dokument in Paperless bleibt bestehen. Teile durchlaufen danach die normale Pipeline (OCR, Vision, Klassifizierung) — **nicht** den Legacy-Index-Modus (`consume/legacy/`).
+### Fehlerbehebung QR-Split
 
-Benutzer-Doku: [`Benutzerhandbuch_paper_manager.md`](Benutzerhandbuch_paper_manager.md#14-legacy-qr-split) · Entwickler: [`DEVELOPER.md`](DEVELOPER.md#6-legacy-qr-split--entwickler)
+| Symptom | Ursache / Lösung |
+|---------|------------------|
+| Vorschau hängt bei «QR scannen…» | `.env` Regex ohne Quotes → `[^s]` statt `[^\s]`; Fix oben oder Deploy ≥ 2.51 |
+| CLI ok, UI nicht | `git pull && ./scripts/deploy-to-ct121.sh --no-docker && systemctl restart correspondent-manager` |
+| 0 QR erkannt | Poppler reicht nicht — Ghostscript muss installiert sein (`ensure-legacy-qr-deps.sh`) |
+| Worker hängt | `journalctl -u correspondent-manager -f \| grep -i legacy` — Regex in systemd-Child prüfen |
+
+Module: `legacy_split_by_qr.py`, `legacy_qr_scan_worker.py` — Port von `tsa_barcode_split_function.sh` (Ghostscript + zbar).
+
+**Hinweis:** Original-Dokument in Paperless bleibt bestehen. Teile durchlaufen die normale Pipeline — **nicht** Legacy-Index (`consume/legacy/`).
+
+Benutzer: [`Benutzerhandbuch_paper_manager.md`](Benutzerhandbuch_paper_manager.md#14-legacy-qr-split) · Entwickler: [`DEVELOPER.md`](DEVELOPER.md#6-legacy-qr-split--entwickler)

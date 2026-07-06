@@ -365,7 +365,7 @@ Neue Brille ~12 Monate später → neuer Eintrag mit Diff zur Vorversion.
 
 ### Tab Brillenpass — Bereiche
 
-**Übersicht** — alle Personen mit gespeicherten Versionen und offenen Reviews (Badge in Sidebar).
+**Übersicht** — alle Personen mit gespeicherten Versionen und offenen Reviews (Badge in Sidebar). Zeigt Glaswerte aus `messung` oder älterem `fern`-Block; bei leerer Anzeige trotz Review: `scripts/repair_brillenpaesse.py` auf CT121.
 
 **Manuelle Erfassung** — Werte ohne Scan eintragen (Person, Korrespondent, Datum, Parser optional).
 
@@ -379,7 +379,18 @@ Neue Brille ~12 Monate später → neuer Eintrag mit Diff zur Vorversion.
 
 **Review-Panel** — Vorschlag prüfen, Diff zur letzten Version, Freigeben oder Ablehnen.
 
-### Unterstützte Optiker (Stand pipe 12.44)
+### Reparatur bestehender Pässe (CT121)
+
+Wenn die Übersicht «Keine Glaswerte» zeigt, obwohl der Review-Vorschlag stimmt (McOptic u. a. speichern in `messung`):
+
+```bash
+cd /opt/paperless-ngx-classifier
+/opt/paperless-scripts/venv/bin/python3 scripts/repair_brillenpaesse.py
+```
+
+Oder: Brillenpass-Tab einmal öffnen (Auto-Hydration ab BE 2.59). Nach Freigabe werden `messung` und `diagnose.merged` persistiert.
+
+### Unterstützte Optiker (Stand pipe 12.60)
 
 | Vendor | Formate |
 |---|---|
@@ -407,9 +418,10 @@ Typischer QR-Inhalt: `060102_Gesundheit_Monika` (Regex: `^[0-9]{6}_[^\s]+$`).
 Menü **✂ Legacy QR-Split**:
 
 1. **Paperless Dok-ID** eingeben (z. B. `651`)
-2. **Vorschau** — zeigt Seitenbereiche und erkannte Barcodes (dry-run, schreibt nichts)
-3. **Splitten → consume** — PDF wird von Paperless geladen, gesplittet, Teile nach `PAPERLESS_CONSUME_DIR` gelegt
-4. Paperless Consumer startet die **normale Pipeline** pro Teil (OCR, Vision, Klassifizierung)
+2. **Vorschau** — async (~10–15 s), Tabelle mit Teilen/Seiten/Barcodes (nichts wird geschrieben)
+3. **Splitten → consume** — Bestätigung, Teile nach `PAPERLESS_CONSUME_DIR`, normale Pipeline pro Teil
+
+Statuszeile zeigt Fortschritt (`PDF laden…` → `QR scannen…` → Ergebnis). Bei Hänger: Log `journalctl -u correspondent-manager | grep -i legacy`.
 
 > Das **Original-Dokument** in Paperless bleibt unverändert. Nach erfolgreichem Split ggf. manuell archivieren oder taggen.
 
@@ -417,10 +429,13 @@ Menü **✂ Legacy QR-Split**:
 
 ```bash
 PAPERLESS_CONSUME_DIR=/mnt/paperless-data/consume
-LEGACY_SPLIT_QR_REGEX=^[0-9]{6}_[^\s]+$
+# Quotes Pflicht — ohne Quotes: Scan hängt (Regex kaputt)
+LEGACY_SPLIT_QR_REGEX='^[0-9]{6}_[^\s]+$'
 ```
 
-Optional: `BRILLENPASS_DEDUP_DAYS=21` (Achtung Schreibweise — nicht `RILLENPASS_…`).
+Einmalig Abhängigkeiten: `sudo ./scripts/ensure-legacy-qr-deps.sh` (ghostscript, zbar, venv).
+
+CLI-Diagnose: `legacy_qr_split_test.py` — siehe [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md#qr-split-nachträglich).
 
 ### Abgrenzung
 
