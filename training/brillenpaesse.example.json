@@ -27,6 +27,7 @@
             "beschichtungen": ["Blaufilter", "Superentspiegelung"]
           },
           "extraktion": { "quelle": "fielmann_regex+vision", "confidence": "mittel" },
+          "bemerkung": "Reservebrille im Auto",
           "diff_zu_vorher": {}
         }
       ]

@@ -1290,10 +1290,101 @@ def apply_document_ids(version: dict, *extra: dict | None) -> dict:
     return version
 
 
+def _version_content_score(version: dict) -> int:
+    """Heuristik: reichere klinische Daten bevorzugen beim Store-Merge."""
+    score = 0
+    for dist in ("messung", "fern", "naehe"):
+        block = version.get(dist) or {}
+        for side in ("rechts", "links"):
+            eye = block.get(side)
+            if isinstance(eye, dict):
+                score += sum(1 for v in eye.values() if v not in (None, "", []))
+    glas = version.get("glas") or {}
+    desc = (glas.get("beschreibung") or "").strip()
+    if desc:
+        score += 10 + len(desc)
+    score += len(glas.get("beschichtungen") or [])
+    pd = version.get("pd") or {}
+    score += sum(1 for s in ("rechts", "links") if pd.get(s) not in (None, ""))
+    for key in ("auftrag", "rechnung"):
+        if (version.get(key) or "").strip():
+            score += 3
+    return score
+
+
+def merge_two_stored_versions(a: dict, b: dict) -> dict:
+    """Zwei freigegebene Versionen zu einer zusammenführen (gleiches Quelldok)."""
+    if _version_content_score(b) > _version_content_score(a):
+        a, b = b, a
+    merged = merge_brillenpass_version(dict(a), b)
+    da = _parse_gueltig_date(a.get("gueltig_ab"))
+    db = _parse_gueltig_date(b.get("gueltig_ab"))
+    if da and db:
+        merged["gueltig_ab"] = max(da, db).isoformat()
+    elif db and not da:
+        merged["gueltig_ab"] = normalize_gueltig_ab_iso(b.get("gueltig_ab")) or merged.get("gueltig_ab")
+    apply_document_ids(merged, a, b)
+    kor = merged.get("korrespondent") or a.get("korrespondent") or b.get("korrespondent") or ""
+    merged["korrespondent"] = kor
+    merged["id"] = build_version_id(merged["gueltig_ab"], kor)
+    ba = (a.get("bemerkung") or "").strip()
+    bb = (b.get("bemerkung") or "").strip()
+    if ba and bb and ba != bb:
+        merged["bemerkung"] = f"{ba} · {bb}"
+    elif ba or bb:
+        merged["bemerkung"] = ba or bb
+    return merged
+
+
+def dedupe_brillenpass_versions_by_document(versionen: list[dict]) -> tuple[list[dict], bool]:
+    """Versionen mit überlappenden document_ids pro Person zusammenführen."""
+    if len(versionen) < 2:
+        return versionen, False
+
+    n = len(versionen)
+    parent = list(range(n))
+
+    def _find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union(i: int, j: int) -> None:
+        ri, rj = _find(i), _find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(n):
+        ids_i = set(collect_document_ids(versionen[i]))
+        if not ids_i:
+            continue
+        for j in range(i + 1, n):
+            if ids_i & set(collect_document_ids(versionen[j])):
+                _union(i, j)
+
+    groups: dict[int, list[dict]] = {}
+    for i in range(n):
+        groups.setdefault(_find(i), []).append(versionen[i])
+
+    changed = False
+    out: list[dict] = []
+    for group in groups.values():
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        merged = group[0]
+        for other in group[1:]:
+            merged = merge_two_stored_versions(merged, other)
+        changed = True
+        out.append(merged)
+    return sort_brillenpass_versions(out), changed
+
+
 def merge_brillenpass_version(existing: dict, incoming: dict) -> dict:
     """Bestehende freigegebene Version mit neuem Vorschlag anreichern (Dedup)."""
     out = dict(existing)
-    for key in ("auftrag", "rechnung", "gueltig_ab"):
+    for key in ("auftrag", "rechnung", "gueltig_ab", "bemerkung"):
         if not out.get(key) and incoming.get(key):
             out[key] = incoming[key]
     for dist in ("messung", "fern", "naehe"):
