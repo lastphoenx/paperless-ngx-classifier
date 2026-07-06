@@ -65,11 +65,11 @@ def test_merge_tsv_wins_over_regex():
     tsv = parse_by_anchors(_mcoptic_tsv_words())
     regex = parse_mcoptic_pass("R -2.00 -1.00 90 28.0\nL -0.50 -1.00 0 30.0")
     merged = merge_brillenpass_tsv_with_regex(tsv, regex)
-    assert merged["fern"]["rechts"]["sph"] == "-2.75"
+    assert merged["messung"]["rechts"]["sph"] == "-2.75"
     assert merged["pd"]["links"] == "31.0"
 
 
-def test_merge_tsv_office_routes_to_naehe():
+def test_merge_tsv_single_table_to_messung():
     ocr = """
 3850RX Comfort Pro HD 160 MAX CRYSTAL SOLID
 SPH ZYL ACHSE ADD PD
@@ -88,10 +88,10 @@ L 0.00 -0.25 110 1.50 31.5
     }
     regex = parse_mcoptic_pass(ocr)
     merged = merge_brillenpass_tsv_with_regex(tsv, regex, ocr_text=ocr)
-    assert merged["extraktion"]["nutzung"] == "office"
+    assert merged["extraktion"]["layout"] == "messung"
     assert merged["fern"]["rechts"] is None
-    assert merged["naehe"]["rechts"]["sph"] == "+0.25"
-    assert merged["naehe"]["links"]["sph"] == "+0.00"
+    assert merged["messung"]["rechts"]["sph"] == "+0.25"
+    assert merged["messung"]["links"]["sph"] == "+0.00"
 
 
 def test_parse_positional_without_full_header():

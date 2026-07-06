@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.57"  # 12.57: Glas-Nutzung routet fern/naehe (Office vs. Gleitsicht)
+POST_CONSUME_VERSION = "12.58"  # 12.58: messung-Block (eine Tabelle R/L), fern/naehe nur bei Dual-Dokumenten
 import re
 import sys
 import json

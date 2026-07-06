@@ -222,20 +222,21 @@ def plausible_refraktion_eye(eye: dict | None) -> bool:
 
 def _cross_eye_suspicious(data: dict | None) -> bool:
     """Ein Auge minus, anderes deutlich plus — typisch Spalten-/Zeilen-Bleed."""
-    fern = (data or {}).get("fern") or {}
-    r = fern.get("rechts") or {}
-    l = fern.get("links") or {}
-    if not (r.get("sph") and l.get("sph")):
-        return False
-    try:
-        rs = float(str(r["sph"]).replace(",", ".").lstrip("+"))
-        ls = float(str(l["sph"]).replace(",", ".").lstrip("+"))
-        if rs > 0.5 and ls < -0.25:
-            return True
-        if ls > 0.5 and rs < -0.25:
-            return True
-    except ValueError:
-        pass
+    for block_name in ("messung", "fern"):
+        block = (data or {}).get(block_name) or {}
+        r = block.get("rechts") or {}
+        l = block.get("links") or {}
+        if not (r.get("sph") and l.get("sph")):
+            continue
+        try:
+            rs = float(str(r["sph"]).replace(",", ".").lstrip("+"))
+            ls = float(str(l["sph"]).replace(",", ".").lstrip("+"))
+            if rs > 0.5 and ls < -0.25:
+                return True
+            if ls > 0.5 and rs < -0.25:
+                return True
+        except ValueError:
+            pass
     return False
 
 
@@ -243,9 +244,10 @@ def plausible_brillenpass_data(data: dict | None) -> bool:
     if not data:
         return False
     ok_eye = False
-    for dist in ("fern", "naehe"):
+    for block_name in ("messung", "fern", "naehe"):
+        block = data.get(block_name) or {}
         for side in ("rechts", "links"):
-            eye = (data.get(dist) or {}).get(side) or {}
+            eye = block.get(side) or {}
             if not eye.get("sph"):
                 continue
             if not plausible_refraktion_eye(eye):
@@ -519,7 +521,7 @@ def parse_fielmann_brillenpass(ocr_text: str) -> dict:
 
     gueltig_ab = parse_ch_date_short(text)
 
-    return {
+    base = {
         "parser": "fielmann_rechnung",
         "gueltig_ab": gueltig_ab,
         "auftrag": auftrag,
@@ -534,6 +536,7 @@ def parse_fielmann_brillenpass(ocr_text: str) -> dict:
         },
         "extraktion": {"quelle": "fielmann_rechnung_regex", "confidence": "mittel"},
     }
+    return finalize_brillenpass_buckets(base, ocr_text=text)
 
 
 def _empty_eye_block() -> dict:
@@ -660,12 +663,12 @@ def snapshot_brillenpass(data: dict | None) -> dict:
     if not data:
         return {}
     out: dict = {}
-    for dist in ("fern", "naehe"):
+    for block_name in ("messung", "fern", "naehe"):
         for side in ("rechts", "links"):
-            eye = (data.get(dist) or {}).get(side) or {}
+            eye = (data.get(block_name) or {}).get(side) or {}
             filled = {k: v for k, v in eye.items() if v}
             if filled:
-                out[f"{dist}.{side}"] = filled
+                out[f"{block_name}.{side}"] = filled
     pd = data.get("pd") or {}
     for side in ("rechts", "links"):
         if pd.get(side):
@@ -688,30 +691,42 @@ def diagnose_brillenpass_extraction(
     """Wo klemmt's: Stufe 1 vs. Stufe 2 vs. Merge — Lücken, Konflikte, Confidence."""
     gaps: list[str] = []
     conflicts: list[str] = []
+    merged = merged or {}
+    layout = (merged.get("extraktion") or {}).get("layout")
+    use_messung = layout == "messung" or (
+        layout != "fern_naehe" and any(
+            ((merged.get("messung") or {}).get(s) or {}).get("sph")
+            for s in ("rechts", "links")
+        )
+    )
+    eye_blocks = ("messung",) if use_messung else ("fern", "naehe")
+
     needs_add = False
-    for _dist in ("fern", "naehe"):
+    for _dist in eye_blocks:
         for _side in ("rechts", "links"):
-            _add = (((merged or {}).get(_dist) or {}).get(_side) or {}).get("add")
+            _add = ((merged.get(_dist) or {}).get(_side) or {}).get("add")
             if _plausible_reading_add(_add, parser_data):
                 needs_add = True
                 break
         if needs_add:
             break
-    for dist in ("fern", "naehe"):
+    for dist in eye_blocks:
         for side in ("rechts", "links"):
-            eye = ((merged or {}).get(dist) or {}).get(side) or {}
+            eye = ((merged.get(dist) or {}).get(side) or {})
             if not eye.get("sph"):
                 continue
             for field in ("cyl", "achse"):
                 if not eye.get(field):
                     gaps.append(f"{dist}.{side}.{field}")
-            if dist == "naehe" and needs_add and not eye.get("add"):
+            if needs_add and not eye.get("add"):
                 gaps.append(f"{dist}.{side}.add")
-    pd = (merged or {}).get("pd") or {}
+    pd = merged.get("pd") or {}
     for side in ("rechts", "links"):
-        dist_eye = ((merged or {}).get("fern") or {}).get(side) or {}
-        near_eye = ((merged or {}).get("naehe") or {}).get(side) or {}
-        if (dist_eye.get("sph") or near_eye.get("sph")) and not pd.get(side):
+        has_eye = any(
+            ((merged.get(dist) or {}).get(side) or {}).get("sph")
+            for dist in eye_blocks
+        )
+        if has_eye and not pd.get(side):
             gaps.append(f"pd.{side}")
 
     if not (merged or {}).get("gueltig_ab"):
@@ -719,7 +734,7 @@ def diagnose_brillenpass_extraction(
 
     # Parser vs. Vision — abweichende Werte (gefüllt aber evtl. falsch)
     if parser_data and vision_data:
-        for dist in ("fern", "naehe"):
+        for dist in ("messung", "fern", "naehe"):
             for side in ("rechts", "links"):
                 pe = ((parser_data.get(dist) or {}).get(side) or {})
                 ve = ((vision_data.get(dist) or {}).get(side) or {})
@@ -732,9 +747,8 @@ def diagnose_brillenpass_extraction(
             if pp.get(side) and vp.get(side) and not _vals_close(pp[side], vp[side]):
                 conflicts.append(f"pd.{side}: Parser={pp[side]} · Vision={vp[side]}")
 
-    # Fehlendes Auge obwohl Geschwisterauge da (typisch OCR/Vision-Lücke)
-    for dist in ("fern", "naehe"):
-        block = (merged or {}).get(dist) or {}
+    for dist in eye_blocks:
+        block = merged.get(dist) or {}
         r, l = block.get("rechts") or {}, block.get("links") or {}
         if r.get("sph") and not l.get("sph"):
             gaps.append(f"{dist}.links.sph")
@@ -743,6 +757,7 @@ def diagnose_brillenpass_extraction(
 
     parser_ok = bool(parser_data and has_brillenpass_values(parser_data))
     vision_ok = bool(vision_data and has_brillenpass_values({
+        "messung": vision_data.get("messung") or _empty_eye_block(),
         "fern": vision_data.get("fern") or _empty_eye_block(),
         "naehe": vision_data.get("naehe") or _empty_eye_block(),
         "glas": vision_data.get("glas") or {},
@@ -827,8 +842,8 @@ def merge_brillenpass(
 
 def has_brillenpass_values(data: dict) -> bool:
     """Mindestens ein Auge mit sph oder Glas-Index."""
-    for dist in ("fern", "naehe"):
-        block = data.get(dist) or {}
+    for block_name in ("messung", "fern", "naehe"):
+        block = data.get(block_name) or {}
         for side in ("rechts", "links"):
             eye = block.get(side)
             if eye and eye.get("sph"):
@@ -1323,6 +1338,7 @@ def _bp_base(parser: str, **kwargs) -> dict:
         "rechnung": kwargs.get("rechnung", ""),
         "fern": kwargs.get("fern") or _empty_eye_block(),
         "naehe": kwargs.get("naehe") or _empty_eye_block(),
+        "messung": kwargs.get("messung") or _empty_eye_block(),
         "glas": kwargs.get("glas") or {
             "beschreibung": "", "index": None, "durchmesser": None, "beschichtungen": [],
         },
@@ -1592,87 +1608,65 @@ def _fill_naehe_from_matches(text: str, pattern: re.Pattern) -> dict[str, dict |
     return _fill_eye_block_from_matches(text, pattern)
 
 
-_OFFICE_GLAS_RE = re.compile(
-    r"comfort\s*pro|inside(?:\s+lens)?|\bdesk\b|bildschirm|arbeitsplatz|"
-    r"computerbrille|b[üu]robrille|office(?!\s*sv)",
-    re.IGNORECASE,
-)
-_PROGRESSIVE_GLAS_RE = re.compile(
-    r"gleitsicht|progressiv(?:e)?|varilux|eyezen|syncr|verlauf(?:sglas)?",
-    re.IGNORECASE,
-)
-_FERN_GLAS_RE = re.compile(
-    r"einst[äa]rke|messungsart:\s*ferne|\bferne\b|single\s*vision|\bsv\s+demo",
-    re.IGNORECASE,
-)
-
-
-def detect_brillen_nutzung(text: str = "", glas: dict | None = None) -> str:
-    """Office vs. Gleitsicht vs. Fern — aus Produkt/OCR, nicht aus Sph allein."""
-    blob = " ".join(filter(None, [
-        text or "",
-        (glas or {}).get("beschreibung") or "",
-    ]))
-    if _OFFICE_GLAS_RE.search(blob):
-        return "office"
-    if _PROGRESSIVE_GLAS_RE.search(blob):
-        return "progressive"
-    if _FERN_GLAS_RE.search(blob):
-        return "fern"
-    if re.search(r"\bmultifokal\b", blob, re.IGNORECASE):
-        return "unknown"
-    return "unknown"
+def _ocr_has_dual_fern_naehe_table(text: str) -> bool:
+    """Nur wenn Fern- und Nähe-Tabelle explizit getrennt auf dem Dokument stehen."""
+    t = text or ""
+    has_fern = bool(re.search(
+        r"(?:fern|weit(?:sicht)?)\s+(?:rechts|links)|messungsart:\s*ferne\b",
+        t, re.IGNORECASE,
+    ))
+    has_naehe = bool(re.search(
+        r"n[aä]he\s+(?:rechts|links)|messungsart:\s*n[aä]he",
+        t, re.IGNORECASE,
+    ))
+    return has_fern and has_naehe
 
 
 def _collect_merged_eyes(data: dict) -> dict[str, dict]:
-    """Fern+Nähe pro Seite zusammenführen (TSV/Regex-Split auflösen)."""
+    """Fern+Nähe+Messung pro Seite zusammenführen (TSV/Regex-Split auflösen)."""
     out: dict[str, dict] = {}
     for side in ("rechts", "links"):
-        fe = (data.get("fern") or {}).get(side)
-        ne = (data.get("naehe") or {}).get(side)
-        eye = _merge_eye(fe, ne) or _merge_eye(ne, fe)
+        parts = [
+            (data.get("messung") or {}).get(side),
+            (data.get("fern") or {}).get(side),
+            (data.get("naehe") or {}).get(side),
+        ]
+        eye = None
+        for p in parts:
+            eye = _merge_eye(eye, p) if eye else p
         if eye and eye.get("sph"):
             out[side] = eye
     return out
 
 
-def apply_brillen_nutzung_routing(data: dict, nutzung: str) -> dict:
-    """McOptic-Einstabelle → fern oder naehe je nach Glasnutzung."""
-    eyes = _collect_merged_eyes(data)
-    fern = _empty_eye_block()
-    naehe = _empty_eye_block()
-    has_add = any(_add_is_near((e or {}).get("add")) for e in eyes.values())
-
-    if nutzung == "office":
-        target = naehe
-    elif nutzung == "progressive":
-        target = fern
-    elif nutzung == "fern" or (not has_add and nutzung == "unknown"):
-        target = fern
-    else:
-        # Multifokal/unbekannt + ADD: nicht in fern raten → naehe + Review
-        target = naehe
-
-    for side, eye in eyes.items():
-        target[side] = eye
-
-    data["fern"] = fern
-    data["naehe"] = naehe
-    ext = data.setdefault("extraktion", {})
-    ext["nutzung"] = nutzung
-    if nutzung == "unknown" and ext.get("confidence") == "hoch":
-        ext["confidence"] = "mittel"
-    return data
-
-
 def finalize_brillenpass_buckets(data: dict | None, *, ocr_text: str = "") -> dict:
-    """Nach TSV/Regex/Vision: McOptic-Werte in passenden Block legen."""
+    """Einstabelle → messung (R/L); nur bei explizitem Fern+Nähe-Dokument fern/naehe behalten."""
     if not data:
         return {}
     out = deepcopy(data)
     blob = ocr_text or " ".join(str(out.get(k) or "") for k in ("auftrag", "rechnung"))
-    nutzung = detect_brillen_nutzung(blob, out.get("glas"))
-    return apply_brillen_nutzung_routing(out, nutzung)
+    ext = out.setdefault("extraktion", {})
+    ext.pop("nutzung", None)
+
+    if _ocr_has_dual_fern_naehe_table(blob):
+        out["messung"] = _empty_eye_block()
+        ext["layout"] = "fern_naehe"
+        return out
+
+    eyes = _collect_merged_eyes(out)
+    if not eyes:
+        out.setdefault("messung", _empty_eye_block())
+        ext["layout"] = "messung"
+        return out
+
+    messung = _empty_eye_block()
+    for side, eye in eyes.items():
+        messung[side] = eye
+    out["messung"] = messung
+    out["fern"] = _empty_eye_block()
+    out["naehe"] = _empty_eye_block()
+    ext["layout"] = "messung"
+    return out
 
 
 def _mcoptic_pass_buckets(eyes: dict[str, dict | None]) -> tuple[dict, dict]:
@@ -1720,12 +1714,13 @@ def parse_fielmann_pass(ocr_text: str) -> dict:
     if im:
         index = (im.group(1) or im.group(2) or "").replace(",", ".")
 
-    return _bp_base(
+    base = _bp_base(
         "fielmann_brillenpass",
         gueltig_ab=_parse_pass_date(text),
         naehe=naehe,
         glas={"beschreibung": glas_desc, "index": index, "durchmesser": None, "beschichtungen": []},
     )
+    return finalize_brillenpass_buckets(base, ocr_text=text)
 
 
 def parse_mcoptic_pass(ocr_text: str) -> dict:
@@ -1834,12 +1829,13 @@ def parse_augenarzt(ocr_text: str) -> dict:
     if not naehe["rechts"] and not naehe["links"]:
         naehe = _fill_naehe_from_matches(text, _MCOPTIC_RL)
 
-    return _bp_base(
+    base = _bp_base(
         "augenarzt_verordnung",
         gueltig_ab=_parse_pass_date(text),
         fern=fern,
         naehe=naehe,
     )
+    return finalize_brillenpass_buckets(base, ocr_text=text)
 
 
 def parse_optik_meyer_moehlin(ocr_text: str) -> dict:
