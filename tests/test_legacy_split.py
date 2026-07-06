@@ -1,0 +1,24 @@
+"""Tests für Legacy QR-Split."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from legacy_split_by_qr import (  # noqa: E402
+    _match_barcode,
+    find_split_markers,
+    has_real_qr_splits,
+)
+import re
+
+
+def test_match_barcode_embedded():
+    pat = re.compile(r"^[0-9]{6}_[^\s]+$")
+    assert _match_barcode("060102_Gesundheit_Monika", pat) == "060102_Gesundheit_Monika"
+    assert _match_barcode("prefix 010401_Lohn_Monika suffix", pat) == "010401_Lohn_Monika"
+    assert _match_barcode("QR:060102_X", pat) is None or _match_barcode("060102_X", pat)
+
+
+def test_has_real_qr_splits():
+    assert has_real_qr_splits([("Kein_Barcode", 1), ("060102_A", 3)])
+    assert not has_real_qr_splits([("Kein_Barcode", 1)])

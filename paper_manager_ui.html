@@ -889,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.83';
+const UI_VERSION = '2.84';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5496,7 +5496,20 @@ async function triggerLegacySplit(dryRun) {
       }
       const lines = (d.splits || []).map(s =>
         `S.${s.from_page}–${s.to_page}: ${s.barcode}`).join(' · ');
-      if (status) status.textContent = `${d.pages} Seiten → ${(d.splits||[]).length} Teile: ${lines}`;
+      let extra = '';
+      if ((d.splits || []).length <= 1 && d.pages > 1) {
+        const dbg = (d.qr_debug || []).filter(x => x.matched);
+        const pagesWithQr = [...new Set(dbg.map(x => x.page))].sort((a, b) => a - b);
+        extra = pagesWithQr.length
+          ? `\nQR nur auf Seite(n): ${pagesWithQr.join(', ')} — prüfe Original-Scan oder Regex.`
+          : `\nKein QR erkannt — ggf. falsches Dok (schon gesplittet?) oder Regex anpassen.`;
+        const other = (d.qr_debug || []).filter(x => !x.matched).slice(0, 3);
+        if (other.length) {
+          extra += '\nAndere Codes: ' + other.map(x =>
+            `S.${x.page} «${String(x.raw).slice(0, 40)}»`).join('; ');
+        }
+      }
+      if (status) status.textContent = `${d.pages} Seiten → ${(d.splits||[]).length} Teile: ${lines}${extra}`;
       showToast('Split-Vorschau OK', 'success');
     } else {
       const lines = (d.parts || []).map(p =>
