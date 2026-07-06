@@ -345,7 +345,7 @@ def find_split_markers(
     *,
     regex: str = DEFAULT_QR_REGEX,
     dpi: int = DEFAULT_DPI,
-) -> tuple[list[tuple[str, int]], int, list[dict]]:
+) -> tuple[list[tuple[str, int]], int, list[dict], dict]:
     """
     [(barcode, start_page), …] — 1-basierte Startseiten.
     Rendert PDF einmal pro DPI/Backend (Poppler, dann Ghostscript wie Bash-Original).
@@ -359,6 +359,7 @@ def find_split_markers(
     dpis = _FALLBACK_DPIS if dpi == DEFAULT_DPI else (dpi,)
     best_markers: list[tuple[str, int]] = []
     best_debug: list[dict] = []
+    best_meta: dict = {}
 
     for backend in _RENDER_BACKENDS:
         for try_dpi in dpis:
@@ -377,17 +378,18 @@ def find_split_markers(
             score = _marker_score(markers)
             if score > _marker_score(best_markers):
                 best_markers, best_debug = markers, qr_debug
+                best_meta = {"backend": backend, "dpi": try_dpi}
                 if score:
                     log.info(
                         "Legacy QR: %d Marker via %s @ %d dpi",
                         score, backend, try_dpi,
                     )
             if score >= 2:
-                return best_markers, total, best_debug
+                return best_markers, total, best_debug, best_meta
         if _marker_score(best_markers) >= 1:
             break
 
-    return best_markers, total, best_debug
+    return best_markers, total, best_debug, best_meta
 
 
 def has_real_qr_splits(markers: list[tuple[str, int]]) -> bool:
@@ -448,7 +450,7 @@ def split_pdf_by_qr(
     dpi: int = DEFAULT_DPI,
     source_basename: str | None = None,
 ) -> list[dict]:
-    markers, total, _ = find_split_markers(pdf_path, regex=regex, dpi=dpi)
+    markers, total, _, _ = find_split_markers(pdf_path, regex=regex, dpi=dpi)
     return split_pdf_at_markers(
         pdf_path, output_dir, markers, total, source_basename=source_basename,
     )
@@ -463,12 +465,13 @@ def _scan_pdf_bytes(label: str, pdf_bytes: bytes, *, regex: str, dpi: int) -> di
         tf.write(pdf_bytes)
         tmp = tf.name
     try:
-        markers, total, qr_debug = find_split_markers(tmp, regex=regex, dpi=dpi)
+        markers, total, qr_debug, scan_meta = find_split_markers(tmp, regex=regex, dpi=dpi)
         score = _marker_score(markers)
         seen = sum(1 for x in qr_debug if x.get("matched"))
         log.info(
-            "Legacy-Split Scan %s: %d Seiten, %d Marker, %d QR-Treffer",
+            "Legacy-Split Scan %s: %d Seiten, %d Marker, %d QR-Treffer (%s @ %sdpi)",
             label, total, score, seen,
+            scan_meta.get("backend", "?"), scan_meta.get("dpi", "?"),
         )
         return {
             "rank": (score, seen),
@@ -477,6 +480,7 @@ def _scan_pdf_bytes(label: str, pdf_bytes: bytes, *, regex: str, dpi: int) -> di
             "markers": markers,
             "total": total,
             "qr_debug": qr_debug,
+            "scan_meta": scan_meta,
         }
     finally:
         Path(tmp).unlink(missing_ok=True)
@@ -487,7 +491,7 @@ def resolve_best_pdf_for_split(
     *,
     regex: str = DEFAULT_QR_REGEX,
     dpi: int = DEFAULT_DPI,
-) -> tuple[str, bytes, list[tuple[str, int]], int, list[dict]] | None:
+) -> tuple[str, bytes, list[tuple[str, int]], int, list[dict], dict] | None:
     """Original + Archiv parallel scannen — Variante mit meisten Markern gewinnt."""
     if not pdf_variants:
         return None
@@ -514,6 +518,7 @@ def resolve_best_pdf_for_split(
         best["markers"],
         best["total"],
         best["qr_debug"],
+        best.get("scan_meta") or {},
     )
 
 

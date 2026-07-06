@@ -287,15 +287,16 @@ def main() -> int:
     log.info("=== find_split_markers ===")
     t0 = time.monotonic()
     try:
-        markers, total, qr_debug = find_split_markers(str(pdf_path), regex=args.regex)
+        markers, total, qr_debug, scan_meta = find_split_markers(str(pdf_path), regex=args.regex)
     except Exception as e:
         log.exception("Scan fehlgeschlagen: %s", e)
         return 1
     log.info("Dauer: %.1fs", time.monotonic() - t0)
     log.info(
-        "Seiten: %d | Marker: %d | QR gelesen: %d | Regex-Treffer: %d",
+        "Seiten: %d | Marker: %d | QR gelesen: %d | Regex-Treffer: %d | %s@%sdpi",
         total, len(markers), len(qr_debug),
         sum(1 for x in qr_debug if x.get("matched")),
+        scan_meta.get("backend", "?"), scan_meta.get("dpi", "?"),
     )
 
     for entry in qr_debug:
@@ -309,6 +310,7 @@ def main() -> int:
         "pdf": str(pdf_path),
         "pages": total,
         "regex": args.regex,
+        "scan_meta": scan_meta,
         "markers": [{"barcode": b, "page": p} for b, p in markers],
         "qr_debug": qr_debug,
         "split_possible": has_real_qr_splits(markers),

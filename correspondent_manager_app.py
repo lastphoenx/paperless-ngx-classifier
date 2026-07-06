@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.45"  # 2.45: Legacy-Split Batch-Render, kein Doppel-Scan
-UI_VERSION = "2.86"
+__version__ = "2.46"  # 2.46: Legacy-Split Ghostscript (wie Bash-Original), Scan-Meta in API
+UI_VERSION = "2.87"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -2242,6 +2242,7 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
 
     orig_name = variants[0][2]
     loop = asyncio.get_running_loop()
+    t_scan = time.monotonic()
 
     resolved = await loop.run_in_executor(
         _LEGACY_SPLIT_EXECUTOR,
@@ -2251,11 +2252,24 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
             regex=regex,
         ),
     )
+    scan_seconds = round(time.monotonic() - t_scan, 1)
     if not resolved:
         raise HTTPException(400, f"Dokument #{doc_id} — PDF-Analyse fehlgeschlagen")
 
-    source, pdf_bytes, markers, total, qr_debug = resolved
+    source, pdf_bytes, markers, total, qr_debug, scan_meta = resolved
     qr_matched = sum(1 for x in qr_debug if x.get("matched"))
+
+    def _split_preview() -> list[dict]:
+        preview = []
+        for i, (barcode, from_page) in enumerate(markers):
+            to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
+            preview.append({
+                "barcode": barcode,
+                "from_page": from_page,
+                "to_page": to_page,
+                "is_prefix": barcode == "Kein_Barcode",
+            })
+        return preview
 
     if dry_run:
         if not has_real_qr_splits(markers):
@@ -2269,16 +2283,17 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
                 "qr_seen": len(qr_debug),
                 "qr_debug": qr_debug[:50],
                 "source": source,
+                "scan_seconds": scan_seconds,
+                "scan_meta": scan_meta,
                 "message": (
                     f"Keine QR-Codes passend zu Regex auf {total} Seiten "
-                    f"(Quelle: {source}, Regex: {regex})"
+                    f"(Quelle: {source}, {scan_seconds}s, Regex: {regex})"
                 ),
             }
-        preview = []
-        for i, (barcode, from_page) in enumerate(markers):
-            to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
-            preview.append({"barcode": barcode, "from_page": from_page, "to_page": to_page})
+        preview = _split_preview()
         pages_with_qr = len({d["page"] for d in qr_debug if d.get("matched")})
+        render = scan_meta.get("backend", "?")
+        dpi = scan_meta.get("dpi", "?")
         return {
             "ok": True,
             "dry_run": True,
@@ -2289,9 +2304,12 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
             "qr_seen": len(qr_debug),
             "qr_debug": qr_debug[:50],
             "source": source,
+            "scan_seconds": scan_seconds,
+            "scan_meta": scan_meta,
             "message": (
                 f"{total} Seiten → {len(preview)} Teile "
-                f"({qr_matched} QR auf {pages_with_qr} Seiten, Quelle: {source})"
+                f"({qr_matched} QR auf {pages_with_qr} Seiten, "
+                f"{source}, {render}@{dpi}dpi, {scan_seconds}s)"
             ),
         }
 
@@ -2334,10 +2352,12 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
         "ok": True,
         "message": (
             f"{len(parts)} Teil(e) nach {consume_dir} geschrieben "
-            f"(Quelle: {source}) — Pipeline startet ({detail})"
+            f"({source}, {scan_seconds}s) — Pipeline startet ({detail})"
         ),
         "document_id": doc_id,
         "source": source,
+        "scan_seconds": scan_seconds,
+        "scan_meta": scan_meta,
         "parts": parts,
     }
 
