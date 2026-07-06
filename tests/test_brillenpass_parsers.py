@@ -131,6 +131,8 @@ def test_fielmann_pass():
 def test_mcoptic_pass():
     r = parse_mcoptic_pass(MCOPTIC_PASS_OCR)
     assert r["parser"] == "mcoptic_brillenpass"
+    assert r["extraktion"]["nutzung"] == "office"
+    assert r["fern"]["rechts"] is None
     assert r["naehe"]["rechts"]["add"] == "+1.50"
     assert r["naehe"]["links"]["cyl"] == "-0.50"
     assert r["pd"]["rechts"] == "31.5"
@@ -141,6 +143,7 @@ def test_mcoptic_pass():
 
 def test_mcoptic_pass_fern_einstaerke():
     r = parse_mcoptic_pass(MCOPTIC_PASS_FERN)
+    assert r["extraktion"]["nutzung"] == "fern"
     assert r["fern"]["rechts"]["sph"] == "-1.00"
     assert r["fern"]["rechts"]["cyl"] == "-0.50"
     assert r["fern"]["rechts"]["achse"] == "90"
@@ -440,3 +443,35 @@ def test_consolidate_near_bucket_still_moves_real_add():
     )
     assert merged["naehe"]["rechts"]["sph"] == "+0.25"
     assert merged["fern"]["rechts"] is None
+
+
+THOMAS_OFFICE_OCR = """
+3850RX Comfort Pro HD 160 MAX CRYSTAL SOLID
+SPH ZYL ACHSE ADD PD
+R +0.25 -0.25 57 1.50 31.5
+L 0.00 -0.25 110 1.50 31.5
+14.10.2023
+"""
+
+
+def test_office_comfort_pro_routes_to_naehe_only():
+    r = parse_mcoptic_pass(THOMAS_OFFICE_OCR)
+    assert r["extraktion"]["nutzung"] == "office"
+    assert r["fern"]["rechts"] is None
+    assert r["fern"]["links"] is None
+    assert r["naehe"]["rechts"]["sph"] == "+0.25"
+    assert r["naehe"]["links"]["sph"] == "+0.00"
+    assert r["naehe"]["links"]["add"] == "+1.50"
+
+
+def test_progressive_routes_to_fern_with_add():
+    text = """
+    Gleitsicht Progressive Varilux
+    R +1.00 -0.50 90 2.00 32.0
+    L +0.75 -0.25 85 2.00 31.5
+    """
+    r = parse_mcoptic_pass(text)
+    assert r["extraktion"]["nutzung"] == "progressive"
+    assert r["fern"]["rechts"]["sph"] == "+1.00"
+    assert r["fern"]["rechts"]["add"] == "+2.00"
+    assert r["naehe"]["rechts"] is None
