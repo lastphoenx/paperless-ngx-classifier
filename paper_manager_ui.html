@@ -606,7 +606,7 @@
             placeholder="z.B. Vorname/Sonstiges oder Familie/Versicherung/Policen"
             style="width:100%;box-sizing:border-box"
             title="Format: Hauptordner/Unterordner — z.B. Vorname/Auto, Familie/Behörde, Vorname/Gesundheit">
-          <div style="font-size:10px;color:var(--muted);margin-top:3px">Format: Hauptordner/Unterordner · Gross/klein beachten · Keine Sonderzeichen ausser /</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:3px">Format: Hauptordner/Unterordner · Gross/klein beachten · Erlaubt: Buchstaben, Zahlen, /, -, _</div>
         </div>
         <div style="flex:1;min-width:200px">
           <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">BESCHREIBUNG (optional)</label>
@@ -898,7 +898,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.95';
+const UI_VERSION = '2.96';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
