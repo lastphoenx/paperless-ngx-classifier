@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.59"  # 12.59: messung beim Freigeben/Speichern persistieren
+POST_CONSUME_VERSION = "12.60"  # 12.60: Meyer-Quittungstabelle, partielle messung-Hydration
 import re
 import sys
 import json
