@@ -6,6 +6,7 @@ Ausgabe: ocrscan_{barcode}_{basename}_p{von}_bis_p{bis}.pdf
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -13,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -151,9 +153,12 @@ def _decode_page_image(image) -> list[str]:
     """Barcodes von gerendeter Seite (ohne erneutes PDF-Rendern)."""
     seen: list[str] = []
     seen_set: set[str] = set()
+    # pyzbar/libzbar nur im Hauptthread — sonst Deadlock (UI-Executor-Thread)
+    use_inline = threading.current_thread() is threading.main_thread()
     for variant in _page_scan_variants(image):
-        if _collect_barcodes(_decode_barcodes_from_pil(variant), seen, seen_set):
-            return seen
+        if use_inline:
+            if _collect_barcodes(_decode_barcodes_from_pil(variant), seen, seen_set):
+                return seen
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
             tmp = tf.name
         try:
@@ -463,6 +468,54 @@ def _marker_score(markers: list[tuple[str, int]]) -> int:
     return sum(1 for name, _ in markers if name != "Kein_Barcode")
 
 
+def _scan_pdf_file_isolated(
+    pdf_path: str,
+    label: str,
+    *,
+    regex: str,
+    dpi: int,
+    quick: bool,
+) -> dict:
+    """Separater Python-Prozess — identisch mit legacy_qr_split_test.py / CLI."""
+    worker = Path(__file__).resolve().parent / "legacy_qr_scan_worker.py"
+    if not worker.is_file():
+        raise RuntimeError(f"legacy_qr_scan_worker.py fehlt neben {__file__}")
+    python = os.environ.get("LEGACY_QR_PYTHON", sys.executable)
+    cmd = [python, str(worker), pdf_path, "--regex", regex]
+    if quick:
+        cmd.append("--quick")
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=str(worker.parent),
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(err[:500] or f"scan worker exit {proc.returncode}")
+    data = json.loads(proc.stdout.strip() or "{}")
+    markers = [tuple(m) for m in data.get("markers", [])]
+    total = int(data.get("total", 0))
+    qr_debug = data.get("qr_debug") or []
+    scan_meta = data.get("scan_meta") or {}
+    pdf_bytes = Path(pdf_path).read_bytes()
+    score = _marker_score(markers)
+    log.info(
+        "Legacy-Split Scan %s (subprocess): %d Seiten, %d Marker",
+        label, total, score,
+    )
+    return {
+        "label": label,
+        "pdf_bytes": pdf_bytes,
+        "markers": markers,
+        "total": total,
+        "qr_debug": qr_debug,
+        "scan_meta": {**scan_meta, "path": pdf_path, "isolated": True},
+        "rank": (score, sum(1 for x in qr_debug if x.get("matched"))),
+    }
+
+
 def scan_pdf_file(
     pdf_path: str,
     label: str = "file",
@@ -470,8 +523,14 @@ def scan_pdf_file(
     regex: str = DEFAULT_QR_REGEX,
     dpi: int = DEFAULT_DPI,
     quick: bool = False,
+    isolated: bool | None = None,
 ) -> dict:
     """PDF direkt vom Dateisystem scannen (wie legacy_qr_split_test.py)."""
+    if isolated is None:
+        isolated = threading.current_thread() is not threading.main_thread()
+    if isolated:
+        return _scan_pdf_file_isolated(pdf_path, label, regex=regex, dpi=dpi, quick=quick)
+
     backends = ("ghostscript",) if quick else _RENDER_BACKENDS
     dpis = (150, 300) if quick else None
     markers, total, qr_debug, scan_meta = find_split_markers(
