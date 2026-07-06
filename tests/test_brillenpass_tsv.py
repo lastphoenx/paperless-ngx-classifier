@@ -124,7 +124,18 @@ def test_merge_rl_split_line():
 
 
 def test_diopter_from_token_rejects_garbage():
-    from brillenpass_tsv import _diopter_from_token
-    assert _diopter_from_token("293") is None
-    assert _diopter_from_token("-2.75") == "-2.75"
-    assert _diopter_from_token("-1,25") == "-1.25"
+    from brillenpass_parser import strict_diopter_token
+    assert strict_diopter_token("293") is None
+    assert strict_diopter_token("-2.75") == "-2.75"
+    assert strict_diopter_token("-1,25") == "-1.25"
+
+
+def test_cross_eye_rejects_bleed():
+    from brillenpass_parser import plausible_brillenpass_data
+    bad = {
+        "fern": {
+            "rechts": {"sph": "+2.93", "cyl": "+0.23", "achse": "2"},
+            "links": {"sph": "-1.00", "cyl": "-1.50", "achse": "0"},
+        },
+    }
+    assert not plausible_brillenpass_data(bad)

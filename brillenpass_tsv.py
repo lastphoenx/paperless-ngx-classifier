@@ -19,6 +19,7 @@ from brillenpass_parser import (
     has_brillenpass_values,
     plausible_brillenpass_data,
     plausible_refraktion_eye,
+    strict_diopter_token,
 )
 
 log = logging.getLogger("brillenpass_tsv")
@@ -227,20 +228,7 @@ def header_field_names(fields: dict[str, dict]) -> list[str]:
 
 
 def _diopter_from_token(raw: str) -> str | None:
-    """Dioptrie strikt — ohne Dezimalpunkt keine grossen Zahlen erraten (293 bleibt Müll)."""
-    raw_s = str(raw or "").strip()
-    if not raw_s:
-        return None
-    nv = _norm_val(raw_s)
-    if not nv:
-        return None
-    if "." not in raw_s and "," not in raw_s:
-        try:
-            if abs(float(nv.replace(",", ".").lstrip("+"))) > 15:
-                return None
-        except ValueError:
-            return None
-    return nv
+    return strict_diopter_token(raw)
 
 
 def _both_fern_eyes(data: dict | None) -> bool:

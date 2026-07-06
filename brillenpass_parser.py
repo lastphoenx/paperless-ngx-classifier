@@ -137,27 +137,26 @@ def _norm_val(v: str | float | int | None) -> str | None:
     return s
 
 
-def _coerce_ocular_diopter(raw: str | float | int | None) -> str | None:
-    """OCR ohne Dezimalpunkt: 275 → +2.75, -125 → -1.25."""
-    nv = _norm_val(raw)
+def strict_diopter_token(raw: str | float | int | None) -> str | None:
+    """Dioptrie ohne Raten bei grossen Ganzzahlen (293/275 → verworfen)."""
+    raw_s = str(raw or "").strip()
+    if not raw_s:
+        return None
+    nv = _norm_val(raw_s)
     if not nv:
         return None
-    raw_s = str(raw or "").strip().replace(",", ".")
-    if "." in raw_s:
-        return nv
-    try:
-        f = float(nv.replace(",", ".").lstrip("+"))
-    except ValueError:
-        return nv
-    if abs(f) <= 15:
-        return nv
-    sign = "-" if nv.startswith("-") or str(raw or "").strip().startswith("-") else "+"
-    for div in (100, 10):
-        cand = abs(f) / div
-        if 0.01 < cand <= 15:
-            out = f"{sign}{cand:.2f}".rstrip("0").rstrip(".")
-            return out if "." in out else f"{out}.0"
-    return None
+    if "." not in raw_s and "," not in raw_s:
+        try:
+            if abs(float(nv.replace(",", ".").lstrip("+"))) > 15:
+                return None
+        except ValueError:
+            return None
+    return nv
+
+
+def _coerce_ocular_diopter(raw: str | float | int | None) -> str | None:
+    """Legacy — nur noch für interne Experimente; Parser nutzen strict_diopter_token."""
+    return strict_diopter_token(raw)
 
 
 def plausible_refraktion_eye(eye: dict | None) -> bool:
@@ -180,9 +179,31 @@ def plausible_refraktion_eye(eye: dict | None) -> bool:
             a = int(re.sub(r"\D", "", str(achse)))
             if not 0 <= a <= 180:
                 return False
+            # 1–9 ist fast immer OCR-Müll (179→2, 110→1)
+            if 0 < a < 10:
+                return False
         except ValueError:
             return False
     return True
+
+
+def _cross_eye_suspicious(data: dict | None) -> bool:
+    """Ein Auge minus, anderes deutlich plus — typisch Spalten-/Zeilen-Bleed."""
+    fern = (data or {}).get("fern") or {}
+    r = fern.get("rechts") or {}
+    l = fern.get("links") or {}
+    if not (r.get("sph") and l.get("sph")):
+        return False
+    try:
+        rs = float(str(r["sph"]).replace(",", ".").lstrip("+"))
+        ls = float(str(l["sph"]).replace(",", ".").lstrip("+"))
+        if rs > 0.5 and ls < -0.25:
+            return True
+        if ls > 0.5 and rs < -0.25:
+            return True
+    except ValueError:
+        pass
+    return False
 
 
 def plausible_brillenpass_data(data: dict | None) -> bool:
@@ -197,7 +218,11 @@ def plausible_brillenpass_data(data: dict | None) -> bool:
             if not plausible_refraktion_eye(eye):
                 return False
             ok_eye = True
-    return ok_eye
+    if not ok_eye:
+        return False
+    if _cross_eye_suspicious(data):
+        return False
+    return True
 
 
 def _parse_eye_values(m: re.Match) -> dict:
@@ -1295,15 +1320,17 @@ def _side_key(label: str) -> str:
 def _eye_from_parts(sph, cyl, achse, add=None) -> dict | None:
     if not sph:
         return None
-    sph_n = _coerce_ocular_diopter(sph) or _norm_val(sph)
-    cyl_n = (_coerce_ocular_diopter(cyl) or _norm_val(cyl)) if cyl else None
+    sph_n = strict_diopter_token(sph)
+    cyl_n = strict_diopter_token(cyl) if cyl else None
+    if not sph_n:
+        return None
     eye = _sanitize_eye({
         "sph": sph_n,
         "cyl": cyl_n,
         "achse": re.sub(r"\D", "", str(achse)) if achse else None,
         "prisma": None,
         "basis": None,
-        "add": _norm_val(add),
+        "add": strict_diopter_token(add) or _norm_val(add),
     })
     return eye if plausible_refraktion_eye(eye) else None
 
