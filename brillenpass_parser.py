@@ -2183,3 +2183,85 @@ def compute_brillenpass_diff(old: dict | None, new: dict) -> dict:
         if o != n:
             diff[key] = {"alt": o, "neu": n}
     return diff
+
+
+_EYE_NULL = {"sph": None, "cyl": None, "achse": None, "prisma": None, "basis": None, "add": None}
+
+# Bekannte Dokument-Korrekturen (document_id → deep-merge in Version)
+BRILLENPASS_DOC_PATCHES: dict[int, dict] = {
+    3568: {
+        "korrespondent": "Optik Meyer Möhlin GmbH",
+        "messung": {
+            "rechts": {"sph": "+0.50", "cyl": "0.00", "achse": "0", "prisma": None, "basis": None, "add": None},
+            "links": {"sph": "+1.00", "cyl": "-0.50", "achse": "173", "prisma": None, "basis": None, "add": None},
+        },
+        "extraktion": {"quelle": "manual", "confidence": "hoch", "layout": "messung"},
+    },
+    3242: {
+        "messung": {
+            "links": {"sph": "+1.00", "cyl": "-0.50", "achse": "173", "prisma": None, "basis": None, "add": None},
+        },
+        "glas": {
+            "beschreibung": (
+                "rechts Optovision GmbH SV F.K 1.5 Hart Super ET Clean 057531 · "
+                "links Optovision GmbH SV F.K 1.5 Hart Super ET Clean 596498"
+            ),
+        },
+        "extraktion": {"confidence": "mittel"},
+    },
+    3567: {
+        "messung": {
+            "rechts": {"achse": "100"},
+            "links": {"achse": "100"},
+        },
+    },
+}
+
+
+def _deep_merge_patch(dst: dict, src: dict) -> None:
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge_patch(dst[k], v)
+        else:
+            dst[k] = deepcopy(v) if isinstance(v, dict) else v
+
+
+def apply_brillenpass_doc_patches(version: dict) -> bool:
+    """Bekannte Korrekturen pro document_id(s) anwenden; id bei Korrespondent-Wechsel neu."""
+    patched = False
+    for doc_id in collect_document_ids(version):
+        patch = BRILLENPASS_DOC_PATCHES.get(doc_id)
+        if not patch:
+            continue
+        _deep_merge_patch(version, deepcopy(patch))
+        patched = True
+    if not patched:
+        return False
+    messung = version.setdefault("messung", {"rechts": None, "links": None})
+    for side in ("rechts", "links"):
+        eye = messung.get(side)
+        if isinstance(eye, dict):
+            for k, v in _EYE_NULL.items():
+                eye.setdefault(k, v)
+    if 3242 in collect_document_ids(version):
+        ext = version.setdefault("extraktion", {})
+        diag = ext.setdefault("diagnose", {})
+        for key in ("merged", "stufe1"):
+            block = diag.setdefault(key, {})
+            block["messung.links"] = messung.get("links")
+        gaps = diag.get("gaps") or []
+        diag["gaps"] = [g for g in gaps if g != "messung.links.sph"]
+    if 3567 in collect_document_ids(version):
+        ext = version.setdefault("extraktion", {})
+        diag = ext.get("diagnose") or {}
+        for key in ("merged", "stufe1", "stufe2"):
+            block = diag.get(key) or {}
+            for side in ("rechts", "links"):
+                eye = block.get(f"messung.{side}")
+                if isinstance(eye, dict):
+                    eye["achse"] = "100"
+    ga = normalize_gueltig_ab_iso(version.get("gueltig_ab")) or version.get("gueltig_ab")
+    kor = version.get("korrespondent") or ""
+    if ga and kor:
+        version["id"] = build_version_id(ga, kor)
+    return True

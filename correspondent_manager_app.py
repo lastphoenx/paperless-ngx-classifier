@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.52"  # 2.52: Brillenpass Dok-Dedup + Bemerkung PATCH
-UI_VERSION = "2.93"
+__version__ = "2.53"  # 2.53: Brillenpass Korrespondent-Dropdown + Giulia-Patch
+UI_VERSION = "2.94"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -47,10 +47,12 @@ from brillenpass_parser import (
     PARSER_VENDOR,
     VENDOR_LABELS,
     VENDOR_PARSERS,
+    apply_brillenpass_doc_patches,
     build_version_id,
     chronological_prev_version,
     collect_document_ids,
     compute_brillenpass_diff,
+    corr_supports_brillenpass,
     dedupe_brillenpass_versions_by_document,
     detect_parser,
     find_brillenpass_period_duplicate,
@@ -2201,6 +2203,8 @@ def _repair_brillenpass_store(data: dict) -> bool:
                 changed = True
             if hydrate_messung_from_diagnose(v):
                 changed = True
+            if apply_brillenpass_doc_patches(v):
+                changed = True
         deduped, dedup_changed = dedupe_brillenpass_versions_by_document(vers)
         if dedup_changed:
             vers = deduped
@@ -2222,6 +2226,21 @@ def _repair_brillenpass_store(data: dict) -> bool:
     if changed:
         _save_brillenpaesse(data)
     return changed
+
+
+@app.get("/api/brillenpass/correspondents", response_class=JSONResponse)
+def api_brillenpass_correspondents():
+    """Korrespondenten mit brillenpass.aktiv — für manuelle Erfassung."""
+    out = []
+    for e in load_corr_map().get("eintraege", []):
+        aktiv, _ = corr_supports_brillenpass(e)
+        if aktiv:
+            out.append({
+                "name": e.get("name"),
+                "vendor": (e.get("brillenpass") or {}).get("vendor"),
+            })
+    out.sort(key=lambda x: (x.get("name") or "").lower())
+    return {"count": len(out), "eintraege": out}
 
 
 @app.get("/api/brillenpass", response_class=JSONResponse)
@@ -2321,6 +2340,16 @@ def api_brillenpass_parse(body: dict = Body(...)):
     }
 
 
+def _corr_entry_by_name(name: str) -> dict | None:
+    key = (name or "").strip()
+    if not key:
+        return None
+    for e in load_corr_map().get("eintraege", []):
+        if (e.get("name") or "").strip() == key:
+            return e
+    return None
+
+
 @app.post("/api/brillenpass/manual")
 def api_brillenpass_manual(body: dict = Body(...)):
     """Manuelle Brillenpass-Erfassung → Review-Queue."""
@@ -2330,6 +2359,12 @@ def api_brillenpass_manual(body: dict = Body(...)):
         raise HTTPException(400, "person_id erforderlich")
     if not korrespondent:
         raise HTTPException(400, "korrespondent erforderlich")
+    aktiv, _ = corr_supports_brillenpass(_corr_entry_by_name(korrespondent))
+    if not aktiv:
+        raise HTTPException(
+            400,
+            f"Korrespondent «{korrespondent}» hat kein brillenpass.aktiv — im Tab Korrespondenten aktivieren",
+        )
 
     anzeigename = (body.get("anzeigename") or "").strip() or _resolve_person_anzeigename(person_id)
     doc_id = body.get("document_id")
