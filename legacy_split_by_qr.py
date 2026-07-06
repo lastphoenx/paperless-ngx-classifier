@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,58 +19,101 @@ log = logging.getLogger("legacy_split_by_qr")
 
 DEFAULT_QR_REGEX = r"^[0-9]{6}_[^\s]+$"
 DEFAULT_DPI = 600  # wie tsa_barcode_split_function.sh (Ghostscript 600dpi)
+_FALLBACK_DPIS = (600, 400, 300)
 
 
-def _decode_qr_from_image_path(img_path: str) -> list[str]:
-    """QR-Texte von PNG (pyzbar im Subprocess — stabiler als inline)."""
+def _decode_barcodes_from_image_path(img_path: str) -> list[str]:
+    """Alle lesbaren Barcode-Texte von PNG (pyzbar, alle Typen)."""
     proc = subprocess.run(
         [
             sys.executable, "-c",
             "import sys,json; from pyzbar.pyzbar import decode; "
             "from PIL import Image; "
             f"img=Image.open({img_path!r}); "
-            "codes=[b.data.decode('utf-8','replace') for b in decode(img) "
-            "if b.type in ('QRCODE','QR')]; "
+            "codes=[]; "
+            "for b in decode(img): "
+            "  try: t=b.data.decode('utf-8','replace').strip() "
+            "  except Exception: "
+            "    try: t=b.data.decode('latin-1','replace').strip() "
+            "    except Exception: continue "
+            "  if t: codes.append(t); "
             "print(json.dumps(codes))",
         ],
         capture_output=True,
         text=True,
         timeout=30,
     )
-    if proc.returncode != 0:
+    if proc.returncode == 0:
+        import json
+        try:
+            return [s for s in json.loads(proc.stdout.strip() or "[]") if s.strip()]
+        except json.JSONDecodeError:
+            pass
+    return _zbarimg_decode(img_path)
+
+
+def _zbarimg_decode(img_path: str) -> list[str]:
+    """Fallback wie tsa_barcode_split_function.sh (zbarimg)."""
+    if not shutil.which("zbarimg"):
         return []
-    import json
-
-    try:
-        return json.loads(proc.stdout.strip() or "[]")
-    except json.JSONDecodeError:
+    proc = subprocess.run(
+        ["zbarimg", "-q", "--raw", img_path],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode not in (0, 4):  # 4 = found codes
         return []
+    return [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
 
 
-def scan_page_qrs(pdf_path: str, page_num: int, *, dpi: int = DEFAULT_DPI) -> list[str]:
-    """Alle QR-Texte auf Seite page_num (1-basiert)."""
+def _enhance_page_image(image):
+    """Kontrast für schwache QR auf Scan/Archiv-PDF."""
+    from PIL import ImageOps
+    return ImageOps.autocontrast(image.convert("L"))
+
+
+def scan_page_qrs(
+    pdf_path: str,
+    page_num: int,
+    *,
+    dpi: int = DEFAULT_DPI,
+    dpis: tuple[int, ...] | None = None,
+) -> list[str]:
+    """Alle Barcode-Texte auf Seite page_num (1-basiert), mehrere DPI-Versuche."""
     try:
         from pdf2image import convert_from_path
     except ImportError:
         raise RuntimeError("pdf2image fehlt — pip install pdf2image") from None
 
-    images = convert_from_path(
-        pdf_path, dpi=dpi, first_page=page_num, last_page=page_num,
-    )
-    if not images:
-        return []
+    tried = dpis or _FALLBACK_DPIS if dpi == DEFAULT_DPI else (dpi,)
+    seen: list[str] = []
+    seen_set: set[str] = set()
 
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
-        tmp = tf.name
-    try:
-        images[0].save(tmp, format="PNG")
-        return [s for s in (_decode_qr_from_image_path(tmp)) if s.strip()]
-    finally:
-        Path(tmp).unlink(missing_ok=True)
+    for try_dpi in tried:
+        images = convert_from_path(
+            pdf_path, dpi=try_dpi, first_page=page_num, last_page=page_num,
+        )
+        if not images:
+            continue
+        for variant in (images[0], _enhance_page_image(images[0])):
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                tmp = tf.name
+            try:
+                variant.save(tmp, format="PNG")
+                for raw in _decode_barcodes_from_image_path(tmp):
+                    if raw not in seen_set:
+                        seen_set.add(raw)
+                        seen.append(raw)
+            finally:
+                Path(tmp).unlink(missing_ok=True)
+        if seen:
+            break
+    return seen
 
 
 def scan_page_qr(pdf_path: str, page_num: int, *, dpi: int = DEFAULT_DPI) -> str | None:
-    """Erste QR-Zeichenkette auf Seite page_num (1-basiert) oder None."""
+    """Erste Barcode-Zeichenkette auf Seite page_num (1-basiert) oder None."""
     found = scan_page_qrs(pdf_path, page_num, dpi=dpi)
     return found[0] if found else None
 
@@ -78,6 +122,9 @@ def _match_barcode(text: str, pattern: re.Pattern[str]) -> str | None:
     text = (text or "").strip()
     if pattern.match(text):
         return text
+    m = re.search(r"(\d{6}_[^\s]+)", text)
+    if m and pattern.match(m.group(1)):
+        return m.group(1)
     return None
 
 
@@ -116,13 +163,17 @@ def find_split_markers(
     qr_debug: list[dict] = []
 
     for page in range(1, total + 1):
+        page_hits: list[str] = []
         for raw in scan_page_qrs(pdf_path, page, dpi=dpi):
             hit = _match_barcode(raw, pattern)
             qr_debug.append({"page": page, "raw": raw, "matched": bool(hit)})
-            if hit:
-                log.info("QR Seite %d: %s", page, hit)
-                markers.append((hit, page))
-                break
+            if hit and hit not in page_hits:
+                page_hits.append(hit)
+        for hit in page_hits:
+            if markers and markers[-1] == (hit, page):
+                continue
+            log.info("QR Seite %d: %s", page, hit)
+            markers.append((hit, page))
 
     if not markers:
         return [], total, qr_debug

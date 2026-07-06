@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.42"  # 2.42: Auth-Cache nur Erfolg; Legacy-Split Executor
-UI_VERSION = "2.83"
+__version__ = "2.43"  # 2.43: Legacy-Split Original-PDF + robustere QR-Erkennung
+UI_VERSION = "2.84"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -741,11 +741,14 @@ def pl_delete(path: str) -> None:
     r.raise_for_status()
 
 
-def pl_download_pdf(doc_id: int) -> tuple[bytes, str]:
+def pl_download_pdf(doc_id: int, *, original: bool = False) -> tuple[bytes, str]:
     """PDF-Bytes und Originaldateiname aus Paperless."""
     doc = pl_get(f"/documents/{doc_id}/")
+    url = f"{PAPERLESS_API_URL.rstrip('/')}/documents/{doc_id}/download/"
+    if original:
+        url += "?original=true"
     r = requests.get(
-        f"{PAPERLESS_API_URL.rstrip('/')}/documents/{doc_id}/download/",
+        url,
         headers=PAPERLESS_HEADERS,
         timeout=120,
         stream=True,
@@ -2217,7 +2220,7 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
     consume_dir = Path(body.get("consume_dir") or PAPERLESS_CONSUME_DIR)
 
     try:
-        pdf_bytes, orig_name = pl_download_pdf(doc_id)
+        pdf_bytes, orig_name = pl_download_pdf(doc_id, original=True)
     except Exception as e:
         raise HTTPException(400, f"Dokument #{doc_id} laden fehlgeschlagen: {e}") from e
 
@@ -2260,9 +2263,13 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
                 "pages": total,
                 "splits": preview,
                 "qr_matched": qr_matched,
+                "qr_seen": len(qr_debug),
+                "qr_debug": qr_debug[:50],
+                "source": "original",
                 "message": (
                     f"{total} Seiten → {len(preview)} Teile "
-                    f"({qr_matched} QR-Treffer, Regex: {regex})"
+                    f"({qr_matched} QR-Treffer auf {len({d['page'] for d in qr_debug if d.get('matched')})} Seiten, "
+                    f"Original-PDF)"
                 ),
             }
         finally:
