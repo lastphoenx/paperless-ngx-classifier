@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.55"  # 2.55: Fahrzeug-Tag-Dropdown, UI-Kontrast, Synonym-Warnung
-UI_VERSION = "3.06"
+UI_VERSION = "3.07"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -2464,6 +2464,47 @@ def api_brillenpass_trigger(
     }
 
 
+@app.post("/api/htr/trigger/{doc_id}")
+def api_htr_trigger(
+    doc_id: int,
+    background_tasks: BackgroundTasks,
+    body: dict = Body(default={}),
+):
+    """Bestehendes Dokument nachträglich mit HTR verarbeiten (async)."""
+    from htr_runner import htr_job_run, htr_job_set
+
+    profile = (body.get("profile") or "").strip().lower()
+    if profile and profile not in ("default", "schulbericht", "auto", "off"):
+        raise HTTPException(400, "profile muss default, schulbericht, auto oder off sein")
+
+    msg = f"HTR für Dok #{doc_id} ({profile or 'auto'}) — kann mehrere Minuten dauern…"
+    htr_job_set(doc_id, status="running", message=msg)
+    background_tasks.add_task(htr_job_run, doc_id, profile_override=profile)
+
+    return {
+        "ok": True,
+        "async": True,
+        "document_id": doc_id,
+        "profile": profile or "auto",
+        "message": msg,
+    }
+
+
+@app.get("/api/htr/trigger-status/{doc_id}")
+def api_htr_trigger_status(doc_id: int):
+    """Status eines laufenden/kürzlich beendeten HTR-Triggers."""
+    from htr_runner import htr_job_get
+
+    job = htr_job_get(doc_id)
+    if job:
+        return job
+    return {
+        "status": "unknown",
+        "document_id": doc_id,
+        "message": "Kein aktueller Lauf — Log oder Paperless-Notiz prüfen",
+    }
+
+
 @app.get("/api/brillenpass/trigger-status/{doc_id}")
 def api_brillenpass_trigger_status(doc_id: int):
     """Status eines laufenden/kürzlich beendeten Brillenpass-Triggers (UI-Polling)."""
@@ -3632,6 +3673,7 @@ def api_doctypes():
                     "ausschliessen": t.get("ausschliessen", []),
                     "fix_tags":      t.get("fix_tags", []),
                     "feldprofil":    t.get("feldprofil", {}),
+                    "htr_profile":   t.get("htr_profile", "auto"),
                 }
 
         enriched = []
@@ -3643,6 +3685,7 @@ def api_doctypes():
             entry["ausschliessen"] = sm.get("ausschliessen", [])
             entry["fix_tags"]      = sm.get("fix_tags", [])
             entry["feldprofil"]    = sm.get("feldprofil", {})
+            entry["htr_profile"]   = sm.get("htr_profile", "auto")
             enriched.append(entry)
 
         return {"results": enriched}
@@ -3673,6 +3716,9 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
     new_ausschliessen = body.get("ausschliessen", [])
     new_fix_tags      = body.get("fix_tags", [])
     new_feldprofil    = body.get("feldprofil", {})
+    new_htr_profile   = (body.get("htr_profile") or "auto").strip().lower()
+    if new_htr_profile not in ("auto", "default", "schulbericht", "off"):
+        raise HTTPException(400, "htr_profile muss auto, default, schulbericht oder off sein")
 
     # Unique-Check: neue Synonyme dürfen nicht bei anderen Typen vorkommen
     all_strings = set()
@@ -3694,6 +3740,7 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
             t["ausschliessen"] = new_ausschliessen
             t["fix_tags"]      = new_fix_tags
             t["feldprofil"]    = new_feldprofil
+            t["htr_profile"]   = new_htr_profile
             t["_paperless_id"] = dt_id
             found = True
             break
@@ -3705,6 +3752,7 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
             "ausschliessen": new_ausschliessen,
             "fix_tags":      new_fix_tags,
             "feldprofil":    new_feldprofil,
+            "htr_profile":   new_htr_profile,
             "_paperless_id": dt_id,
         })
 
@@ -3715,6 +3763,7 @@ def api_patch_doctype(dt_id: int, body: dict = Body(...)):
         "synonyme": new_synonyme,
         "fix_tags": new_fix_tags,
         "feldprofil": new_feldprofil,
+        "htr_profile": new_htr_profile,
     }
 
 

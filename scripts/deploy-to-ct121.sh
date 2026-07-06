@@ -33,6 +33,8 @@ FILES=(
   post_consume.py
   document_date.py
   schulbericht_vision.py
+  handwriting_vision.py
+  htr_runner.py
   brillenpass_parser.py
   brillenpass_tsv.py
   brillenpass_runner.py

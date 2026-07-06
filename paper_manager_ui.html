@@ -330,6 +330,9 @@
     <span>👓</span> Brillenpass
     <span class="nav-badge" id="brillenpass-count">0</span>
   </div>
+  <div class="nav-item" onclick="showView('handschrift')" id="nav-handschrift">
+    <span>✍</span> Handschrift
+  </div>
   <div style="flex:1"></div>
   <a id="nav-paperless-link" href="#" target="_blank" rel="noopener"
     style="display:flex;align-items:center;gap:8px;padding:10px 16px;margin:4px 8px 8px;border-radius:6px;background:rgba(79,156,249,.1);border:1px solid rgba(79,156,249,.25);color:var(--accent);text-decoration:none;font-size:12px;font-weight:600;transition:background .15s"
@@ -844,7 +847,43 @@
     </div>
   </div>
 
-  <!-- LEGACY QR-SPLIT VIEW -->
+  <!-- HTR / Handschrift VIEW -->
+  <div id="view-handschrift" style="display:none">
+    <div class="view-header">
+      <h2>Handschrift (HTR)</h2>
+      <p style="color:var(--muted);font-size:13px;margin-top:4px">
+        Mehrstufige Handschrift-Erkennung für bestehende Dokumente — Ergebnis als Paperless-Notiz.
+      </p>
+    </div>
+    <div class="card" style="padding:16px 18px;margin-bottom:16px">
+      <div class="card-title" style="font-size:13px;margin-bottom:8px">Pipeline beim Scan</div>
+      <p style="color:var(--muted);font-size:12px;line-height:1.6;margin:0">
+        Nach der Baseline-Vision wählt <code>post_consume</code> ein HTR-Profil:
+        <strong>schulbericht</strong> (HTR → Extract, mehrseitig) oder <strong>default</strong> (zeilengetreue Transkription).
+        Konfiguration pro Dokumenttyp unter <em>Dokumenttypen → Edit → Handschrift (HTR)</em>:
+        <code>auto</code> (erkennen), <code>default</code>, <code>schulbericht</code>, <code>off</code>.
+      </p>
+    </div>
+    <div class="card" style="padding:14px 16px">
+      <div class="card-title" style="font-size:13px;margin-bottom:8px">Nachträglich verarbeiten</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        Paperless-Dokument-ID. Dauer: ca. 1–3 Min pro Seite (Vision-Modell).
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="number" id="htr-trigger-id" placeholder="Dok-ID" min="1"
+          style="max-width:120px;font-size:13px">
+        <select id="htr-trigger-profile" style="max-width:220px;font-size:12px" title="HTR-Profil">
+          <option value="">Profil auto</option>
+          <option value="default">default — zeilengetreu</option>
+          <option value="schulbericht">schulbericht — HTR + Extract</option>
+          <option value="off">off — abbrechen (nur Test)</option>
+        </select>
+        <button class="btn btn-primary" onclick="triggerHtr()">▶ HTR starten</button>
+      </div>
+      <div id="htr-trigger-status" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
+    </div>
+  </div>
+
   <div id="view-legacy-split" style="display:none">
     <div class="view-header">
       <h2>Legacy QR-Split</h2>
@@ -914,7 +953,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.06';
+const UI_VERSION = '3.07';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -978,7 +1017,7 @@ function updatePendingModeUI(mode) {
 }
 
 // ── URL-Hash Navigation ──────────────────────────────────────────
-const VALID_VIEWS = ['home','pending','correspondents','docreview','doctypes','tags','manifest','family','legacy-split','brillenpass'];
+const VALID_VIEWS = ['home','pending','correspondents','docreview','doctypes','tags','manifest','family','legacy-split','brillenpass','handschrift'];
 let _skipHashSync = false;
 
 function getViewFromHash() {
@@ -3231,6 +3270,7 @@ function renderDoctypes(items) {
           : `<div style="color:var(--muted);font-size:11px;font-style:italic">Keine Ausschluss-Keywords</div>`}
         ${(t.fix_tags||[]).length ? `<div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">FIX-TAGS: </span>${t.fix_tags.map(s=>`<span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent);margin-right:3px;font-size:11px">${s}</span>`).join('')}</div>` : ''}
         ${countFeldprofilFields(t.feldprofil) ? `<div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">FELDPROFIL: </span><span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa;font-size:11px">${countFeldprofilFields(t.feldprofil)} Felder konfiguriert</span></div>` : ''}
+        ${t.htr_profile && t.htr_profile !== 'auto' ? `<div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">HTR: </span><span class="badge" style="background:rgba(34,197,94,.12);color:var(--success);font-size:11px">${t.htr_profile}</span></div>` : ''}
         ${(() => {
           const w = dtSynonymWarnings(t);
           return w.length ? `<div style="margin-top:6px;padding:6px 10px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:4px;color:#fbbf24;font-size:11px;line-height:1.45">${w.map(x => `<div>⚠ ${x}</div>`).join('')}</div>` : '';
@@ -3337,6 +3377,18 @@ async function openDtEdit(dtId) {
         </div>
       </div>
       ${renderFeldprofilEdit(t.feldprofil, dtId)}
+      <div class="field-group">
+        <label>Handschrift (HTR)
+          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+            auto = erkennen · default = Transkription · schulbericht = 2-stufig · off = nie
+          </span>
+        </label>
+        <select id="dt-htr-${dtId}" style="font-size:13px">
+          ${['auto','default','schulbericht','off'].map(p =>
+            `<option value="${p}" ${(t.htr_profile||'auto')===p?'selected':''}>${p}</option>`
+          ).join('')}
+        </select>
+      </div>
       <div class="btn-row">
         <button class="btn btn-success" onclick="saveDtEdit(${dtId})">✓ Speichern</button>
         <button class="btn btn-ghost" onclick="closeDtEdit(${dtId})">Abbrechen</button>
@@ -3371,11 +3423,12 @@ async function saveDtEdit(dtId) {
   const ausschliessen = getTagsFromContainer(`dt-excl-${dtId}`);
   const fix_tags      = getTagsFromContainer(`dt-fixtags-${dtId}`);
   const feldprofil    = collectFeldprofil(dtId);
+  const htr_profile   = document.getElementById(`dt-htr-${dtId}`)?.value || 'auto';
   const beschreibung  = document.getElementById(`dt-desc-${dtId}`)?.value.trim() || '';
   const r = await fetch(`${API_BASE}/paperless/document_types/${dtId}`, {
     method: 'PATCH',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({synonyme, ausschliessen, beschreibung, fix_tags, feldprofil})
+    body: JSON.stringify({synonyme, ausschliessen, beschreibung, fix_tags, feldprofil, htr_profile})
   });
   if (r.ok) {
     showToast('Dokumenttyp gespeichert', 'success');
@@ -5742,6 +5795,61 @@ async function triggerBrillenpass() {
   } catch (e) {
     if (status) status.textContent = String(e.message || e);
     showToast('Brillenpass: ' + (e.message || e), 'error');
+  }
+}
+
+async function _pollHtrTrigger(docId, statusEl) {
+  for (let n = 0; n < 80; n++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const j = await _fetchJson(`${API_BASE}/htr/trigger-status/${docId}`);
+      if (j.status === 'running') {
+        if (statusEl) statusEl.textContent = j.message || `HTR läuft… (${n * 5}s)`;
+        continue;
+      }
+      if (j.status === 'done') {
+        const msg = j.message || 'HTR abgeschlossen — Paperless-Notiz prüfen';
+        if (statusEl) statusEl.textContent = msg;
+        showToast(msg, 'success');
+        return;
+      }
+      if (j.status === 'error') {
+        const msg = j.error || j.message || 'HTR fehlgeschlagen';
+        if (statusEl) statusEl.textContent = msg;
+        showToast('HTR: ' + msg, 'error');
+        return;
+      }
+    } catch (e) { /* transient */ }
+  }
+  if (statusEl) statusEl.textContent = 'Nach ~7 Min kein Ergebnis — Log auf CT121 prüfen';
+  showToast('HTR: Timeout — journalctl -u correspondent-manager', 'error');
+}
+
+async function triggerHtr() {
+  const id = parseInt(document.getElementById('htr-trigger-id')?.value || '', 10);
+  const profile = document.getElementById('htr-trigger-profile')?.value || '';
+  const status = document.getElementById('htr-trigger-status');
+  if (!id) {
+    showToast('Dokument-ID eingeben', 'error');
+    return;
+  }
+  if (status) status.textContent = 'Starte HTR…';
+  try {
+    const d = await _fetchJson(`${API_BASE}/htr/trigger/${id}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({profile: profile || undefined}),
+    });
+    if (d.async) {
+      if (status) status.textContent = d.message || 'HTR läuft…';
+      _pollHtrTrigger(id, status);
+      return;
+    }
+    showToast(d.message || 'HTR gestartet', 'success');
+    if (status) status.textContent = d.message || 'OK';
+  } catch (e) {
+    if (status) status.textContent = String(e.message || e);
+    showToast('HTR: ' + (e.message || e), 'error');
   }
 }
 

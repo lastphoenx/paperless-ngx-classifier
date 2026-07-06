@@ -162,6 +162,29 @@
       "ausschliessen": [],
       "beschreibung": "Garantieschein für ein Gerät oder Produkt",
       "_paperless_id": null
+    },
+    {
+      "name": "Schulbericht",
+      "synonyme": [
+        "Schulzeugnis",
+        "Zeugnis",
+        "Lernbericht"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Schulbericht / Zeugnis (oft handschriftlich)",
+      "htr_profile": "schulbericht",
+      "_paperless_id": null
+    },
+    {
+      "name": "Gesundheitsdossier",
+      "synonyme": [
+        "Arztbericht",
+        "Befund"
+      ],
+      "ausschliessen": [],
+      "beschreibung": "Medizinischer Bericht mit möglicher Handschrift",
+      "htr_profile": "default",
+      "_paperless_id": null
     }
   ]
 }
