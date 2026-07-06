@@ -12,10 +12,12 @@ CT121 Beispiele (liest /opt/paperless-scripts/.env und /opt/paperless/.env):
     /pfad/zum/scan.pdf --mode schulbericht --page 1 --num-predict 1024
 
 Modi:
-  baseline     — aktueller Pipeline-Prompt (Seite 1, Rechnungen + Rand-Handschrift)
-  schulbericht — strukturierte Extraktion, alle PDF-Seiten automatisch
-  transcribe   — wörtliche HTR, alle PDF-Seiten automatisch
-  all          — alle drei nacheinander
+  pipeline       — HTR aller Seiten → Text-Extract (empfohlen, wie post_consume v12.65)
+  transcribe     — nur Stufe 1: zeilengetreue HTR
+  extract        — nur Stufe 2: JSON aus --transcript-file
+  schulbericht-e2e — E2E-Vision (Debug/Vergleich, alias: schulbericht)
+  baseline       — Pipeline-Standard-Prompt Seite 1
+  all            — pipeline + schulbericht-e2e + baseline
 """
 from __future__ import annotations
 
@@ -40,10 +42,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from schulbericht_vision import (  # noqa: E402
+    EXTRACT_SYSTEM,
+    HTR_NUM_PREDICT,
+    HTR_VISION_SYSTEM,
+    SCHULBERICHT_DPI,
     SCHULBERICHT_NUM_PREDICT,
     SCHULBERICHT_VISION_SYSTEM,
+    build_htr_transcribe_prompt,
     build_schulbericht_vision_prompt,
+    estimate_htr_confidence,
+    merge_htr_transcribe_pages,
     merge_schulbericht_pages,
+    normalize_extracted_schulbericht,
     pdf_page_count,
     schulbericht_to_vision_meta,
 )
@@ -76,7 +86,10 @@ _load_env_files()
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
+MODEL_LLM = os.environ.get("OLLAMA_MODEL_LLM", "llama3.3:70b")
+MODEL_EXTRACT = os.environ.get("SCHULBERICHT_EXTRACT_MODEL", MODEL_LLM)
 VISION_TIMEOUT = int(os.environ.get("VISION_TIMEOUT", "120"))
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "300"))
 MEDIA_ROOT = Path(os.environ.get("PAPERLESS_MEDIA_ROOT", "/mnt/paperless-media"))
 PAPERLESS_URL = (
     os.environ.get("PAPERLESS_INTERNAL_URL")
@@ -89,17 +102,16 @@ VISION_SYSTEM_JSON = (
     "Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt. "
     "Kein Text davor oder danach. Kein Markdown."
 )
-VISION_SYSTEM_HTR = (
-    "Du transkribierst handschriftlichen Text auf Deutsch. "
-    "Lies Buchstaben sorgfältig; erfinde nichts. "
-    "Antworte AUSSCHLIESSLICH mit validem JSON wie im Prompt beschrieben."
-)
+VISION_SYSTEM_HTR = HTR_VISION_SYSTEM
 
-MODES = ("baseline", "schulbericht", "transcribe", "all")
+MODES = ("pipeline", "transcribe", "extract", "schulbericht-e2e", "schulbericht", "baseline", "all")
 DEFAULT_NUM_PREDICT = {
     "baseline": 300,
+    "pipeline": HTR_NUM_PREDICT,
+    "transcribe": HTR_NUM_PREDICT,
+    "extract": 1024,
+    "schulbericht-e2e": SCHULBERICHT_NUM_PREDICT,
     "schulbericht": SCHULBERICHT_NUM_PREDICT,
-    "transcribe": 2048,
 }
 
 
@@ -369,54 +381,26 @@ def build_baseline_prompt(ocr_text: str) -> str:
 
 
 def build_transcribe_prompt(ocr_text: str, page: int = 1, page_total: int = 1) -> str:
-    ocr_snip = (ocr_text or "")[:500]
-    page_hint = f"SEITE {page} von {page_total}.\n" if page_total > 1 else ""
-    return (
-        f"{page_hint}"
-        "Transkribiere ALLEN sichtbaren Text auf diesem Bild wörtlich auf Deutsch.\n"
-        "Unterscheide gedruckte Überschriften und handschriftlichen Fliesstext.\n"
-        "Erfinde keine Wörter. Bei unleserlichen Stellen: [unleserlich].\n"
-        "Antworte als JSON:\n"
-        "{\n"
-        '  "abschnitte": [\n'
-        '    {"titel": "Arbeitshaltung", "text": "...", "quelle": "handschrift|gedruckt"}\n'
-        "  ],\n"
-        '  "volltext": "kompletter Text in Lesereihenfolge",\n'
-        '  "handschrift_anteil": "hoch|mittel|niedrig",\n'
-        '  "qualitaet": "gut|mittel|schlecht"\n'
-        "}\n\n"
-        f"OCR-Referenz (oft leer):\n{ocr_snip or '(leer)'}"
-    )
+    return build_htr_transcribe_prompt(page, page_total)
 
 
 def merge_transcribe_pages(pages: list[dict]) -> dict:
-    if not pages:
-        return {}
-    abschnitte: list[dict] = []
-    volltexts: list[str] = []
-    for p in pages:
-        if isinstance(p.get("abschnitte"), list):
-            abschnitte.extend(p["abschnitte"])
-        vt = p.get("volltext")
-        if vt and str(vt).strip():
-            volltexts.append(str(vt).strip())
-    merged = dict(pages[-1])
-    merged["abschnitte"] = abschnitte
-    merged["volltext"] = "\n\n".join(volltexts)
-    merged["seiten_anzahl"] = len(pages)
+    merged = merge_htr_transcribe_pages(pages)
+    merged["htr_confidence"] = estimate_htr_confidence(merged)
     return merged
 
 
 def prompt_for_mode(
     mode: str, ocr_text: str, page: int = 1, page_total: int = 1,
 ) -> tuple[str, str]:
-    if mode == "baseline":
+    m = "schulbericht-e2e" if mode == "schulbericht" else mode
+    if m == "baseline":
         return build_baseline_prompt(ocr_text), VISION_SYSTEM_JSON
-    if mode == "schulbericht":
+    if m == "schulbericht-e2e":
         return build_schulbericht_vision_prompt(ocr_text, page, page_total), SCHULBERICHT_VISION_SYSTEM
-    if mode == "transcribe":
-        return build_transcribe_prompt(ocr_text, page, page_total), VISION_SYSTEM_HTR
-    raise ValueError(f"Unbekannter Modus: {mode}")
+    if m in ("transcribe", "pipeline"):
+        return build_htr_transcribe_prompt(page, page_total), HTR_VISION_SYSTEM
+    raise ValueError(f"Modus ohne Bild-Prompt: {mode}")
 
 
 def ollama_vision_chat(
@@ -454,6 +438,39 @@ def ollama_vision_chat(
         if data.get(k) is not None
     }
     return raw, stats
+
+
+def ollama_text_chat(
+    user_prompt: str,
+    system: str,
+    model: str,
+    num_predict: int,
+    temperature: float,
+) -> tuple[str, dict]:
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": user_prompt}],
+        "system": system,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": temperature, "num_predict": num_predict},
+    }
+    url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"
+    r = requests.post(url, json=payload, timeout=LLM_TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    raw = data.get("message", {}).get("content", "")
+    stats = {k: data.get(k) for k in ("eval_count", "eval_duration") if data.get(k) is not None}
+    return raw, stats
+
+
+def run_extract(transcript: str, model: str, num_predict: int) -> tuple[dict, str, float]:
+    prompt = build_extract_from_transcript_prompt(transcript)
+    t0 = time.perf_counter()
+    raw, _ = ollama_text_chat(prompt, EXTRACT_SYSTEM, model, num_predict, 0.0)
+    parsed = extract_json_from_response(raw) or {}
+    elapsed = time.perf_counter() - t0
+    return parsed if isinstance(parsed, dict) else {}, raw, elapsed
 
 
 def run_mode(
@@ -530,16 +547,23 @@ def resolve_page_list(
     pages: Optional[str],
     mode: str,
 ) -> list[int]:
+    m = "schulbericht-e2e" if mode == "schulbericht" else mode
+    if m == "extract":
+        return []
     if pages:
         return [int(p.strip()) for p in pages.split(",") if p.strip()]
     if page is not None:
         return [page]
     if input_path.suffix.lower() == ".pdf":
         total = pdf_page_count(str(input_path))
-        if mode == "baseline":
+        if m == "baseline":
             return [1]
         return list(range(1, total + 1))
     return [1]
+
+
+def _mode_effective(mode: str) -> str:
+    return "schulbericht-e2e" if mode == "schulbericht" else mode
 
 
 def resolve_input(path: Optional[str], doc_id: Optional[int]) -> ResolvedInput:
@@ -567,10 +591,12 @@ def main() -> int:
     )
     parser.add_argument("--page", type=int, help="Nur diese PDF-Seite (sonst alle Seiten)")
     parser.add_argument("--pages", help="Mehrere Seiten, kommagetrennt z.B. 1,2,3")
-    parser.add_argument("--dpi", type=int, default=150, help="Render-Auflösung (default: 150)")
-    parser.add_argument("--model", default=MODEL_VISION, help=f"Ollama Vision-Modell (default: {MODEL_VISION})")
+    parser.add_argument("--dpi", type=int, default=SCHULBERICHT_DPI, help=f"Render-Auflösung (default: {SCHULBERICHT_DPI})")
+    parser.add_argument("--model", default=MODEL_VISION, help=f"Vision-Modell (default: {MODEL_VISION})")
+    parser.add_argument("--extract-model", default=MODEL_EXTRACT, help=f"Extract-Modell (default: {MODEL_EXTRACT})")
     parser.add_argument("--num-predict", type=int, help="Token-Limit (default je nach Modus)")
-    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--transcript-file", help="Für --mode extract: Transkript-Datei")
     parser.add_argument("--ocr-file", help="OCR-Text aus Datei statt pdftotext")
     parser.add_argument("--ocr-chars", type=int, default=0, help="OCR auf N Zeichen kürzen (0=unbegrenzt)")
     parser.add_argument("--output", "-o", help="Ergebnisse als JSON-Datei speichern")
@@ -590,7 +616,10 @@ def main() -> int:
         return 2
 
     input_path = resolved.path
-    modes = list(MODES[:-1]) if args.mode == "all" else [args.mode]
+    if args.mode == "all":
+        modes = ["pipeline", "schulbericht-e2e", "baseline"]
+    else:
+        modes = [args.mode]
     pdf_total = pdf_page_count(str(input_path)) if input_path.suffix.lower() == ".pdf" else 1
 
     try:
@@ -619,8 +648,27 @@ def main() -> int:
         all_results: list[dict] = []
 
         for mode in modes:
-            page_list = resolve_page_list(input_path, args.page, args.pages, mode)
-            log.info("Modus %s → Seiten %s", mode, page_list)
+            eff = _mode_effective(mode)
+
+            if eff == "extract":
+                transcript = ""
+                if args.transcript_file:
+                    transcript = Path(args.transcript_file).read_text(encoding="utf-8", errors="replace")
+                else:
+                    log.error("extract braucht --transcript-file")
+                    return 2
+                npred = args.num_predict or DEFAULT_NUM_PREDICT["extract"]
+                extracted, raw, elapsed = run_extract(transcript, args.extract_model, npred)
+                htr_stub = {"volltext": transcript, "handschrift_zeilen": transcript.splitlines()}
+                normalized = normalize_extracted_schulbericht(extracted, htr=htr_stub)
+                log.info("─" * 72)
+                log.info("EXTRACT (%.1fs, confidence=%.2f):", elapsed, normalized.get("confidence") or 0)
+                log.info("%s", json.dumps(normalized, ensure_ascii=False, indent=2))
+                all_results.append({"mode": "extract", "parsed": normalized, "elapsed_s": round(elapsed, 2)})
+                continue
+
+            page_list = resolve_page_list(input_path, args.page, args.pages, eff)
+            log.info("Modus %s → Seiten %s", mode, page_list or "(extract only)")
             page_parsed: list[dict] = []
 
             for page in page_list:
@@ -631,14 +679,14 @@ def main() -> int:
                 except Exception as e:
                     log.error("Bild-Rendering Seite %d fehlgeschlagen: %s", page, e)
                     return 1
-                log.info(
-                    "Seite %d/%d gerendert: %d Bytes JPEG",
-                    page, pdf_total, image_bytes,
-                )
+                log.info("Seite %d/%d gerendert: %d Bytes JPEG", page, pdf_total, image_bytes)
 
-                npred = args.num_predict if args.num_predict is not None else DEFAULT_NUM_PREDICT[mode]
+                npred = args.num_predict if args.num_predict is not None else DEFAULT_NUM_PREDICT.get(
+                    eff, HTR_NUM_PREDICT,
+                )
+                run_m = "transcribe" if eff == "pipeline" else eff
                 res = run_mode(
-                    mode=mode,
+                    mode=run_m,
                     image_b64=image_b64,
                     image_bytes=image_bytes,
                     ocr_text=ocr_full,
@@ -650,6 +698,7 @@ def main() -> int:
                 )
                 log_result(res)
                 row = asdict(res)
+                row["mode"] = mode if eff == "pipeline" else res.mode
                 row.pop("raw_response", None)
                 row["_raw_len"] = len(res.raw_response)
                 if args.verbose:
@@ -658,29 +707,43 @@ def main() -> int:
                 if isinstance(res.parsed, dict) and not res.parsed.get("_parse_failed"):
                     page_parsed.append(res.parsed)
 
-            if mode == "schulbericht" and len(page_parsed) > 1:
+            if eff == "pipeline" and page_parsed:
+                htr = merge_transcribe_pages(page_parsed)
+                log.info("─" * 72)
+                log.info("HTR MERGED (%d Seiten, confidence=%.2f):", len(page_parsed), htr.get("htr_confidence", 0))
+                log.info("%s", json.dumps(htr, ensure_ascii=False, indent=2)[:3000])
+                transcript = htr.get("volltext") or ""
+                npred = args.num_predict or DEFAULT_NUM_PREDICT["extract"]
+                extracted, _, elapsed = run_extract(transcript, args.extract_model, npred)
+                normalized = normalize_extracted_schulbericht(extracted, htr=htr)
+                vision = schulbericht_to_vision_meta(normalized)
+                log.info("PIPELINE EXTRACT (%.1fs):", elapsed)
+                log.info("%s", json.dumps(normalized, ensure_ascii=False, indent=2))
+                log.info("Vision-Meta: %s", json.dumps(vision, ensure_ascii=False, indent=2))
+                all_results.append({
+                    "mode": "pipeline_merged",
+                    "parsed": normalized,
+                    "htr": htr,
+                    "vision_meta": vision,
+                })
+            elif eff == "schulbericht-e2e" and page_parsed:
                 merged = merge_schulbericht_pages(page_parsed)
                 vision = schulbericht_to_vision_meta(merged)
                 log.info("─" * 72)
-                log.info("SCHULBERICHT MERGED (%d Seiten):", len(page_parsed))
+                log.info("SCHULBERICHT-E2E MERGED (%d Seiten):", len(page_parsed))
                 log.info("%s", json.dumps(merged, ensure_ascii=False, indent=2))
                 log.info("Vision-Meta: %s", json.dumps(vision, ensure_ascii=False, indent=2))
                 all_results.append({
-                    "mode": "schulbericht_merged",
-                    "page": 0,
+                    "mode": "schulbericht-e2e_merged",
                     "parsed": merged,
                     "vision_meta": vision,
                 })
-            elif mode == "transcribe" and len(page_parsed) > 1:
+            elif eff == "transcribe" and page_parsed:
                 merged = merge_transcribe_pages(page_parsed)
                 log.info("─" * 72)
-                log.info("TRANSCRIBE MERGED (%d Seiten):", len(page_parsed))
+                log.info("HTR MERGED (%d Seiten, confidence=%.2f):", len(page_parsed), merged.get("htr_confidence", 0))
                 log.info("%s", json.dumps(merged, ensure_ascii=False, indent=2))
-                all_results.append({
-                    "mode": "transcribe_merged",
-                    "page": 0,
-                    "parsed": merged,
-                })
+                all_results.append({"mode": "transcribe_merged", "parsed": merged})
 
         summary = {
             "input": str(input_path),
