@@ -889,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.85';
+const UI_VERSION = '2.86';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5472,7 +5472,9 @@ async function triggerLegacySplit(dryRun) {
   const id = parseInt(document.getElementById('lsplit-id')?.value || '', 10);
   const status = document.getElementById('lsplit-status');
   if (!id) { showToast('Dokument-ID eingeben', 'error'); return; }
-  if (status) status.textContent = dryRun ? 'Analysiere…' : 'Splitte (kann pro Seite ~2s dauern)…';
+  if (status) status.textContent = dryRun
+    ? 'Analysiere Original+Archiv (~30–90s)…'
+    : 'Splitte (Original+Archiv bereits gescannt)…';
   try {
     const d = await _fetchJson(`${API_BASE}/legacy-split/trigger/${id}`, {
       method: 'POST',
