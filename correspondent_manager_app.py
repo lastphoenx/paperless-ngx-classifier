@@ -23,6 +23,7 @@ import asyncio
 import functools
 import fcntl
 import logging
+import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -31,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.48"  # 2.48: Legacy-Split async + PDF von Disk (wie CLI)
-UI_VERSION = "2.89"
+__version__ = "2.49"  # 2.49: Legacy-Split PDF nach /tmp, Scan lokal, dann consume
+UI_VERSION = "2.90"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -85,6 +86,7 @@ PENDING_BRILLENPASS_TAG  = os.environ.get("PENDING_BRILLENPASS_TAG",  "pending_b
 BRILLENPASS_DEDUP_DAYS     = int(os.environ.get("BRILLENPASS_DEDUP_DAYS", "21"))
 PAPERLESS_CONSUME_DIR      = os.environ.get("PAPERLESS_CONSUME_DIR", "/mnt/paperless-data/consume")
 PAPERLESS_MEDIA_ROOT       = os.environ.get("PAPERLESS_MEDIA_ROOT", "/mnt/paperless-media")
+LEGACY_SPLIT_TMP           = Path(os.environ.get("LEGACY_SPLIT_TMP", "/tmp/legacy-qr-split"))
 LEGACY_SPLIT_QR_REGEX      = os.environ.get("LEGACY_SPLIT_QR_REGEX", r"^[0-9]{6}_[^\s]+$")
 ALL_PENDING_TAGS         = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG, PENDING_BRILLENPASS_TAG}
 
@@ -773,63 +775,113 @@ def pl_download_pdf_variants(doc_id: int) -> list[tuple[str, bytes, str]]:
     return out
 
 
-def _legacy_split_resolve_document(doc_id: int, regex: str) -> tuple[dict, str] | None:
+def _legacy_split_progress(job_key: str | None, message: str) -> None:
+    if job_key:
+        _lsplit_job_set(job_key, status="running", message=message)
+    log.info("Legacy-Split: %s", message)
+
+
+def _legacy_split_materialize_pdf(
+    doc_id: int,
+    job_key: str | None = None,
+) -> tuple[Path, Path, str, str] | None:
     """
-    PDF vom Datenträger scannen (wie CLI); API-Download nur als Fallback.
+    PDF nach lokalem /tmp kopieren — Ghostscript nie direkt auf NAS-Mount.
+    Returns (local_pdf, work_dir, source_label, orig_filename).
     """
+    work = LEGACY_SPLIT_TMP / str(doc_id)
+    work.mkdir(parents=True, exist_ok=True)
+    local_pdf = work / "source.pdf"
+    orig_name = f"{doc_id}.pdf"
+
+    _legacy_split_progress(job_key, f"Dok #{doc_id}: PDF von Paperless laden…")
+    try:
+        data, orig_name = pl_download_pdf(doc_id, original=True)
+        if data:
+            local_pdf.write_bytes(data)
+            log.info("Legacy-Split #%s: API-Original → %s (%d bytes)", doc_id, local_pdf, len(data))
+            return local_pdf, work, "original", orig_name
+    except Exception as e:
+        log.warning("Legacy-Split API-Original #%s: %s", doc_id, e)
+
+    padded = f"{doc_id:07d}.pdf"
+    for sub, label in (("originals", "original"), ("archive", "archiv")):
+        src = Path(PAPERLESS_MEDIA_ROOT) / "documents" / sub / padded
+        if src.is_file():
+            _legacy_split_progress(job_key, f"Dok #{doc_id}: Kopie NAS → /tmp…")
+            shutil.copy2(src, local_pdf)
+            log.info("Legacy-Split #%s: %s → %s", doc_id, src, local_pdf)
+            try:
+                doc = pl_get(f"/documents/{doc_id}/")
+                orig_name = doc.get("original_file_name") or orig_name
+            except Exception as e:
+                log.warning("Legacy-Split Metadaten #%s: %s", doc_id, e)
+            return local_pdf, work, label, orig_name
+
+    _legacy_split_progress(job_key, f"Dok #{doc_id}: Archiv-PDF laden…")
+    try:
+        data, orig_name = pl_download_pdf(doc_id, original=False)
+        if data:
+            local_pdf.write_bytes(data)
+            log.info("Legacy-Split #%s: API-Archiv → %s (%d bytes)", doc_id, local_pdf, len(data))
+            return local_pdf, work, "archiv", orig_name
+    except Exception as e:
+        log.warning("Legacy-Split API-Archiv #%s: %s", doc_id, e)
+
+    return None
+
+
+def _legacy_split_cleanup(work_dir: Path | None) -> None:
+    if work_dir and work_dir.exists():
+        try:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        except Exception as e:
+            log.warning("Legacy-Split cleanup %s: %s", work_dir, e)
+
+
+def _legacy_split_resolve_document(
+    doc_id: int,
+    regex: str,
+    job_key: str | None = None,
+) -> tuple[dict, str, Path, Path] | None:
+    """PDF in /tmp materialisieren und lokal scannen (wie CLI auf /opt/scan.pdf)."""
     from legacy_split_by_qr import (
         DEFAULT_DPI,
         _marker_score,
-        _scan_pdf_bytes,
-        _scan_pdf_bytes_quick,
         scan_pdf_file,
     )
 
-    orig_name = f"{doc_id}.pdf"
-    best: dict | None = None
+    materialized = _legacy_split_materialize_pdf(doc_id, job_key=job_key)
+    if not materialized:
+        return None
 
-    disk_path: str | None = None
-    try:
-        from post_consume import resolve_document_pdf
-        disk_path = resolve_document_pdf(doc_id)
-    except Exception as e:
-        log.warning("Legacy-Split resolve_document_pdf #%s: %s", doc_id, e)
+    local_pdf, work_dir, source, orig_name = materialized
+    _legacy_split_progress(job_key, f"Dok #{doc_id}: QR scannen (lokal, Ghostscript ~10s)…")
 
-    if disk_path and Path(disk_path).is_file():
+    best = scan_pdf_file(str(local_pdf), source, regex=regex, dpi=DEFAULT_DPI)
+    if _marker_score(best["markers"]) >= 1:
+        log.info(
+            "Legacy-Split #%s: %d Marker in %s",
+            doc_id, _marker_score(best["markers"]), local_pdf,
+        )
+        return best, orig_name, local_pdf, work_dir
+
+    if source != "archiv":
+        _legacy_split_progress(job_key, f"Dok #{doc_id}: Archiv-PDF laden & quick-scan…")
         try:
-            doc = pl_get(f"/documents/{doc_id}/")
-            orig_name = doc.get("original_file_name") or orig_name
+            arch_bytes, arch_name = pl_download_pdf(doc_id, original=False)
+            arch_local = work_dir / "archiv.pdf"
+            arch_local.write_bytes(arch_bytes)
+            cand = scan_pdf_file(str(arch_local), "archiv", regex=regex, dpi=DEFAULT_DPI, quick=True)
+            if _marker_score(cand["markers"]) > _marker_score(best["markers"]):
+                return cand, arch_name, arch_local, work_dir
         except Exception as e:
-            log.warning("Legacy-Split Metadaten #%s: %s", doc_id, e)
-        best = scan_pdf_file(disk_path, "original", regex=regex, dpi=DEFAULT_DPI)
-        if _marker_score(best["markers"]) >= 1:
-            log.info(
-                "Legacy-Split #%s: Disk %s (%d Marker)",
-                doc_id, disk_path, _marker_score(best["markers"]),
-            )
-            return best, orig_name
+            log.warning("Legacy-Split Archiv-Fallback #%s: %s", doc_id, e)
 
-    try:
-        orig_bytes, orig_name = pl_download_pdf(doc_id, original=True)
-        best = _scan_pdf_bytes("original", orig_bytes, regex=regex, dpi=DEFAULT_DPI)
-        if _marker_score(best["markers"]) >= 1:
-            log.info("Legacy-Split #%s: API-Original (%d Marker)", doc_id, _marker_score(best["markers"]))
-            return best, orig_name
-    except Exception as e:
-        log.warning("Legacy-Split Original API #%s: %s", doc_id, e)
-        best = None
+    if _marker_score(best["markers"]) >= 1:
+        return best, orig_name, local_pdf, work_dir
 
-    try:
-        arch_bytes, arch_name = pl_download_pdf(doc_id, original=False)
-        cand = _scan_pdf_bytes_quick("archiv", arch_bytes, regex=regex, dpi=DEFAULT_DPI)
-        if best is None or cand["rank"] > best["rank"]:
-            return cand, arch_name
-    except Exception as e:
-        log.warning("Legacy-Split Archiv API #%s: %s", doc_id, e)
-
-    if best:
-        return best, orig_name
-    return None
+    return best, orig_name, local_pdf, work_dir
 
 
 def _lsplit_job_key(doc_id: int, dry_run: bool) -> str:
@@ -936,23 +988,24 @@ def _run_legacy_split_job(
     consume_dir: str,
     job_key: str,
 ) -> None:
-    from legacy_split_by_qr import has_real_qr_splits, split_paperless_document
+    from legacy_split_by_qr import has_real_qr_splits, split_pdf_at_markers
 
     t0 = time.monotonic()
+    work_dir: Path | None = None
     try:
-        _lsplit_job_set(job_key, status="running", message="PDF laden & QR scannen (Ghostscript)…")
-        resolved = _legacy_split_resolve_document(doc_id, regex)
+        resolved = _legacy_split_resolve_document(doc_id, regex, job_key=job_key)
         scan_seconds = round(time.monotonic() - t0, 1)
         if not resolved:
             _lsplit_job_set(
                 job_key,
                 status="error",
-                error=f"Dokument #{doc_id} — weder Disk noch API-PDF mit QR",
+                error=f"Dokument #{doc_id} — PDF nicht ladbar",
                 scan_seconds=scan_seconds,
             )
             return
 
-        best, orig_name = resolved
+        best, orig_name, local_pdf, work_dir = resolved
+
         if dry_run:
             payload = _legacy_split_preview_payload(
                 best, orig_name,
@@ -978,18 +1031,26 @@ def _run_legacy_split_job(
             )
             return
 
-        _lsplit_job_set(job_key, status="running", message="Teile nach consume/ schreiben…")
-        parts = split_paperless_document(
-            best["pdf_bytes"],
-            consume,
-            original_filename=orig_name,
-            regex=regex,
-            markers=best["markers"],
-            total=best["total"],
+        staging = work_dir / "parts"
+        staging.mkdir(parents=True, exist_ok=True)
+        _lsplit_job_set(job_key, status="running", message="Teile lokal splitten…")
+        parts = split_pdf_at_markers(
+            str(local_pdf),
+            staging,
+            best["markers"],
+            best["total"],
+            source_basename=orig_name,
         )
         if not parts:
-            _lsplit_job_set(job_key, status="error", error="Keine Split-Teile geschrieben")
+            _lsplit_job_set(job_key, status="error", error="Keine Split-Teile erzeugt")
             return
+
+        _lsplit_job_set(job_key, status="running", message=f"{len(parts)} Teile nach consume/ verschieben…")
+        for p in parts:
+            src = Path(p["path"])
+            dest = consume / p["filename"]
+            shutil.move(str(src), str(dest))
+            p["path"] = str(dest)
 
         detail = "; ".join(
             f"{p['barcode']} S.{p['from_page']}–{p['to_page']}" for p in parts
@@ -1017,6 +1078,8 @@ def _run_legacy_split_job(
             error=str(e),
             scan_seconds=round(time.monotonic() - t0, 1),
         )
+    finally:
+        _legacy_split_cleanup(work_dir)
 
 
 async def _run_legacy_split_bg(
@@ -1028,7 +1091,7 @@ async def _run_legacy_split_bg(
 ) -> None:
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(
-        _BG_EXECUTOR,
+        _LEGACY_SPLIT_EXECUTOR,
         functools.partial(
             _run_legacy_split_job, doc_id, regex, dry_run, consume_dir, job_key,
         ),
@@ -2516,12 +2579,15 @@ async def api_legacy_split_trigger(
 
     existing = _lsplit_job_get(job_key)
     if existing.get("status") == "running":
-        return {
-            "async": True,
-            "document_id": doc_id,
-            "status": "running",
-            "message": existing.get("message", "QR-Scan läuft bereits…"),
-        }
+        age = time.time() - existing.get("updated_at", 0)
+        if age < 120:
+            return {
+                "async": True,
+                "document_id": doc_id,
+                "status": "running",
+                "message": existing.get("message", "QR-Scan läuft bereits…"),
+            }
+        log.warning("Legacy-Split Job %s hängt (%ds) — Neustart", job_key, int(age))
 
     _lsplit_job_set(
         job_key,
