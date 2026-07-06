@@ -194,6 +194,8 @@
   }
   @media (max-width: 800px) { .docreview-corrections { grid-template-columns: 1fr; } }
   .docreview-tags-full { grid-column: 1 / -1; }
+  .docreview-title-full { grid-column: 1 / -1; }
+  .docreview-title-full input#dr-title { width: 100%; font-size: 13px; }
   .docreview-tags-full select#dr-tags {
     min-height: 200px;
     height: 200px;
@@ -910,7 +912,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.02';
+const UI_VERSION = '3.03';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2943,7 +2945,9 @@ function collectDocReviewCorrectionFields() {
   const corrEl = document.getElementById('dr-corr');
   const tagsEl = document.getElementById('dr-tags');
   const dtEl   = document.getElementById('dr-dt');
+  const titleEl = document.getElementById('dr-title');
   return {
+    title: titleEl ? titleEl.value.trim() : '',
     storage_path_id:   spEl?.value ? parseInt(spEl.value) : null,
     storage_path_name: spEl?.options[spEl.selectedIndex]?.text?.trim() || null,
     correspondent_id:  corrEl?.value ? parseInt(corrEl.value) : null,
@@ -3946,6 +3950,9 @@ async function selectDocReview(i) {
 
   // Kundenfelder — immer alle Felder aus Paperless, unabhängig von KI/Feldprofil
   const cfFormHtml = renderDocReviewCfInputs(cfMapRaw);
+  const drTitleRaw = (doc?.title || entry.title || '').trim();
+  const drTitleEsc = drTitleRaw
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
   // Thumbnail via paper.manager Proxy (funktioniert auch per IP ohne Authentik)
   const thumbUrl = `${API_BASE}/proxy/document/${entry.document_id}/thumb/`;
@@ -4037,6 +4044,11 @@ async function selectDocReview(i) {
         <div style="font-size:10px;color:var(--muted);font-weight:bold;letter-spacing:0.5px;margin-bottom:10px">KORREKTUREN</div>
         ${cfFormHtml}
         <div class="docreview-corrections" style="margin-top:${cfFormHtml ? '12px' : '0'}">
+          <div class="field-group docreview-title-full" style="margin:0">
+            <label>Dokumenttitel</label>
+            <input type="text" id="dr-title" maxlength="128" value="${drTitleEsc}"
+              placeholder="Anzeigename in Paperless (max. 128 Zeichen)">
+          </div>
           <div class="field-group" style="margin:0">
             <label>Ordner</label>
             <select id="dr-sp">${spOptions}</select>
@@ -4053,8 +4065,8 @@ async function selectDocReview(i) {
             <label>Tags (Mehrfachauswahl)</label>
             <select id="dr-tags" multiple>${tagOptions}</select>
             <span style="display:block;font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4">
-              Tags und Kundenfelder gelten bei <strong>Freigeben</strong> und <strong>Neu klassifizieren</strong>.
-              Strg+Klick = mehrere Tags. Auswahl ersetzt alle Tags.
+              <strong>Titel</strong>, Tags und Kundenfelder bei <strong>Freigeben</strong> und <strong>Neu klassifizieren</strong>.
+              Strg+Klick = mehrere Tags. Tag-Auswahl ersetzt alle Tags.
               Ordner/Korrespondent/Typ nur bei «Neu klassifizieren».
             </span>
           </div>
@@ -4085,6 +4097,9 @@ async function submitDocReview(index, action) {
   body.tag_ids   = corr.tag_ids;
   body.tag_names = corr.tag_names;
   body.custom_fields = collectDocReviewCustomFields();
+  if (corr.title) {
+    body.title = corr.title;
+  }
 
   if (action === 'reclassify') {
     body.storage_path_id   = corr.storage_path_id;
