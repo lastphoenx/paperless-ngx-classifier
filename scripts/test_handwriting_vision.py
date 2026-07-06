@@ -4,15 +4,12 @@ CLI: Handschrift / Schulbericht — Vision-LLM (qwen2.5vl) testen und tunen.
 
 Nur Kommandozeile — kein UI. Vergleicht Prompt-Varianten mit detaillierten Logs.
 
-CT121 Beispiele:
-  /opt/paperless-scripts/venv/bin/python3 scripts/test_handwriting_vision.py \\
-    --doc-id 3577 --mode all -v
+CT121 Beispiele (liest /opt/paperless-scripts/.env und /opt/paperless/.env):
+  /opt/paperless-scripts/venv/bin/python3 /opt/paperless-scripts/test_handwriting_vision.py \\
+    --doc-id 3577 --mode all -v -o /tmp/htr-3577.json
 
-  /opt/paperless-scripts/venv/bin/python3 scripts/test_handwriting_vision.py \\
+  /opt/paperless-scripts/venv/bin/python3 test_handwriting_vision.py \\
     /pfad/zum/scan.pdf --mode schulbericht --page 1 --num-predict 1024
-
-  OLLAMA_MODEL_VISION=qwen2.5vl:7b ./scripts/test_handwriting_vision.py bild.png \\
-    --mode transcribe --output /tmp/htr-result.json
 
 Modi:
   baseline     — aktueller Pipeline-Prompt (Rechnungen + Rand-Handschrift)
@@ -40,13 +37,41 @@ import requests
 
 log = logging.getLogger("test_handwriting_vision")
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_env_files() -> None:
+    """Token und Pfade aus üblichen Server-.env-Dateien (wie backfill_dok_id.py)."""
+    candidates = [
+        Path("/opt/paperless-scripts/.env"),
+        Path("/opt/paperless/.env"),
+        ROOT / ".env",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        log.debug("Lade Env: %s", path)
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
+_load_env_files()
+
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
 VISION_TIMEOUT = int(os.environ.get("VISION_TIMEOUT", "120"))
-MEDIA_ROOT = Path(os.environ.get(
-    "PAPERLESS_MEDIA_ROOT",
-    os.environ.get("MEDIA_ROOT", "/usr/src/paperless/media"),
-))
+MEDIA_ROOT = Path(os.environ.get("PAPERLESS_MEDIA_ROOT", "/mnt/paperless-media"))
+PAPERLESS_URL = (
+    os.environ.get("PAPERLESS_INTERNAL_URL")
+    or os.environ.get("PAPERLESS_URL", "http://localhost:8000")
+).rstrip("/")
+PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN") or os.environ.get("PAPERLESS_API_TOKEN", "")
 
 VISION_SYSTEM_JSON = (
     "Du bist ein JSON-Extraktor für Schweizer Dokumente. "
@@ -123,13 +148,131 @@ def extract_json_from_response(raw: str) -> dict | list | None:
     return None
 
 
-def find_pdf_by_doc_id(doc_id: str | int) -> Optional[Path]:
+@dataclass
+class ResolvedInput:
+    path: Path
+    temp_pdf: Optional[Path] = None
+
+
+def _paperless_headers() -> dict:
+    return {
+        "Authorization": f"Token {PAPERLESS_TOKEN}",
+        "Accept": "application/json",
+    }
+
+
+def _paperless_get(endpoint: str) -> dict:
+    url = f"{PAPERLESS_URL}/api/{endpoint.lstrip('/')}"
+    r = requests.get(url, headers=_paperless_headers(), timeout=30)
+    r.raise_for_status()
+    return r.json() if r.text.strip() else {}
+
+
+def _find_pdf_by_padded_id(doc_id: str | int) -> Optional[Path]:
     padded = str(doc_id).zfill(7)
     for sub in ("originals", "archive"):
         p = MEDIA_ROOT / "documents" / sub / f"{padded}.pdf"
         if p.is_file():
             return p
     return None
+
+
+def _pdf_path_from_paperless_meta(document_id: int) -> Optional[Path]:
+    """Dateisystem: Speicherpfad + Dateiname aus Paperless-API (wie post_consume)."""
+    try:
+        doc = _paperless_get(f"documents/{document_id}/")
+    except Exception as e:
+        log.warning("Dok #%s: API-Metadaten für PDF-Pfad: %s", document_id, e)
+        return None
+
+    media = MEDIA_ROOT / "documents" / "originals"
+    fn = (doc.get("original_file_name") or "").strip()
+    if not fn:
+        title = (doc.get("title") or "").strip()
+        if title:
+            fn = title if title.lower().endswith(".pdf") else f"{title}.pdf"
+    archive_fn = (doc.get("archive_filename") or "").strip()
+    sp_subpath = ""
+    sp_id = doc.get("storage_path")
+    if sp_id:
+        try:
+            sp = _paperless_get(f"storage_paths/{sp_id}/")
+            sp_subpath = (sp.get("path") or sp.get("name") or "").strip().strip("/\\")
+        except Exception as e:
+            log.warning("Dok #%s: storage_path #%s: %s", document_id, sp_id, e)
+
+    candidates: list[Path] = []
+    padded = f"{document_id:07d}.pdf"
+    for name in (fn, archive_fn):
+        if not name:
+            continue
+        if sp_subpath:
+            candidates.append(media / sp_subpath / name)
+        candidates.append(media / name)
+    if sp_subpath:
+        candidates.append(media / sp_subpath / padded)
+    candidates.append(media / padded)
+    candidates.append(media / f"{document_id}.pdf")
+
+    seen: set[str] = set()
+    for c in candidates:
+        key = str(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        if c.is_file():
+            log.info("PDF für Dok #%s auf Dateisystem: %s", document_id, c)
+            return c
+
+    if fn:
+        base = os.path.basename(fn)
+        try:
+            for p in media.rglob(base):
+                if p.is_file():
+                    log.info("PDF für Dok #%s via Suche (%s): %s", document_id, base, p)
+                    return p
+        except OSError as e:
+            log.warning("Dok #%s: rglob(%s): %s", document_id, base, e)
+    return None
+
+
+def _download_pdf_via_api(document_id: int) -> Optional[Path]:
+    if not PAPERLESS_TOKEN:
+        log.warning("Dok #%s: kein PAPERLESS_TOKEN für API-Download", document_id)
+        return None
+    try:
+        r = requests.get(
+            f"{PAPERLESS_URL}/api/documents/{document_id}/download/",
+            headers={"Authorization": f"Token {PAPERLESS_TOKEN}"},
+            timeout=120,
+        )
+        r.raise_for_status()
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(r.content)
+            tmp_path = Path(tmp.name)
+        log.info("PDF für Dok #%s via API geladen (%d bytes) → %s", document_id, len(r.content), tmp_path)
+        return tmp_path
+    except Exception as e:
+        log.warning("PDF API-Download für Dok #%s fehlgeschlagen: %s", document_id, e)
+        return None
+
+
+def resolve_document_pdf(document_id: int) -> ResolvedInput:
+    """PDF für Vision: API-Metadaten → gepaddete ID → API-Download."""
+    path = _pdf_path_from_paperless_meta(document_id)
+    if path:
+        return ResolvedInput(path=path)
+    path = _find_pdf_by_padded_id(document_id)
+    if path:
+        log.info("PDF für Dok #%s (gepaddet): %s", document_id, path)
+        return ResolvedInput(path=path)
+    tmp = _download_pdf_via_api(document_id)
+    if tmp:
+        return ResolvedInput(path=tmp, temp_pdf=tmp)
+    raise FileNotFoundError(
+        f"PDF für Dok #{document_id} nicht gefunden "
+        f"(MEDIA_ROOT={MEDIA_ROOT}, API={PAPERLESS_URL})"
+    )
 
 
 def pdftotext(pdf_path: Path, page: Optional[int] = None) -> str:
@@ -378,20 +521,14 @@ def parse_pages_arg(pages: Optional[str], page: int) -> list[int]:
     return [page]
 
 
-def resolve_input_path(path: Optional[str], doc_id: Optional[int]) -> Path:
+def resolve_input(path: Optional[str], doc_id: Optional[int]) -> ResolvedInput:
     if path:
         p = Path(path)
         if not p.is_file():
             raise FileNotFoundError(f"Datei nicht gefunden: {p}")
-        return p
+        return ResolvedInput(path=p)
     if doc_id is not None:
-        found = find_pdf_by_doc_id(doc_id)
-        if found:
-            log.info("Dok #%s → %s", doc_id, found)
-            return found
-        raise FileNotFoundError(
-            f"PDF für Dok #{doc_id} nicht unter {MEDIA_ROOT}/documents/{{originals,archive}}/ gefunden"
-        )
+        return resolve_document_pdf(doc_id)
     raise ValueError("Pfad oder --doc-id angeben")
 
 
@@ -426,81 +563,93 @@ def main() -> int:
     )
 
     try:
-        input_path = resolve_input_path(args.path, args.doc_id)
+        resolved = resolve_input(args.path, args.doc_id)
     except (FileNotFoundError, ValueError) as e:
         log.error("%s", e)
         return 2
 
+    input_path = resolved.path
     modes = list(MODES[:-1]) if args.mode == "all" else [args.mode]
     page_list = parse_pages_arg(args.pages, args.page)
 
-    if args.ocr_file:
-        ocr_full = Path(args.ocr_file).read_text(encoding="utf-8", errors="replace").strip()
-    elif input_path.suffix.lower() == ".pdf":
-        ocr_full = pdftotext(input_path)
-    else:
-        ocr_full = ""
+    try:
+        if args.ocr_file:
+            ocr_full = Path(args.ocr_file).read_text(encoding="utf-8", errors="replace").strip()
+        elif input_path.suffix.lower() == ".pdf":
+            ocr_full = pdftotext(input_path)
+        else:
+            ocr_full = ""
 
-    if args.ocr_chars and len(ocr_full) > args.ocr_chars:
-        ocr_full = ocr_full[: args.ocr_chars]
+        if args.ocr_chars and len(ocr_full) > args.ocr_chars:
+            ocr_full = ocr_full[: args.ocr_chars]
 
-    log.info(
-        "Input=%s  Modi=%s  Seiten=%s  Modell=%s  DPI=%d  Ollama=%s",
-        input_path, modes, page_list, args.model, args.dpi, OLLAMA_BASE,
-    )
-    if ocr_full:
-        log.info("OCR (%d Zeichen): %s", len(ocr_full), ocr_full[:200].replace("\n", " ") + ("…" if len(ocr_full) > 200 else ""))
-    else:
-        log.info("OCR: (leer — typisch bei Handschrift-Scan)")
+        log.info(
+            "Input=%s  MEDIA_ROOT=%s  Modi=%s  Seiten=%s  Modell=%s  DPI=%d  Ollama=%s",
+            input_path, MEDIA_ROOT, modes, page_list, args.model, args.dpi, OLLAMA_BASE,
+        )
+        if ocr_full:
+            preview = ocr_full[:200].replace("\n", " ")
+            if len(ocr_full) > 200:
+                preview += "…"
+            log.info("OCR (%d Zeichen): %s", len(ocr_full), preview)
+        else:
+            log.info("OCR: (leer — typisch bei Handschrift-Scan)")
 
-    all_results: list[dict] = []
+        all_results: list[dict] = []
 
-    for page in page_list:
-        try:
-            image_b64, image_bytes = file_to_base64_image(input_path, page=page, dpi=args.dpi)
-        except Exception as e:
-            log.error("Bild-Rendering Seite %d fehlgeschlagen: %s", page, e)
-            return 1
-        log.info("Seite %d gerendert: %d Bytes JPEG (base64 %d Zeichen)", page, image_bytes, len(image_b64))
-
-        for mode in modes:
-            npred = args.num_predict if args.num_predict is not None else DEFAULT_NUM_PREDICT[mode]
-            res = run_mode(
-                mode=mode,
-                image_b64=image_b64,
-                image_bytes=image_bytes,
-                ocr_text=ocr_full,
-                page=page,
-                model=args.model,
-                num_predict=npred,
-                temperature=args.temperature,
+        for page in page_list:
+            try:
+                image_b64, image_bytes = file_to_base64_image(input_path, page=page, dpi=args.dpi)
+            except Exception as e:
+                log.error("Bild-Rendering Seite %d fehlgeschlagen: %s", page, e)
+                return 1
+            log.info(
+                "Seite %d gerendert: %d Bytes JPEG (base64 %d Zeichen)",
+                page, image_bytes, len(image_b64),
             )
-            log_result(res)
-            row = asdict(res)
-            row.pop("raw_response", None)
-            row["_raw_len"] = len(res.raw_response)
-            if args.verbose:
-                row["raw_response"] = res.raw_response
-            all_results.append(row)
 
-    summary = {
-        "input": str(input_path),
-        "model": args.model,
-        "ollama_base": OLLAMA_BASE,
-        "runs": all_results,
-    }
+            for mode in modes:
+                npred = args.num_predict if args.num_predict is not None else DEFAULT_NUM_PREDICT[mode]
+                res = run_mode(
+                    mode=mode,
+                    image_b64=image_b64,
+                    image_bytes=image_bytes,
+                    ocr_text=ocr_full,
+                    page=page,
+                    model=args.model,
+                    num_predict=npred,
+                    temperature=args.temperature,
+                )
+                log_result(res)
+                row = asdict(res)
+                row.pop("raw_response", None)
+                row["_raw_len"] = len(res.raw_response)
+                if args.verbose:
+                    row["raw_response"] = res.raw_response
+                all_results.append(row)
 
-    if args.output:
-        out = Path(args.output)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        log.info("Ergebnis gespeichert: %s", out)
+        summary = {
+            "input": str(input_path),
+            "media_root": str(MEDIA_ROOT),
+            "model": args.model,
+            "ollama_base": OLLAMA_BASE,
+            "runs": all_results,
+        }
 
-    errors = sum(1 for r in all_results if r.get("error"))
-    if errors:
-        log.warning("%d von %d Läufen fehlgeschlagen", errors, len(all_results))
-        return 1
-    return 0
+        if args.output:
+            out = Path(args.output)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+            log.info("Ergebnis gespeichert: %s", out)
+
+        errors = sum(1 for r in all_results if r.get("error"))
+        if errors:
+            log.warning("%d von %d Läufen fehlgeschlagen", errors, len(all_results))
+            return 1
+        return 0
+    finally:
+        if resolved.temp_pdf and resolved.temp_pdf.is_file():
+            resolved.temp_pdf.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

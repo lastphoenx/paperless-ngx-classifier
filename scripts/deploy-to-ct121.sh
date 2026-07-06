@@ -53,6 +53,7 @@ FILES=(
   scripts/backfill_dok_id.py
   scripts/repair_brillenpaesse.py
   scripts/legacy_qr_split_test.py
+  scripts/test_handwriting_vision.py
   scripts/ensure-legacy-qr-deps.sh
 )
 
@@ -63,7 +64,7 @@ for f in "${FILES[@]}"; do
   dest_name="$(basename "$f")"
   [[ -f "$src" ]] || { echo "FEHLER: $src fehlt" >&2; exit 1; }
   cp -v "$src" "$TARGET/$dest_name"
-  if [[ "$dest_name" == *.sh || "$dest_name" == legacy_qr_split_test.py ]]; then
+  if [[ "$dest_name" == *.sh || "$dest_name" == legacy_qr_split_test.py || "$dest_name" == test_handwriting_vision.py ]]; then
     chmod +x "$TARGET/$dest_name"
   fi
 done
