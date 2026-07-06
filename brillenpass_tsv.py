@@ -14,9 +14,12 @@ from copy import deepcopy
 from typing import Any
 
 from brillenpass_parser import (
+    _coerce_ocular_diopter,
     _empty_eye_block,
     _norm_val,
     has_brillenpass_values,
+    plausible_brillenpass_data,
+    plausible_refraktion_eye,
 )
 
 log = logging.getLogger("brillenpass_tsv")
@@ -60,6 +63,33 @@ def header_field_for_token(text: str) -> str | None:
     if n in ("a°",) or raw.strip().upper() in ("A°", "A"):
         return "achse"
     return None
+
+
+def merge_rl_continuation_lines(zeilen: list[list[dict]]) -> list[list[dict]]:
+    """R/L oft allein in Zeile 1, Zahlen in Zeile 2 — zusammenführen."""
+    merged: list[list[dict]] = []
+    i = 0
+    while i < len(zeilen):
+        zeile = zeilen[i]
+        if i + 1 < len(zeilen):
+            side = _row_side(zeile)
+            nums_here = _numeric_tokens(zeile)
+            nums_next = _numeric_tokens(zeilen[i + 1])
+            if side and len(nums_here) < 3 and nums_next and not _row_side(zeilen[i + 1]):
+                merged.append(sorted(zeile + zeilen[i + 1], key=lambda x: x["left"]))
+                i += 2
+                continue
+            if (
+                len(zeile) == 1
+                and _RL_RE.match(zeile[0]["text"].strip())
+                and nums_next
+            ):
+                merged.append(sorted(zeile + zeilen[i + 1], key=lambda x: x["left"]))
+                i += 2
+                continue
+        merged.append(zeile)
+        i += 1
+    return merged
 
 
 def gruppiere_nach_top(words: list[dict], tol: int = 12) -> list[list[dict]]:
@@ -227,10 +257,14 @@ def _column_specs(anchor_fields: dict[str, dict]) -> dict[str, dict[str, float]]
 
 
 def _row_side(zeile: list[dict]) -> str | None:
-    for w in zeile[:4]:
+    for w in zeile[:5]:
         t = w["text"].strip()
         if _RL_RE.match(t):
             return "rechts" if t[0].lower() == "r" else "links"
+        if re.match(r"^R(?:[^a-z]|$)", t, re.I):
+            return "rechts"
+        if re.match(r"^L(?:[^a-z]|$)", t, re.I):
+            return "links"
     return None
 
 
@@ -321,7 +355,7 @@ def _parse_rl_rows_positional(zeilen: list[list[dict]]) -> dict | None:
         found += 1
     if found == 0:
         return None
-    if not has_brillenpass_values(result):
+    if not has_brillenpass_values(result) or not plausible_brillenpass_data(result):
         return None
     return result
 
@@ -348,22 +382,28 @@ def _parse_tsv_text_fallback(words: list[dict], parser_names: list[str] | None =
 def _eye_from_values(vals: dict[str, str]) -> dict[str, str | None]:
     eye: dict[str, str | None] = {}
     if vals.get("sph"):
-        eye["sph"] = _norm_val(vals["sph"])
+        eye["sph"] = _coerce_ocular_diopter(vals["sph"]) or _norm_val(vals["sph"])
     if vals.get("cyl"):
-        eye["cyl"] = _norm_val(vals["cyl"])
+        eye["cyl"] = _coerce_ocular_diopter(vals["cyl"]) or _norm_val(vals["cyl"])
     if vals.get("achse") is not None:
         achse = re.sub(r"[^\d]", "", vals["achse"])
         eye["achse"] = achse if achse != "" else None
     if vals.get("add"):
         eye["add"] = _norm_val(vals["add"])
+    if not plausible_refraktion_eye(eye):
+        return {}
     return eye
+
+
+def _prepare_zeilen(words: list[dict]) -> list[list[dict]]:
+    return merge_rl_continuation_lines(gruppiere_nach_top(words))
 
 
 def parse_by_anchors(words: list[dict]) -> dict | None:
     """Header-Anker + R/L-Zeilen → Refraktions-Dict (fern/naehe/pd)."""
     if not words:
         return None
-    zeilen = gruppiere_nach_top(words)
+    zeilen = _prepare_zeilen(words)
     header_fields, anchor_count, header_idx = find_best_header_row(zeilen)
     if anchor_count < 3 or header_idx < 0:
         return None
@@ -391,7 +431,7 @@ def parse_by_anchors(words: list[dict]) -> dict | None:
         if vals.get("pd") and _plausible_pd(_norm_val(vals["pd"])):
             result["pd"][side] = _norm_val(vals["pd"])
 
-    if not has_brillenpass_values(result):
+    if not has_brillenpass_values(result) or not plausible_brillenpass_data(result):
         return None
     return result
 
@@ -402,7 +442,7 @@ def extract_brillenpass_from_image(
 ) -> tuple[dict, str, dict]:
     """TSV-Pipeline: (daten, confidence, meta)."""
     words = run_tesseract_tsv_on_document(image_path)
-    zeilen = gruppiere_nach_top(words) if words else []
+    zeilen = _prepare_zeilen(words) if words else []
     header_fields, anchor_count, _header_idx = find_best_header_row(zeilen) if zeilen else ({}, 0, -1)
     meta: dict[str, Any] = {
         "header_anchors": anchor_count,
@@ -418,11 +458,16 @@ def extract_brillenpass_from_image(
         method = "positional" if parsed else method
     if not parsed:
         parsed = _parse_tsv_text_fallback(words, parser_names)
+        if parsed and not plausible_brillenpass_data(parsed):
+            parsed = None
         method = "text" if parsed else method
 
     if parsed:
         meta["method"] = method
-        meta["confidence"] = "hoch" if anchor_count >= 3 else "mittel"
+        if method in ("anchors", "positional") and anchor_count >= 3:
+            meta["confidence"] = "hoch"
+        else:
+            meta["confidence"] = "mittel"
         return parsed, meta["confidence"], meta
     if anchor_count >= 3:
         meta["confidence"] = "niedrig"

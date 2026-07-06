@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.52"  # 12.52: Fix TSV-Text-Fallback (parser_names)
+POST_CONSUME_VERSION = "12.53"  # 12.53: TSV R/L-Zeilen-Merge + Plausibilität Dioptrien
 import re
 import sys
 import json
