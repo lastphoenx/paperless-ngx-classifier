@@ -889,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.80';
+const UI_VERSION = '2.81';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5036,6 +5036,9 @@ function _bpFmtPd(pd) {
 function _bpEffectiveMessung(v) {
   const m = v.messung || {};
   if (m.rechts?.sph || m.links?.sph) return m;
+  const merged = ((v.extraktion || {}).diagnose || {}).merged || {};
+  const dr = merged['messung.rechts'], dl = merged['messung.links'];
+  if (dr?.sph || dl?.sph) return { rechts: dr || null, links: dl || null };
   if ((v.extraktion || {}).layout === 'fern_naehe') return null;
   const pick = (side) => {
     const f = (v.fern || {})[side] || {};

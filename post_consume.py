@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.58"  # 12.58: messung-Block (eine Tabelle R/L), fern/naehe nur bei Dual-Dokumenten
+POST_CONSUME_VERSION = "12.59"  # 12.59: messung beim Freigeben/Speichern persistieren
 import re
 import sys
 import json

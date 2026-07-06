@@ -1296,7 +1296,7 @@ def merge_brillenpass_version(existing: dict, incoming: dict) -> dict:
     for key in ("auftrag", "rechnung", "gueltig_ab"):
         if not out.get(key) and incoming.get(key):
             out[key] = incoming[key]
-    for dist in ("fern", "naehe"):
+    for dist in ("messung", "fern", "naehe"):
         out.setdefault(dist, {"rechts": None, "links": None})
         inc_dist = incoming.get(dist) or {}
         for side in ("rechts", "links"):
@@ -1983,6 +1983,24 @@ def looks_like_brillenpass_document(
     return looks_like_optiker_rechnung(ocr_text, dokumenttyp_visuell)
 
 
+def hydrate_messung_from_diagnose(version: dict) -> bool:
+    """Befüllt fehlendes messung aus extraktion.diagnose.merged (Legacy nach v12.58)."""
+    if not version:
+        return False
+    messung = version.get("messung") or {}
+    if any((messung.get(s) or {}).get("sph") for s in ("rechts", "links")):
+        return False
+    merged = ((version.get("extraktion") or {}).get("diagnose") or {}).get("merged") or {}
+    rechts, links = merged.get("messung.rechts"), merged.get("messung.links")
+    if not ((rechts or {}).get("sph") or (links or {}).get("sph")):
+        return False
+    version["messung"] = {
+        "rechts": rechts if (rechts or {}).get("sph") else None,
+        "links": links if (links or {}).get("sph") else None,
+    }
+    return True
+
+
 def compute_brillenpass_diff(old: dict | None, new: dict) -> dict:
     """Flache Diff-Map: pfad → {alt, neu}."""
     if not old:
@@ -1999,7 +2017,7 @@ def compute_brillenpass_diff(old: dict | None, new: dict) -> dict:
 
     old_flat: dict = {}
     new_flat: dict = {}
-    for dist in ("fern", "naehe"):
+    for dist in ("messung", "fern", "naehe"):
         for side in ("rechts", "links"):
             _flat(f"{dist}.{side}", (old.get(dist) or {}).get(side), old_flat)
             _flat(f"{dist}.{side}", (new.get(dist) or {}).get(side), new_flat)
