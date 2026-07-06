@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="de-CH">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -84,6 +84,7 @@
     outline: none; border-color: var(--accent);
   }
   textarea { resize: vertical; min-height: 70px; }
+  .input-date-ch { max-width: 11em; font-variant-numeric: tabular-nums; }
 
   /* Tags input */
   .tags-input { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px;
@@ -794,7 +795,8 @@
         </div>
         <div class="field-group">
           <label>Gültig ab</label>
-          <input type="date" id="bp-man-datum" style="font-size:13px">
+          <input type="text" id="bp-man-datum" class="input-date-ch" placeholder="tt.mm.jjjj"
+            inputmode="decimal" autocomplete="off" title="Datum: tt.mm.jjjj" style="font-size:13px">
         </div>
         <div class="field-group">
           <label>Dok-ID (optional)</label>
@@ -912,7 +914,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.03';
+const UI_VERSION = '3.05';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2806,6 +2808,7 @@ const CUSTOM_FIELD_OPTIONS = [
   {id: 14, name: "Verarbeitung",     type: "select"},
   {id: 15, name: "Person",           type: "select"},
   {id: 17, name: "Steuerjahr",       type: "integer"},
+  {id: 18, name: "Ausgestellt",      type: "date"},
 ];
 
 function renderFeldprofilEdit(feldprofil, dtId) {
@@ -2888,6 +2891,66 @@ function _escAttr(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
+/** Schweizer Datum: tt.mm.jjjj (Anzeige) ↔ ISO yyyy-mm-dd (API). */
+function parseDatumCh(s) {
+  s = (s || '').trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const y = +m[1], mo = +m[2], d = +m[3];
+    if (d >= 1 && d <= 31 && mo >= 1 && mo <= 12) return { d, mo, y };
+    return null;
+  }
+  m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
+  if (m) {
+    let d = +m[1], mo = +m[2], y = +m[3];
+    if (y < 100) y = y < 30 ? 2000 + y : 1900 + y;
+    if (d >= 1 && d <= 31 && mo >= 1 && mo <= 12) return { d, mo, y };
+  }
+  return null;
+}
+function formatDatumCh({ d, mo, y }) {
+  return `${d}.${mo}.${y}`;
+}
+function datumChToIso(s) {
+  const p = parseDatumCh(s);
+  if (!p) return null;
+  return `${p.y}-${String(p.mo).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`;
+}
+function isoToDatumCh(iso) {
+  const p = parseDatumCh(iso);
+  return p ? formatDatumCh(p) : (iso || '');
+}
+function renderDateInputCh(id, valueIso, extraAttrs = '') {
+  const display = isoToDatumCh(valueIso);
+  return `<input type="text" id="${id}" class="input-date-ch" value="${_escAttr(display)}"
+    placeholder="tt.mm.jjjj" inputmode="decimal" autocomplete="off" title="Datum: tt.mm.jjjj" ${extraAttrs}>`;
+}
+function readDateInputCh(el) {
+  const raw = (el?.value || '').trim();
+  if (!raw) return '';
+  return datumChToIso(raw) || raw;
+}
+
+function _cfIdByName(name) {
+  const n = (name || '').toLowerCase();
+  const def = (window._cfDefs || []).find(c => (c.name || '').toLowerCase() === n);
+  if (def) return def.id;
+  const fb = CUSTOM_FIELD_OPTIONS.find(c => (c.name || '').toLowerCase() === n);
+  return fb?.id ?? null;
+}
+
+function _isBelegdatumCf(meta) {
+  const n = (meta?.name || '').toLowerCase();
+  return n === 'ausgestellt' || n === 'belegdatum';
+}
+
+function _belegdatumFromDoc(doc, cfMapRaw) {
+  const cfId = _cfIdByName('Ausgestellt');
+  if (cfId && cfMapRaw[cfId]) return cfMapRaw[cfId];
+  return doc?.created || '';
+}
+
 function renderDocReviewCfInputs(cfMapRaw) {
   const defs = (window._cfDefs && window._cfDefs.length)
     ? [...window._cfDefs].sort((a, b) => a.id - b.id)
@@ -2896,6 +2959,7 @@ function renderDocReviewCfInputs(cfMapRaw) {
 
   const inputs = defs.map(meta => {
     const id = meta.id;
+    if (_isBelegdatumCf(meta)) return '';
     const label = meta.name || ('CF' + id);
     const rawVal = cfMapRaw[id] ?? '';
     const ftype = _cfFieldType(id);
@@ -2913,7 +2977,7 @@ function renderDocReviewCfInputs(cfMapRaw) {
     if (ftype === 'date') {
       return `<div class="field-group">
         <label>${label}</label>
-        <input type="date" id="dr-cf-${id}" value="${_escAttr(rawVal)}">
+        ${renderDateInputCh(`dr-cf-${id}`, rawVal)}
       </div>`;
     }
     return `<div class="field-group">
@@ -2934,7 +2998,8 @@ function collectDocReviewCustomFields() {
   document.querySelectorAll('[id^="dr-cf-"]').forEach(el => {
     const id = parseInt(el.id.replace('dr-cf-', ''), 10);
     if (Number.isNaN(id)) return;
-    const val = (el.value || '').trim();
+    const ftype = _cfFieldType(id);
+    const val = ftype === 'date' ? readDateInputCh(el) : (el.value || '').trim();
     if (val) out.push({ field: id, value: val });
   });
   return out;
@@ -2946,8 +3011,10 @@ function collectDocReviewCorrectionFields() {
   const tagsEl = document.getElementById('dr-tags');
   const dtEl   = document.getElementById('dr-dt');
   const titleEl = document.getElementById('dr-title');
+  const belegEl = document.getElementById('dr-belegdatum');
   return {
     title: titleEl ? titleEl.value.trim() : '',
+    created: belegEl ? readDateInputCh(belegEl) : '',
     storage_path_id:   spEl?.value ? parseInt(spEl.value) : null,
     storage_path_name: spEl?.options[spEl.selectedIndex]?.text?.trim() || null,
     correspondent_id:  corrEl?.value ? parseInt(corrEl.value) : null,
@@ -3950,6 +4017,7 @@ async function selectDocReview(i) {
 
   // Kundenfelder — immer alle Felder aus Paperless, unabhängig von KI/Feldprofil
   const cfFormHtml = renderDocReviewCfInputs(cfMapRaw);
+  const belegdatumIso = _belegdatumFromDoc(doc, cfMapRaw);
   const drTitleRaw = (doc?.title || entry.title || '').trim();
   const drTitleEsc = drTitleRaw
     .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -4014,8 +4082,8 @@ async function selectDocReview(i) {
             <span style="color:var(--muted)">Dokumenttyp</span>
             <span style="color:var(--text)">${dtName}</span>
 
-            <span style="color:var(--muted)">Datum</span>
-            <span style="color:var(--text)">${doc?.created||'—'}</span>
+            <span style="color:var(--muted)">Belegdatum</span>
+            <span style="color:var(--text)">${isoToDatumCh(doc?.created) || doc?.created || '—'}</span>
 
             <span style="color:var(--muted)">Confidence</span>
             <span style="color:${confColor};font-weight:bold">${entry.confidence||'?'}</span>
@@ -4050,6 +4118,10 @@ async function selectDocReview(i) {
               placeholder="Anzeigename in Paperless (max. 128 Zeichen)">
           </div>
           <div class="field-group" style="margin:0">
+            <label>Belegdatum</label>
+            ${renderDateInputCh('dr-belegdatum', belegdatumIso)}
+          </div>
+          <div class="field-group" style="margin:0">
             <label>Ordner</label>
             <select id="dr-sp">${spOptions}</select>
           </div>
@@ -4065,7 +4137,7 @@ async function selectDocReview(i) {
             <label>Tags (Mehrfachauswahl)</label>
             <select id="dr-tags" multiple>${tagOptions}</select>
             <span style="display:block;font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4">
-              <strong>Titel</strong>, Tags und Kundenfelder bei <strong>Freigeben</strong> und <strong>Neu klassifizieren</strong>.
+              <strong>Titel</strong>, <strong>Belegdatum</strong>, Tags und Kundenfelder bei <strong>Freigeben</strong> und <strong>Neu klassifizieren</strong>.
               Strg+Klick = mehrere Tags. Tag-Auswahl ersetzt alle Tags.
               Ordner/Korrespondent/Typ nur bei «Neu klassifizieren».
             </span>
@@ -4099,6 +4171,9 @@ async function submitDocReview(index, action) {
   body.custom_fields = collectDocReviewCustomFields();
   if (corr.title) {
     body.title = corr.title;
+  }
+  if (corr.created) {
+    body.created = corr.created;
   }
 
   if (action === 'reclassify') {
@@ -4229,26 +4304,8 @@ async function loadFamilyConfig() {
   } catch(e) { showToast('Fehler beim Laden: ' + e.message, 'error'); }
 }
 
-function parseGeburtsdatum(geb) {
-  geb = (geb || '').trim();
-  if (!geb) return null;
-  let m = geb.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (m) {
-    const y = +m[1], mo = +m[2], d = +m[3];
-    if (d >= 1 && d <= 31 && mo >= 1 && mo <= 12) return { d, mo, y };
-    return null;
-  }
-  m = geb.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$/);
-  if (m) {
-    let d = +m[1], mo = +m[2], y = +m[3];
-    if (y < 100) y = y < 30 ? 2000 + y : 1900 + y;
-    if (d >= 1 && d <= 31 && mo >= 1 && mo <= 12) return { d, mo, y };
-  }
-  return null;
-}
-function formatGeburtsdatumCh({d, mo, y}) {
-  return `${d}.${mo}.${y}`;
-}
+function parseGeburtsdatum(geb) { return parseDatumCh(geb); }
+function formatGeburtsdatumCh(parts) { return formatDatumCh(parts); }
 
 function renderFamilyPersonen(d) {
   const pContainer = document.getElementById('family-personen');
@@ -5054,7 +5111,7 @@ function _bpInitManualForm() {
 function _bpFillManualFromParse(result) {
   const v = result || {};
   const set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
-  set('bp-man-datum', v.gueltig_ab || '');
+  set('bp-man-datum', isoToDatumCh(v.gueltig_ab || ''));
   set('bp-man-glas-index', (v.glas||{}).index || '');
   set('bp-man-glas-desc', (v.glas||{}).beschreibung || '');
   const pairs = [['bp-man-nr','naehe','rechts'],['bp-man-nl','naehe','links'],['bp-man-fr','fern','rechts'],['bp-man-fl','fern','links']];
@@ -5096,7 +5153,7 @@ async function submitBrillenpassManual() {
   const status = document.getElementById('bp-man-status');
   const person_id = document.getElementById('bp-man-person')?.value || '';
   const korrespondent = document.getElementById('bp-man-korr')?.value || '';
-  const gueltig_ab = document.getElementById('bp-man-datum')?.value || '';
+  const gueltig_ab = readDateInputCh(document.getElementById('bp-man-datum'));
   const docRaw = document.getElementById('bp-man-dokid')?.value;
   const parser = document.getElementById('bp-man-parser')?.value || '';
   if (!person_id || !korrespondent) {
@@ -5491,7 +5548,7 @@ function renderBrillenpassReviewPanel(entry) {
       </div>
       <div class="field-group" style="margin-top:12px">
         <label>Gültig ab</label>
-        <input type="date" id="bp-gueltig-ab" value="${v.gueltig_ab || ''}">
+        ${renderDateInputCh('bp-gueltig-ab', v.gueltig_ab || '')}
       </div>
       ${_bpDiagnoseHtml(v)}
       ${_bpEyeGridHtml(v)}
@@ -5557,7 +5614,7 @@ function _bpCollectVorschlag(entry) {
       };
   return {
     ...v,
-    gueltig_ab: document.getElementById('bp-gueltig-ab')?.value || v.gueltig_ab,
+    gueltig_ab: readDateInputCh(document.getElementById('bp-gueltig-ab')) || v.gueltig_ab,
     auftrag: document.getElementById('bp-auftrag')?.value || v.auftrag,
     ...eyes,
     pd: {
