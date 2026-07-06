@@ -69,6 +69,8 @@
   .field-group { margin-bottom: 14px; }
   label { display: block; color: var(--label); font-size: 11px; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
   .col-label { color: var(--label); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+  .col-head { color: var(--label); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+  .col-head-sm { color: var(--label); font-size: 9px; font-weight: 600; text-align: center; line-height: 1.2; }
   input[type=text], textarea, select {
     width: 100%; background: var(--bg); border: 1px solid var(--border);
     color: var(--text); border-radius: var(--radius); padding: 8px 10px;
@@ -904,7 +906,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.98';
+const UI_VERSION = '2.99';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2833,10 +2835,10 @@ function renderFeldprofilEdit(feldprofil, dtId) {
       </label>
       <div style="border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:rgba(0,0,0,.15)">
         <div style="display:grid;grid-template-columns:minmax(0,1fr) 4.5rem 4.5rem 3.5rem;gap:4px 6px;align-items:end;padding-bottom:4px;margin-bottom:2px;border-bottom:1px solid var(--border)">
-          <span style="font-size:10px;color:var(--muted);font-weight:bold">FELD</span>
-          <span style="font-size:9px;color:var(--muted);text-align:center;line-height:1.2" title="KI/OCR extrahiert">Extrahieren</span>
-          <span style="font-size:9px;color:var(--muted);text-align:center;line-height:1.2" title="Im Dokument-Review">Review</span>
-          <span style="font-size:9px;color:var(--warn);text-align:center;line-height:1.2" title="Pflichtfeld">Pflicht</span>
+          <span class="col-head">Feld</span>
+          <span class="col-head-sm" title="KI/OCR extrahiert">Extrahieren</span>
+          <span class="col-head-sm" title="Im Dokument-Review">Review</span>
+          <span class="col-head-sm" style="color:var(--warn)" title="Pflichtfeld">Pflicht</span>
         </div>
         ${rows}
       </div>
