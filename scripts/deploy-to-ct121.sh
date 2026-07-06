@@ -52,6 +52,7 @@ FILES=(
   scripts/backfill_dok_id.py
   scripts/repair_brillenpaesse.py
   scripts/legacy_qr_split_test.py
+  scripts/ensure-legacy-qr-deps.sh
 )
 
 echo "==> Repo:   $REPO_DIR"
