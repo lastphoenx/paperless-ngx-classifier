@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.60"  # 12.60: Meyer-Quittungstabelle, partielle messung-Hydration
+POST_CONSUME_VERSION = "12.61"  # 12.61: Fahrzeug-typ→Tag, Storage-Path {{ }} Syntax
 import re
 import sys
 import json
@@ -123,6 +123,18 @@ def _norm_kz_key(s: str) -> str:
     """Kennzeichen-Vergleichsschlüssel — nur A-Z/0-9, Gross (AG178626 = AG 178 626)."""
     import re as _re
     return _re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+
+# Deterministisches Tag aus family.json fahrzeug.typ (muss in Paperless existieren)
+_FAHRZEUG_TYP_TAGS: dict[str, str] = {
+    "auto": "Auto",
+    "mofa": "Mofa",
+    "moped": "Moped",
+}
+
+
+def _fahrzeug_typ_default_tag(typ: str) -> Optional[str]:
+    return _FAHRZEUG_TYP_TAGS.get((typ or "").lower())
 
 
 def _build_kennzeichen_map() -> dict[str, dict]:
@@ -3661,10 +3673,10 @@ def resolve_storage_path_with_template(name: str, template: str) -> Optional[int
 
 
 def resolve_storage_path(pfad: str) -> Optional[int]:
-    """Storage Path suchen oder anlegen (Pipeline: pfad/{created_year}/{title})."""
+    """Storage Path suchen oder anlegen (Pipeline: pfad/{{ created_year }}/{{ title }})."""
     if not pfad:
         return None
-    template = f"{pfad}/{{created_year}}/{{title}}"
+    template = f"{pfad}/{{{{ created_year }}}}/{{{{ title }}}}"
     return resolve_storage_path_with_template(pfad, template)
 
 
@@ -3852,7 +3864,7 @@ def main():
         lines = [l.strip() for l in text.splitlines() if l.strip()]
         return lines[0] if lines else None
 
-    def _pre_route(ordner: str, kz_tag: str, source: str) -> dict:
+    def _pre_route(ordner: str, kz_tag: str, source: str, fz_typ: str = "") -> dict:
         """Baut pre_decision aus Manifest-Tags — kein Hardcoding.
         Korrespondent kommt aus correspondents.json (typische_ordner Match),
         NICHT aus Vision/OCR — Vision kann Handschrift oder Störtext als Absender lesen.
@@ -3874,7 +3886,12 @@ def main():
         ordner_entry = next((e for e in manifest if e.get("pfad") == ordner), {})
         manifest_tags = ordner_entry.get("erlaubte_tags", [])
         _max = ordner_entry.get("max_tags", 4)
-        auto_tags = [kz_tag] if kz_tag in manifest_tags else []
+        auto_tags: list[str] = []
+        typ_tag = _fahrzeug_typ_default_tag(fz_typ)
+        if typ_tag:
+            auto_tags.append(typ_tag)
+        if kz_tag in manifest_tags and kz_tag not in auto_tags:
+            auto_tags.append(kz_tag)
         for t in manifest_tags:
             if t not in auto_tags and len(auto_tags) < _max:
                 auto_tags.append(t)
@@ -3915,7 +3932,7 @@ def main():
         _family_kz_match = (fz, source)
         if fz.get("routing_ordner") and ordner:
             log.info("Pre-Routing: Kennzeichen %s (%s) → %s (kein LLM)", kz_display, source, ordner)
-            pre_decision = _pre_route(ordner, kz_display, source)
+            pre_decision = _pre_route(ordner, kz_display, source, fz_typ=fz.get("typ", ""))
             _kz_person = _resolve_person_anzeigename(fz.get("person_id", ""))
             if _kz_person:
                 pre_decision["_bez_person"] = _kz_person

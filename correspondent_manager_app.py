@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.53"  # 2.53: Brillenpass Korrespondent-Dropdown + Giulia-Patch
-UI_VERSION = "2.96"
+__version__ = "2.54"  # 2.54: Manifest-Pending-Badge, Storage-Path {{ }} Syntax
+UI_VERSION = "2.97"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -1326,13 +1326,20 @@ def _ensure_manifest_entries(ordner_liste: list[str], korrespondent_name: str) -
         log.warning("Manifest-Eintrag für '%s' fehlgeschlagen: %s", ordner_liste, e)
 
 
+def _storage_path_template(pfad: str, *, with_correspondent: bool = True) -> str:
+    """Paperless-ngx new-style path template (Jinja {{ }} placeholders)."""
+    if with_correspondent:
+        return f"{pfad}/{{{{ created_year }}}}/{{{{ correspondent }}}}/{{{{ title }}}}"
+    return f"{pfad}/{{{{ created_year }}}}/{{{{ title }}}}"
+
+
 def _ensure_storage_path(pfad: str) -> None:
     """Storage Path in Paperless anlegen falls nicht vorhanden."""
     try:
         existing = pl_get("/storage_paths/", {"name__iexact": pfad})
         if existing.get("count", 0) > 0:
             return
-        template = pfad + "/{created_year}/{correspondent}/{title}"
+        template = _storage_path_template(pfad)
         payload = {"name": pfad, "path": template}
         payload.update(_default_permissions())
         result = pl_post("/storage_paths/", payload)
@@ -1435,7 +1442,7 @@ def _get_or_create_storage_path(pfad: str) -> Optional[int]:
         if r.get("results"):
             return r["results"][0]["id"]
         # Anlegen
-        result = pl_post("/storage_paths/", {"name": pfad, "path": pfad})
+        result = pl_post("/storage_paths/", {"name": pfad, "path": _storage_path_template(pfad)})
         return result.get("id")
     except Exception as ex:
         log.warning("Storage Path '%s' nicht gefunden/angelegt: %s", pfad, ex)
