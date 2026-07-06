@@ -79,8 +79,11 @@ if str(ROOT) not in sys.path:
 from legacy_split_by_qr import (  # noqa: E402
     DEFAULT_QR_REGEX,
     _FALLBACK_DPIS,
+    _RENDER_BACKENDS,
     _decode_page_image,
     _match_barcode,
+    convert_pdf_pages,
+    dump_rendered_page,
     find_split_markers,
     has_real_qr_splits,
     split_pdf_at_markers,
@@ -107,9 +110,14 @@ def _check_deps(log: logging.Logger) -> None:
     log.info("=== Umgebung ===")
     log.info("Python: %s", sys.executable)
     log.info("Module: %s", ROOT)
-    for cmd in ("pdftoppm", "zbarimg"):
+    for cmd in ("pdftoppm", "pdftocairo", "gs", "zbarimg"):
         path = shutil.which(cmd)
-        log.info("%s: %s", cmd, path or "NICHT GEFUNDEN (pyzbar reicht, zbarimg optional)")
+        extra = ""
+        if cmd == "gs" and not path:
+            extra = " — FEHLT (Original-Script nutzte Ghostscript 600 dpi)"
+        elif cmd == "zbarimg" and not path:
+            extra = " (pyzbar reicht, zbarimg optional)"
+        log.info("%s: %s%s", cmd, path or "NICHT GEFUNDEN", extra)
     try:
         import pyzbar  # noqa: F401
         log.info("pyzbar: ok")
@@ -131,48 +139,53 @@ def _verbose_page_scan(
     regex: str,
     log: logging.Logger,
 ) -> None:
-    from pdf2image import convert_from_path
     from pypdf import PdfReader
 
     pattern = re.compile(regex)
     total = len(PdfReader(str(pdf_path)).pages)
     log.info("=== Seiten-Scan (verbose) ===")
     log.info("PDF: %s (%d Seiten, %s bytes)", pdf_path, total, pdf_path.stat().st_size)
+    log.info("Backends: %s | DPIs: %s", ", ".join(_RENDER_BACKENDS), list(_FALLBACK_DPIS))
 
-    for try_dpi in _FALLBACK_DPIS:
-        log.info("--- DPI %d ---", try_dpi)
-        t0 = time.monotonic()
-        try:
-            images = convert_from_path(str(pdf_path), dpi=try_dpi)
-        except Exception as e:
-            log.error("Render fehlgeschlagen: %s", e)
-            continue
-        log.info("Gerendert: %d Seiten in %.1fs", len(images), time.monotonic() - t0)
-        if len(images) != total:
-            log.warning("Seitenanzahl Render (%d) != PDF (%d)", len(images), total)
-
-        any_code = False
-        for page_num, image in enumerate(images, start=1):
-            t1 = time.monotonic()
-            try:
-                raw_list = _decode_page_image(image)
-            except Exception as e:
-                log.error("  S.%d: Decode-Fehler: %s", page_num, e)
-                continue
-            dt = time.monotonic() - t1
-            if not raw_list:
-                log.info("  S.%d: (kein QR) [%.2fs]", page_num, dt)
-                continue
-            any_code = True
-            for raw in raw_list:
-                hit = _match_barcode(raw, pattern)
-                mark = "MATCH" if hit else "kein Match"
-                show = hit or raw
-                log.info("  S.%d: [%s] «%s» [%.2fs]", page_num, mark, show[:120], dt)
-        if any_code:
-            log.info("DPI %d: Code(s) gefunden", try_dpi)
+    found_any = False
+    for backend in _RENDER_BACKENDS:
+        if found_any:
             break
-        log.info("DPI %d: nichts erkannt", try_dpi)
+        for try_dpi in _FALLBACK_DPIS:
+            log.info("--- %s @ DPI %d ---", backend, try_dpi)
+            t0 = time.monotonic()
+            try:
+                images = convert_pdf_pages(str(pdf_path), dpi=try_dpi, backend=backend)
+            except Exception as e:
+                log.error("Render fehlgeschlagen: %s", e)
+                continue
+            log.info("Gerendert: %d Seiten in %.1fs", len(images), time.monotonic() - t0)
+            if len(images) != total:
+                log.warning("Seitenanzahl Render (%d) != PDF (%d)", len(images), total)
+
+            any_code = False
+            for page_num, image in enumerate(images, start=1):
+                t1 = time.monotonic()
+                try:
+                    raw_list = _decode_page_image(image)
+                except Exception as e:
+                    log.error("  S.%d: Decode-Fehler: %s", page_num, e)
+                    continue
+                dt = time.monotonic() - t1
+                if not raw_list:
+                    log.info("  S.%d: (kein QR) [%.2fs]", page_num, dt)
+                    continue
+                any_code = True
+                for raw in raw_list:
+                    hit = _match_barcode(raw, pattern)
+                    mark = "MATCH" if hit else "kein Match"
+                    show = hit or raw
+                    log.info("  S.%d: [%s] «%s» [%.2fs]", page_num, mark, show[:120], dt)
+            if any_code:
+                log.info("%s @ %d dpi: Code(s) gefunden", backend, try_dpi)
+                found_any = True
+                break
+            log.info("%s @ %d dpi: nichts erkannt", backend, try_dpi)
 
 
 def _print_split_plan(
@@ -205,6 +218,25 @@ def main() -> int:
         default=Path(os.environ.get("PAPERLESS_CONSUME_DIR", "/mnt/paperless-data/consume")),
     )
     parser.add_argument("--verbose-pages", action="store_true")
+    parser.add_argument(
+        "--dump-page",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Seite N als PNG rendern (Debug: QR im Raster?) — bricht nach Dump ab",
+    )
+    parser.add_argument(
+        "--dump-backend",
+        choices=_RENDER_BACKENDS,
+        default="ghostscript",
+        help="Renderer für --dump-page (default: ghostscript wie Bash-Original)",
+    )
+    parser.add_argument(
+        "--dump-dpi",
+        type=int,
+        default=150,
+        help="DPI für --dump-page (default: 150)",
+    )
     args = parser.parse_args()
 
     pdf_path = args.pdf.expanduser().resolve()
@@ -223,6 +255,31 @@ def main() -> int:
 
     _check_deps(log)
     log.info("Regex: %s", args.regex)
+
+    if args.dump_page > 0:
+        out_png = pdf_path.parent / f"{pdf_path.stem}_page{args.dump_page}_{args.dump_backend}_{args.dump_dpi}dpi.png"
+        try:
+            dump_rendered_page(
+                str(pdf_path), args.dump_page, out_png,
+                dpi=args.dump_dpi, backend=args.dump_backend,
+            )
+        except Exception as e:
+            log.exception("Dump fehlgeschlagen: %s", e)
+            return 1
+        log.info("PNG: %s (%s bytes)", out_png, out_png.stat().st_size)
+        try:
+            images = convert_pdf_pages(
+                str(pdf_path), dpi=args.dump_dpi, backend=args.dump_backend,
+                first_page=args.dump_page, last_page=args.dump_page,
+            )
+            raw_list = _decode_page_image(images[0]) if images else []
+            if raw_list:
+                log.info("Decode auf Dump: %s", raw_list)
+            else:
+                log.warning("Decode auf Dump: kein QR — PNG prüfen (Smartphone/zbarimg)")
+        except Exception as e:
+            log.warning("Decode auf Dump: %s", e)
+        return 0
 
     if args.verbose_pages:
         _verbose_page_scan(pdf_path, args.regex, log)
