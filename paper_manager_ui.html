@@ -831,16 +831,17 @@
     <div class="card" style="padding:16px 18px">
       <p style="color:var(--muted);font-size:12px;margin-bottom:12px;line-height:1.6">
         Regex <code>^[0-9]{6}_[^\s]+$</code> (z.&nbsp;B. <code>060102_Gesundheit_Monika</code>).
+        QR auf Trennseiten — Rendering via <strong>Ghostscript</strong> (wie früheres NAS-Script).
         Teile landen in <code>consume/</code> — volle Pipeline wie bei neuem Scan.
-        Konfiguration: <code>PAPERLESS_CONSUME_DIR</code>, <code>LEGACY_SPLIT_QR_REGEX</code> in <code>.env</code>.
       </p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input type="number" id="lsplit-id" placeholder="Paperless Dok-ID" min="1"
           style="max-width:160px;font-size:13px">
-        <button class="btn btn-secondary" onclick="triggerLegacySplit(true)">Vorschau</button>
-        <button class="btn btn-primary" onclick="triggerLegacySplit(false)">▶ Splitten → consume</button>
+        <button class="btn btn-secondary" id="lsplit-btn-preview" onclick="triggerLegacySplit(true)">Vorschau</button>
+        <button class="btn btn-primary" id="lsplit-btn-split" onclick="triggerLegacySplit(false)">▶ Splitten → consume</button>
       </div>
-      <div id="lsplit-status" style="font-size:12px;margin-top:10px;color:var(--muted)"></div>
+      <div id="lsplit-plan" style="display:none;margin-top:12px;font-size:12px"></div>
+      <div id="lsplit-status" style="font-size:12px;margin-top:10px;color:var(--muted);white-space:pre-wrap"></div>
     </div>
   </div>
 
@@ -889,7 +890,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.86';
+const UI_VERSION = '2.87';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -1161,6 +1162,15 @@ function showView(name) {
     Promise.all(loaders).then(() => loadFamilyConfig());
   }
   if (name === 'brillenpass') loadBrillenpassView();
+  if (name === 'legacy-split') {
+    const inp = document.getElementById('lsplit-id');
+    if (inp && !inp.value) {
+      try {
+        const last = localStorage.getItem('lsplit-last-id');
+        if (last) inp.value = last;
+      } catch (e) {}
+    }
+  }
 }
 
 // ──────────────────────────────────────────────
@@ -5468,13 +5478,62 @@ async function triggerBrillenpass() {
   }
 }
 
+function _lsplitRenderPlan(splits, pages) {
+  const el = document.getElementById('lsplit-plan');
+  if (!el) return;
+  const rows = (splits || []).filter(s => !s.is_prefix);
+  if (!rows.length) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = 'block';
+  el.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:var(--muted);text-align:left">
+        <th style="padding:4px 8px">Teil</th>
+        <th style="padding:4px 8px">Seiten</th>
+        <th style="padding:4px 8px">Barcode</th>
+      </tr></thead>
+      <tbody>${rows.map((s, i) => `
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:4px 8px">${i + 1}</td>
+          <td style="padding:4px 8px">S.${s.from_page}–${s.to_page}${s.from_page === s.to_page ? ' (Trennseite)' : ''}</td>
+          <td style="padding:4px 8px"><code>${s.barcode}</code></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    <div style="color:var(--muted);margin-top:6px">${pages} Seiten gesamt · ${rows.length} Teile</div>`;
+}
+
+function _lsplitSetBusy(busy) {
+  ['lsplit-btn-preview', 'lsplit-btn-split'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.disabled = !!busy;
+  });
+}
+
 async function triggerLegacySplit(dryRun) {
   const id = parseInt(document.getElementById('lsplit-id')?.value || '', 10);
   const status = document.getElementById('lsplit-status');
   if (!id) { showToast('Dokument-ID eingeben', 'error'); return; }
+  try { localStorage.setItem('lsplit-last-id', String(id)); } catch (e) {}
+  if (!dryRun) {
+    const ok = confirm(
+      `Dokument #${id} an QR-Codes splitten?\n\n`
+      + 'Teile werden nach consume/ geschrieben und neu importiert.\n'
+      + 'Zuerst «Vorschau» empfohlen.'
+    );
+    if (!ok) return;
+  }
+  _lsplitSetBusy(true);
   if (status) status.textContent = dryRun
-    ? 'Analysiere Original+Archiv (~30–90s)…'
-    : 'Splitte (Original+Archiv bereits gescannt)…';
+    ? `Analysiere Dok #${id} (Original+Archiv, Ghostscript ~10–20s)…`
+    : `Schreibe Teile nach consume/…`;
+  if (!dryRun) {
+    const plan = document.getElementById('lsplit-plan');
+    if (plan) { plan.style.display = 'none'; plan.innerHTML = ''; }
+  }
   try {
     const d = await _fetchJson(`${API_BASE}/legacy-split/trigger/${id}`, {
       method: 'POST',
@@ -5482,46 +5541,39 @@ async function triggerLegacySplit(dryRun) {
       credentials: 'same-origin',
       body: JSON.stringify({dry_run: dryRun}),
     });
+    const meta = d.scan_meta || {};
+    const renderHint = meta.backend ? ` · ${meta.backend}@${meta.dpi || '?'}dpi` : '';
+    const timeHint = d.scan_seconds != null ? ` · ${d.scan_seconds}s` : '';
     if (dryRun) {
-      if (!d.ok || !(d.splits || []).length) {
+      if (!d.ok || !(d.splits || []).filter(s => !s.is_prefix).length) {
         let msg = d.message || 'Kein passender Metadaten-QR gefunden';
         const other = (d.qr_debug || []).filter(x => !x.matched).slice(0, 4);
         if (other.length) {
-          msg += ' — andere QR: ' + other.map(x =>
+          msg += '\nAndere QR: ' + other.map(x =>
             `S.${x.page} «${String(x.raw).slice(0, 48)}»`).join('; ');
         } else if (d.qr_seen === 0) {
-          msg += ' — auf keiner Seite ein QR-Code erkannt';
+          msg += '\nAuf keiner Seite ein QR erkannt — gs installiert? (ensure-legacy-qr-deps.sh)';
         }
-        if (status) status.textContent = `${d.pages} Seiten (${d.source || '?'}): ${msg}`;
+        if (status) status.textContent = `${d.pages} Seiten (${d.source || '?'})${timeHint}: ${msg}`;
+        _lsplitRenderPlan([], 0);
         showToast('Kein Split möglich', 'error');
         return;
       }
-      const lines = (d.splits || []).map(s =>
-        `S.${s.from_page}–${s.to_page}: ${s.barcode}`).join(' · ');
-      let extra = '';
-      if ((d.splits || []).length <= 1 && d.pages > 1) {
-        const dbg = (d.qr_debug || []).filter(x => x.matched);
-        const pagesWithQr = [...new Set(dbg.map(x => x.page))].sort((a, b) => a - b);
-        extra = pagesWithQr.length
-          ? `\nQR nur auf Seite(n): ${pagesWithQr.join(', ')} — prüfe Original-Scan oder Regex.`
-          : `\nKein QR erkannt — ggf. falsches Dok (schon gesplittet?) oder Regex anpassen.`;
-        const other = (d.qr_debug || []).filter(x => !x.matched).slice(0, 3);
-        if (other.length) {
-          extra += '\nAndere Codes: ' + other.map(x =>
-            `S.${x.page} «${String(x.raw).slice(0, 40)}»`).join('; ');
-        }
-      }
-      if (status) status.textContent = `${d.pages} Seiten → ${(d.splits||[]).length} Teile (${d.source || '?'}): ${lines}${extra}`;
-      showToast('Split-Vorschau OK', 'success');
+      _lsplitRenderPlan(d.splits, d.pages);
+      if (status) status.textContent = (d.message || 'OK') + renderHint + timeHint;
+      showToast(`${(d.splits||[]).filter(s => !s.is_prefix).length} Teile — Vorschau OK`, 'success');
     } else {
+      _lsplitRenderPlan([], 0);
       const lines = (d.parts || []).map(p =>
-        `${p.barcode}: S.${p.from_page}–${p.to_page} → ${p.filename}`).join('\n');
+        `• ${p.barcode}: S.${p.from_page}–${p.to_page} → ${p.filename}`).join('\n');
       if (status) status.textContent = (d.message || 'OK') + (lines ? `\n${lines}` : '');
       showToast(d.message || 'Split eingereiht', 'success');
     }
   } catch (e) {
     if (status) status.textContent = String(e.message || e);
     showToast('QR-Split: ' + (e.message || e), 'error');
+  } finally {
+    _lsplitSetBusy(false);
   }
 }
 
