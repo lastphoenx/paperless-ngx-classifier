@@ -123,7 +123,8 @@ def test_merge_rl_split_line():
     assert any(_row_side(z) == "rechts" and len(_numeric_tokens(z)) >= 3 for z in zeilen)
 
 
-def test_plausible_rejects_garbage_sph():
-    from brillenpass_parser import plausible_refraktion_eye
-    assert not plausible_refraktion_eye({"sph": "+293", "cyl": "+23", "achse": "2"})
-    assert plausible_refraktion_eye({"sph": "-2.75", "cyl": "-1.25", "achse": "179"})
+def test_diopter_from_token_rejects_garbage():
+    from brillenpass_tsv import _diopter_from_token
+    assert _diopter_from_token("293") is None
+    assert _diopter_from_token("-2.75") == "-2.75"
+    assert _diopter_from_token("-1,25") == "-1.25"
