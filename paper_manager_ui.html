@@ -16,7 +16,7 @@
     --danger:    #ef4444;
     --text:      #e2e8f0;
     --muted:     #64748b;
-    --label:     #9eb0c4;
+    --label:     #cbd5e1;
     --radius:    8px;
     --font:      'JetBrains Mono', 'Fira Code', monospace;
   }
@@ -69,8 +69,8 @@
   .field-group { margin-bottom: 14px; }
   label { display: block; color: var(--label); font-size: 11px; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
   .col-label { color: var(--label); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
-  .col-head { color: var(--label); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
-  .col-head-sm { color: var(--label); font-size: 9px; font-weight: 600; text-align: center; line-height: 1.2; }
+  .col-head { color: var(--label); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+  .col-head-sm { color: var(--label); font-size: 10px; font-weight: 600; text-align: center; line-height: 1.3; }
   input[type=text], textarea, select {
     width: 100%; background: var(--bg); border: 1px solid var(--border);
     color: var(--text); border-radius: var(--radius); padding: 8px 10px;
@@ -906,7 +906,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.00';
+const UI_VERSION = '3.01';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -2829,7 +2829,7 @@ function renderFeldprofilEdit(feldprofil, dtId) {
   return `
     <div class="field-group">
       <label>Feldprofil
-        <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+        <span style="color:var(--label);font-size:10px;font-weight:400;margin-left:6px">
           Welche Custom Fields extrahiert und im Dokument-Review angezeigt werden
         </span>
       </label>
@@ -2838,7 +2838,7 @@ function renderFeldprofilEdit(feldprofil, dtId) {
           <span class="col-head">Feld</span>
           <span class="col-head-sm" title="KI/OCR extrahiert">Extrahieren</span>
           <span class="col-head-sm" title="Im Dokument-Review">Review</span>
-          <span class="col-head-sm" style="color:var(--warn)" title="Pflichtfeld">Pflicht</span>
+          <span class="col-head-sm" style="color:#fbbf24" title="Pflichtfeld">Pflicht</span>
         </div>
         ${rows}
       </div>
@@ -3645,13 +3645,13 @@ async function openMfEdit(eid) {
   edit.innerHTML = `
     <div style="margin-top:12px">
       <div class="field-group">
-        <label>Erlaubte Tags <span style="color:var(--muted);font-weight:normal;font-size:11px">(Vorschläge für KI)</span></label>
+        <label>Erlaubte Tags <span style="color:var(--label);font-weight:normal;font-size:11px;text-transform:none">(Vorschläge für KI)</span></label>
         <div id="mft-cb-${eid}" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:140px;overflow-y:auto;line-height:1.8">
           ${tagCheckboxes}
         </div>
       </div>
       <div class="field-group">
-        <label>Erlaubte Dokumenttypen <span style="color:var(--muted);font-weight:normal;font-size:11px">(nur existierende Typen)</span></label>
+        <label>Erlaubte Dokumenttypen <span style="color:var(--label);font-weight:normal;font-size:11px;text-transform:none">(nur existierende Typen)</span></label>
         <div id="mfdt-cb-${eid}" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:140px;overflow-y:auto;line-height:1.8">
           ${typeCheckboxes}
         </div>
