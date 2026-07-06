@@ -1838,34 +1838,91 @@ def parse_augenarzt(ocr_text: str) -> dict:
     return finalize_brillenpass_buckets(base, ocr_text=text)
 
 
+_MEYER_RL = re.compile(
+    r"(?:^|\n)\s*(Rechts|Links|R|L)\s*[:.]?\s*"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"([+\-]?\s*[\d.,]+)\s+"
+    r"(\d+)\s*"
+    r"(?:([+\-]?\s*[\d.,]+))?",
+    re.IGNORECASE,
+)
+
+_MEYER_RECEIPT_TABLE = re.compile(
+    r"sph\s+cyl\s+(?:axe|achse)\b[^\n]*\n"
+    r"([^\n]+)\n"
+    r"([^\n]+)",
+    re.IGNORECASE,
+)
+
+
+def _parse_meyer_receipt_table(text: str) -> dict[str, dict | None]:
+    """Kleine sph/cyl/axe-Tabelle unten auf Meyer-Quittung (2 Zeilen, ohne R/L)."""
+    eyes: dict[str, dict | None] = {"rechts": None, "links": None}
+    m = _MEYER_RECEIPT_TABLE.search(text)
+    if not m:
+        return eyes
+    for side, row in zip(("rechts", "links"), (m.group(1).strip(), m.group(2).strip())):
+        nums = re.findall(r"[+\-]?[\d.,]+", row)
+        if not nums:
+            continue
+        cyl = nums[1] if len(nums) > 1 else None
+        achse = nums[2] if len(nums) > 2 else None
+        eye = _eye_from_parts(nums[0], cyl, achse, None)
+        if eye:
+            eyes[side] = eye
+    return eyes
+
+
 def parse_optik_meyer_moehlin(ocr_text: str) -> dict:
     """Optik Meyer Möhlin — Verordnung (Seite 2) oder Werte unten links auf Rechnung."""
     text = ocr_text or ""
-    # Unteres Viertel bevorzugen (Werte «unten links» auf Rechnung)
     tail = text[max(0, len(text) * 3 // 4):] if len(text) > 400 else text
-    base = parse_augenarzt(tail if _AUGENARZT_RL.search(tail) else text)
-    base["parser"] = "optik_meyer_rechnung"
-    base["extraktion"]["quelle"] = "optik_meyer_rechnung_regex"
+    scan = tail if re.search(r"sph\s+cyl", tail, re.IGNORECASE) else text
+    table = _parse_meyer_receipt_table(scan)
+    rl = _fill_eye_block_from_matches(text, _MEYER_RL)
+
+    if any(table.get(s) for s in ("rechts", "links")) or any(rl.get(s) for s in ("rechts", "links")):
+        naehe = _empty_eye_block()
+        for side in ("rechts", "links"):
+            eye = _merge_eye(table.get(side), rl.get(side))
+            if eye:
+                naehe[side] = eye
+        base = _bp_base(
+            "optik_meyer_rechnung",
+            gueltig_ab=_parse_pass_date(text),
+            naehe=naehe,
+        )
+        base["extraktion"]["quelle"] = "optik_meyer_rechnung_regex"
+    else:
+        base = parse_augenarzt(tail if _AUGENARZT_RL.search(tail) else text)
+        base["parser"] = "optik_meyer_rechnung"
+        base["extraktion"]["quelle"] = "optik_meyer_rechnung_regex"
 
     if not base.get("gueltig_ab"):
         base["gueltig_ab"] = _parse_pass_date(text)
 
-    glas_desc = ""
-    gm = re.search(
-        r"Glas(?:art)?\s*[:.]?\s*(.+?)(?:\n|Rechts|Links|R\s*:|Total|$)",
-        text, re.IGNORECASE | re.DOTALL,
+    glas_lines = re.findall(
+        r"Glas\s+(?:rechts|links)\s+(.+?)(?=\n|Total|sph\s+cyl|$)",
+        text, re.IGNORECASE,
     )
-    if gm:
-        glas_desc = re.sub(r"\s+", " ", gm.group(1).strip())[:500]
-    if glas_desc:
-        base["glas"]["beschreibung"] = glas_desc
+    if glas_lines:
+        base["glas"]["beschreibung"] = " · ".join(
+            re.sub(r"\s+", " ", g.strip())[:200] for g in glas_lines
+        )[:500]
+    else:
+        gm = re.search(
+            r"Glas(?:art)?\s*[:.]?\s*(.+?)(?:\n|Rechts|Links|R\s*:|Total|$)",
+            text, re.IGNORECASE | re.DOTALL,
+        )
+        if gm:
+            base["glas"]["beschreibung"] = re.sub(r"\s+", " ", gm.group(1).strip())[:500]
 
     rechnung = ""
     rm = re.search(r"Rechnung\s*(?:Nr\.?)?\s*[:.]?\s*([\d\s/\-]+)", text, re.IGNORECASE)
     if rm:
         rechnung = re.sub(r"\s+", "", rm.group(1).strip())
     base["rechnung"] = rechnung
-    return base
+    return finalize_brillenpass_buckets(base, ocr_text=text)
 
 
 _PARSERS: dict[str, Any] = {
@@ -1984,21 +2041,23 @@ def looks_like_brillenpass_document(
 
 
 def hydrate_messung_from_diagnose(version: dict) -> bool:
-    """Befüllt fehlendes messung aus extraktion.diagnose.merged (Legacy nach v12.58)."""
+    """Fehlende messung-Augen aus extraktion.diagnose (merged, stufe1) ergänzen."""
     if not version:
         return False
-    messung = version.get("messung") or {}
-    if any((messung.get(s) or {}).get("sph") for s in ("rechts", "links")):
-        return False
-    merged = ((version.get("extraktion") or {}).get("diagnose") or {}).get("merged") or {}
-    rechts, links = merged.get("messung.rechts"), merged.get("messung.links")
-    if not ((rechts or {}).get("sph") or (links or {}).get("sph")):
-        return False
-    version["messung"] = {
-        "rechts": rechts if (rechts or {}).get("sph") else None,
-        "links": links if (links or {}).get("sph") else None,
-    }
-    return True
+    messung = version.setdefault("messung", {"rechts": None, "links": None})
+    diagnose = ((version.get("extraktion") or {}).get("diagnose") or {})
+    changed = False
+    for src in (diagnose.get("merged"), diagnose.get("stufe1")):
+        if not src:
+            continue
+        for side in ("rechts", "links"):
+            if (messung.get(side) or {}).get("sph"):
+                continue
+            eye = src.get(f"messung.{side}")
+            if (eye or {}).get("sph"):
+                messung[side] = eye
+                changed = True
+    return changed
 
 
 def compute_brillenpass_diff(old: dict | None, new: dict) -> dict:

@@ -9,6 +9,7 @@ from brillenpass_parser import (  # noqa: E402
     corr_brillenpass_parsers,
     detect_parser,
     has_brillenpass_values,
+    hydrate_messung_from_diagnose,
     latest_brillenpass_version,
     merge_brillenpass,
     merge_brillenpass_version,
@@ -102,6 +103,17 @@ Total CHF 890.00
 Rechts: +0.25 -0.25 65 1.25
 Links: +0.25 -0.50 105 1.25
 Glasart: Einstärke 1.6
+"""
+
+MEYER_RECEIPT_TABLE_OCR = """
+Optik Meyer Möhlin GmbH
+Quittung
+Glas rechts Optovision GmbH SV F.K 1.5 Hart Super ET Clean 057531
+Glas links Optovision GmbH SV F.K 1.5 Hart Super ET Clean 596498
+27/03/2025
+sph cyl axe add Vcc
+0.50
+1.00 -0.50 173
 """
 
 
@@ -315,6 +327,27 @@ def test_optik_meyer_rechnung():
     assert r["messung"]["rechts"]["add"] == "+1.25"
     assert "2022" in (r.get("rechnung") or "2022")
     assert has_brillenpass_values(r)
+
+
+def test_optik_meyer_receipt_table():
+    r = parse_optik_meyer_moehlin(MEYER_RECEIPT_TABLE_OCR)
+    assert r["messung"]["rechts"]["sph"] == "+0.50"
+    assert r["messung"]["links"]["sph"] == "+1.00"
+    assert r["messung"]["links"]["cyl"] == "-0.50"
+    assert r["messung"]["links"]["achse"] == "173"
+    assert "links Optovision" in r["glas"]["beschreibung"]
+
+
+def test_hydrate_messung_partial():
+    version = {
+        "messung": {"rechts": {"sph": "+0.50"}, "links": None},
+        "extraktion": {"diagnose": {"merged": {
+            "messung.links": {"sph": "+1.00", "cyl": "-0.50", "achse": "173"},
+        }}},
+    }
+    assert hydrate_messung_from_diagnose(version) is True
+    assert version["messung"]["links"]["sph"] == "+1.00"
+    assert hydrate_messung_from_diagnose(version) is False
 
 
 def test_detect_parser_format():
