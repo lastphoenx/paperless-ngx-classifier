@@ -48,6 +48,7 @@ from schulbericht_vision import (  # noqa: E402
     SCHULBERICHT_DPI,
     SCHULBERICHT_NUM_PREDICT,
     SCHULBERICHT_VISION_SYSTEM,
+    build_extract_from_transcript_prompt,
     build_htr_transcribe_prompt,
     build_schulbericht_vision_prompt,
     estimate_htr_confidence,
