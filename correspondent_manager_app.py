@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.43"  # 2.43: Legacy-Split Original-PDF + robustere QR-Erkennung
-UI_VERSION = "2.84"
+__version__ = "2.44"  # 2.44: Legacy-Split Original+Archiv vergleichen
+UI_VERSION = "2.85"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -755,6 +755,19 @@ def pl_download_pdf(doc_id: int, *, original: bool = False) -> tuple[bytes, str]
     )
     r.raise_for_status()
     return r.content, doc.get("original_file_name") or f"{doc_id}.pdf"
+
+
+def pl_download_pdf_variants(doc_id: int) -> list[tuple[str, bytes, str]]:
+    """Original + Archiv-PDF laden (was verfügbar ist)."""
+    out: list[tuple[str, bytes, str]] = []
+    for original, label in ((True, "original"), (False, "archiv")):
+        try:
+            pdf_bytes, name = pl_download_pdf(doc_id, original=original)
+            if pdf_bytes:
+                out.append((label, pdf_bytes, name))
+        except Exception as e:
+            log.warning("Legacy-Split PDF %s für #%s: %s", label, doc_id, e)
+    return out
 
 
 def resolve_group_ids(group_names: list[str]) -> list[int]:
@@ -2213,70 +2226,83 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
 @app.post("/api/legacy-split/trigger/{doc_id}")
 async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
     """Paperless-Dokument per QR splitten → Teile nach consume/ (volle Pipeline)."""
-    from legacy_split_by_qr import split_paperless_document, find_split_markers, has_real_qr_splits
+    from legacy_split_by_qr import (
+        split_paperless_document,
+        has_real_qr_splits,
+        resolve_best_pdf_for_split,
+    )
 
     dry_run = bool(body.get("dry_run", False))
     regex = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
     consume_dir = Path(body.get("consume_dir") or PAPERLESS_CONSUME_DIR)
 
-    try:
-        pdf_bytes, orig_name = pl_download_pdf(doc_id, original=True)
-    except Exception as e:
-        raise HTTPException(400, f"Dokument #{doc_id} laden fehlgeschlagen: {e}") from e
+    variants = pl_download_pdf_variants(doc_id)
+    if not variants:
+        raise HTTPException(400, f"Dokument #{doc_id} — weder Original noch Archiv-PDF ladbar")
 
+    orig_name = variants[0][2]
     loop = asyncio.get_running_loop()
 
+    resolved = await loop.run_in_executor(
+        _LEGACY_SPLIT_EXECUTOR,
+        functools.partial(
+            resolve_best_pdf_for_split,
+            [(label, data) for label, data, _ in variants],
+            regex=regex,
+        ),
+    )
+    if not resolved:
+        raise HTTPException(400, f"Dokument #{doc_id} — PDF-Analyse fehlgeschlagen")
+
+    source, pdf_bytes, markers, total, qr_debug = resolved
+    qr_matched = sum(1 for x in qr_debug if x.get("matched"))
+
     if dry_run:
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
-            tf.write(pdf_bytes)
-            tmp = tf.name
-        try:
-            markers, total, qr_debug = await loop.run_in_executor(
-                _LEGACY_SPLIT_EXECUTOR,
-                functools.partial(find_split_markers, tmp, regex=regex),
-            )
-            qr_matched = sum(1 for x in qr_debug if x.get("matched"))
-            if not has_real_qr_splits(markers):
-                return {
-                    "ok": False,
-                    "dry_run": True,
-                    "document_id": doc_id,
-                    "pages": total,
-                    "splits": [],
-                    "qr_matched": qr_matched,
-                    "qr_seen": len(qr_debug),
-                    "qr_debug": qr_debug[:30],
-                    "message": (
-                        f"Keine QR-Codes passend zu Regex auf {total} Seiten "
-                        f"(Scan 600 DPI, Regex: {regex})"
-                    ),
-                }
-            preview = []
-            for i, (barcode, from_page) in enumerate(markers):
-                to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
-                preview.append({"barcode": barcode, "from_page": from_page, "to_page": to_page})
+        if not has_real_qr_splits(markers):
             return {
-                "ok": True,
+                "ok": False,
                 "dry_run": True,
                 "document_id": doc_id,
                 "pages": total,
-                "splits": preview,
+                "splits": [],
                 "qr_matched": qr_matched,
                 "qr_seen": len(qr_debug),
                 "qr_debug": qr_debug[:50],
-                "source": "original",
+                "source": source,
                 "message": (
-                    f"{total} Seiten → {len(preview)} Teile "
-                    f"({qr_matched} QR-Treffer auf {len({d['page'] for d in qr_debug if d.get('matched')})} Seiten, "
-                    f"Original-PDF)"
+                    f"Keine QR-Codes passend zu Regex auf {total} Seiten "
+                    f"(Quelle: {source}, Regex: {regex})"
                 ),
             }
-        finally:
-            Path(tmp).unlink(missing_ok=True)
+        preview = []
+        for i, (barcode, from_page) in enumerate(markers):
+            to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
+            preview.append({"barcode": barcode, "from_page": from_page, "to_page": to_page})
+        pages_with_qr = len({d["page"] for d in qr_debug if d.get("matched")})
+        return {
+            "ok": True,
+            "dry_run": True,
+            "document_id": doc_id,
+            "pages": total,
+            "splits": preview,
+            "qr_matched": qr_matched,
+            "qr_seen": len(qr_debug),
+            "qr_debug": qr_debug[:50],
+            "source": source,
+            "message": (
+                f"{total} Seiten → {len(preview)} Teile "
+                f"({qr_matched} QR auf {pages_with_qr} Seiten, Quelle: {source})"
+            ),
+        }
 
     if not consume_dir.exists():
         raise HTTPException(400, f"Consume-Ordner nicht gefunden: {consume_dir}")
+
+    if not has_real_qr_splits(markers):
+        raise HTTPException(
+            400,
+            f"Keine QR-Split-Marker ({source}, {total} Seiten, Regex: {regex})",
+        )
 
     try:
         parts = await loop.run_in_executor(
@@ -2296,7 +2322,7 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
         raise HTTPException(
             400,
             "Keine QR-Split-Marker gefunden — Dokument hat keine passenden "
-            f"Metadaten-QR-Codes (Regex: {regex}, Scan 600 DPI)",
+            f"Metadaten-QR-Codes (Quelle: {source}, Regex: {regex})",
         )
 
     detail = "; ".join(
@@ -2305,10 +2331,11 @@ async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
     return {
         "ok": True,
         "message": (
-            f"{len(parts)} Teil(e) nach {consume_dir} geschrieben — "
-            f"Pipeline startet automatisch ({detail})"
+            f"{len(parts)} Teil(e) nach {consume_dir} geschrieben "
+            f"(Quelle: {source}) — Pipeline startet ({detail})"
         ),
         "document_id": doc_id,
+        "source": source,
         "parts": parts,
     }
 

@@ -889,7 +889,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.84';
+const UI_VERSION = '2.85';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5490,7 +5490,7 @@ async function triggerLegacySplit(dryRun) {
         } else if (d.qr_seen === 0) {
           msg += ' — auf keiner Seite ein QR-Code erkannt';
         }
-        if (status) status.textContent = `${d.pages} Seiten: ${msg}`;
+        if (status) status.textContent = `${d.pages} Seiten (${d.source || '?'}): ${msg}`;
         showToast('Kein Split möglich', 'error');
         return;
       }
@@ -5509,7 +5509,7 @@ async function triggerLegacySplit(dryRun) {
             `S.${x.page} «${String(x.raw).slice(0, 40)}»`).join('; ');
         }
       }
-      if (status) status.textContent = `${d.pages} Seiten → ${(d.splits||[]).length} Teile: ${lines}${extra}`;
+      if (status) status.textContent = `${d.pages} Seiten → ${(d.splits||[]).length} Teile (${d.source || '?'}): ${lines}${extra}`;
       showToast('Split-Vorschau OK', 'success');
     } else {
       const lines = (d.parts || []).map(p =>
