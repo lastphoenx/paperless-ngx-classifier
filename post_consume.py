@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.55"  # 12.55: kein Dioptrie-Raten, Kreuz-Auge-Check, Vision bei Müll
+POST_CONSUME_VERSION = "12.56"  # 12.56: McOptic Anker pro Auge, PD mm, Rotkanal, Viertel-Raster
 import re
 import sys
 import json
@@ -2003,6 +2003,7 @@ def run_brillenpass_extraction_stages(
             "method": tsv_meta.get("method"),
             "word_count": tsv_meta.get("word_count", 0),
             "confidence": tsv_meta.get("confidence"),
+            "red_channel": bool(tsv_meta.get("red_channel")),
             "snapshot": snapshot_brillenpass(tsv_data),
         })
 
@@ -2050,7 +2051,8 @@ def run_brillenpass_extraction_stages(
     if document_id:
         write_audit_entry(document_id, "brillenpass_s2", {
             "has_image": bool(image_b64),
-            "vision_enabled": BRILLENPASS_VISION_FALLBACK,
+            "vision_enabled": bool(BRILLENPASS_VISION_FALLBACK or BRILLENPASS_VISION_ON_GAPS),
+            "vision_on_gaps": BRILLENPASS_VISION_ON_GAPS,
             "vision_used": vision_used,
             "header_anchors": header_anchors,
             "snapshot": snapshot_brillenpass(vision_bp),

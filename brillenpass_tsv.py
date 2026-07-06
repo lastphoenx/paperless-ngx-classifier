@@ -17,6 +17,7 @@ from brillenpass_parser import (
     _empty_eye_block,
     _norm_val,
     has_brillenpass_values,
+    norm_pd_mm,
     plausible_brillenpass_data,
     plausible_refraktion_eye,
     strict_diopter_token,
@@ -362,8 +363,8 @@ def _parse_rl_rows_positional(zeilen: list[list[dict]]) -> dict | None:
         result["fern"][side] = eye
         pd_v = None
         for w in reversed(nums):
-            cand = _norm_val(w["text"])
-            if _plausible_pd(cand):
+            cand = norm_pd_mm(w["text"])
+            if cand:
                 pd_v = cand
                 break
         if pd_v:
@@ -372,8 +373,6 @@ def _parse_rl_rows_positional(zeilen: list[list[dict]]) -> dict | None:
     if found == 0:
         return None
     if not has_brillenpass_values(result) or not plausible_brillenpass_data(result):
-        return None
-    if not _both_fern_eyes(result):
         return None
     return result
 
@@ -414,7 +413,7 @@ def _parse_tsv_text_fallback(words: list[dict], parser_names: list[str] | None =
     parsed = parse_brillenpass_with_parsers(flat, allowed)
     if not parsed or not has_brillenpass_values(parsed):
         return None
-    if not _both_fern_eyes(parsed):
+    if not plausible_brillenpass_data(parsed):
         return None
     parsed = deepcopy(parsed)
     parsed["parser"] = "tsv_text"
@@ -447,7 +446,10 @@ def _prepare_zeilen(words: list[dict]) -> list[list[dict]]:
 
 
 def parse_by_anchors(words: list[dict]) -> dict | None:
-    """Header-Anker + R/L-Zeilen → Refraktions-Dict (fern/naehe/pd)."""
+    """Header-Anker + R/L-Zeilen → Refraktions-Dict (fern/naehe/pd).
+
+    McOptic: pro Auge eigene Header-Zeile (R/L klebt am Header, Werte in Folgezeile).
+    """
     if not words:
         return None
     zeilen = _prepare_zeilen(words)
@@ -463,63 +465,147 @@ def parse_by_anchors(words: list[dict]) -> dict | None:
         "naehe": _empty_eye_block(),
         "pd": {"rechts": None, "links": None},
     }
+    pending_side: str | None = None
 
-    for zeile in zeilen[header_idx + 1:]:
-        if len(_header_fields_in_line(zeile)) >= 3:
-            break
-        side = _row_side(zeile)
+    for zeile in zeilen[header_idx:]:
+        hdr = _header_fields_in_line(zeile)
+        if len(hdr) >= 3:
+            column_specs = _column_specs(hdr)
+            pending_side = _row_side(zeile)
+            continue
+        side = _row_side(zeile) or pending_side
         if not side:
             continue
         vals = _assign_row_values(zeile, column_specs)
         eye = _eye_from_values(vals)
-        if not eye.get("sph") and not eye.get("cyl"):
-            continue
-        result[section][side] = eye
-        if vals.get("pd") and _plausible_pd(_norm_val(vals["pd"])):
-            result["pd"][side] = _norm_val(vals["pd"])
+        if eye.get("sph") or eye.get("cyl"):
+            result[section][side] = eye
+        pd_v = norm_pd_mm(vals.get("pd"))
+        if pd_v:
+            result["pd"][side] = pd_v
+        pending_side = None
 
     if not has_brillenpass_values(result) or not plausible_brillenpass_data(result):
         return None
-    if not _both_fern_eyes(result):
-        return None
     return result
+
+
+def _strip_red_annotations(image_path: str) -> str | None:
+    """Rotkanal als Graustufen — roter Stift verschwindet, schwarzer Druck bleibt."""
+    try:
+        from PIL import Image
+
+        img = Image.open(image_path).convert("RGB")
+        r, _g, _b = img.split()
+        fd, out = tempfile.mkstemp(suffix="_rchan.png")
+        os.close(fd)
+        r.save(out)
+        return out
+    except Exception as e:
+        log.debug("Rotkanal fehlgeschlagen: %s", e)
+        return None
+
+
+def _ocr_image_variants(image_path: str) -> tuple[list[tuple[str, bool]], list[str]]:
+    """OCR-Pfade (normal + optional Rotkanal) und Temp-Dateien zum Aufräumen."""
+    temps: list[str] = []
+    jobs: list[tuple[str, bool]] = []
+
+    if image_path.lower().endswith(".pdf"):
+        jpg = _pdf_first_page_jpg(image_path)
+        if jpg:
+            temps.append(jpg)
+            jobs.append((jpg, False))
+            rchan = _strip_red_annotations(jpg)
+            if rchan:
+                temps.append(rchan)
+                jobs.append((rchan, True))
+        if not jobs:
+            jobs.append((image_path, False))
+    else:
+        jobs.append((image_path, False))
+        rchan = _strip_red_annotations(image_path)
+        if rchan:
+            temps.append(rchan)
+            jobs.append((rchan, True))
+    return jobs, temps
+
+
+def _pick_best_tsv_candidate(
+    words: list[dict],
+    parser_names: list[str] | None,
+) -> tuple[int, dict | None, str | None]:
+    if not words:
+        return 0, None, None
+    zeilen = _prepare_zeilen(words)
+    candidates = _collect_tsv_candidates(words, zeilen, parser_names)
+    if not candidates:
+        return 0, None, None
+    score, parsed, method = max(candidates, key=lambda x: x[0])
+    return score, parsed, method
 
 
 def extract_brillenpass_from_image(
     image_path: str,
     parser_names: list[str] | None = None,
 ) -> tuple[dict, str, dict]:
-    """TSV-Pipeline: (daten, confidence, meta)."""
-    words = run_tesseract_tsv_on_document(image_path)
-    zeilen = _prepare_zeilen(words) if words else []
+    """TSV-Pipeline: (daten, confidence, meta). Normal-OCR + optional Rotkanal-Pass."""
+    jobs, temps = _ocr_image_variants(image_path)
+    best_words: list[dict] = []
+    best_parsed: dict | None = None
+    best_method: str | None = None
+    best_score = -1
+    red_used = False
+
+    try:
+        for path, red in jobs:
+            words = run_tesseract_tsv(path, lang="deu")
+            if len(words) > len(best_words):
+                best_words = words
+            score, parsed, method = _pick_best_tsv_candidate(words, parser_names)
+            if parsed and score > best_score:
+                best_score = score
+                best_parsed = parsed
+                best_method = method
+                best_words = words
+                red_used = red
+    finally:
+        for t in temps:
+            try:
+                os.unlink(t)
+            except OSError:
+                pass
+
+    if not best_words and image_path.lower().endswith(".pdf"):
+        best_words = run_tesseract_tsv_on_document(image_path)
+
+    zeilen = _prepare_zeilen(best_words) if best_words else []
     header_fields, anchor_count, _header_idx = find_best_header_row(zeilen) if zeilen else ({}, 0, -1)
     meta: dict[str, Any] = {
         "header_anchors": anchor_count,
         "header_fields": header_field_names(header_fields),
-        "word_count": len(words),
+        "word_count": len(best_words),
         "ocr_source": "jpeg300" if (image_path or "").lower().endswith(".pdf") else "direct",
+        "red_channel": red_used,
     }
 
-    candidates = _collect_tsv_candidates(words, zeilen, parser_names)
-    if candidates:
-        _score, parsed, method = max(candidates, key=lambda x: x[0])
-        meta["score"] = _score
-
-        meta["method"] = method
-        if method in ("anchors", "positional") and _both_fern_eyes(parsed):
+    if best_parsed:
+        meta["score"] = best_score
+        meta["method"] = best_method
+        if best_method in ("anchors", "positional") and _both_fern_eyes(best_parsed):
             meta["confidence"] = "hoch"
-        elif _both_fern_eyes(parsed):
+        elif _both_fern_eyes(best_parsed):
             meta["confidence"] = "mittel"
         else:
             meta["confidence"] = "niedrig"
-        return parsed, meta["confidence"], meta
+        return best_parsed, meta["confidence"], meta
     if anchor_count >= 3:
         meta["confidence"] = "niedrig"
-        meta["tsv_preview"] = tsv_words_to_text(words)[:400]
+        meta["tsv_preview"] = tsv_words_to_text(best_words)[:400]
         return {}, "niedrig", meta
     meta["confidence"] = "keine_extraktion"
-    if words:
-        meta["tsv_preview"] = tsv_words_to_text(words)[:400]
+    if best_words:
+        meta["tsv_preview"] = tsv_words_to_text(best_words)[:400]
     return {}, "keine_extraktion", meta
 
 
@@ -541,14 +627,19 @@ def merge_brillenpass_tsv_with_regex(tsv_data: dict | None, regex_data: dict | N
                 continue
             p_eye = (base.get(dist) or {}).get(side) or {}
             merged_eye = {**p_eye, **{k: v for k, v in t_eye.items() if v}}
-            if merged_eye.get("sph") or merged_eye.get("cyl"):
+            if not (merged_eye.get("sph") or merged_eye.get("cyl")):
+                continue
+            if not plausible_refraktion_eye(merged_eye):
+                base.setdefault(dist, _empty_eye_block())[side] = None
+            else:
                 base.setdefault(dist, _empty_eye_block())[side] = merged_eye
 
     t_pd = tsv_data.get("pd") or {}
     p_pd = base.setdefault("pd", {"rechts": None, "links": None})
     for side in ("rechts", "links"):
-        if t_pd.get(side):
-            p_pd[side] = t_pd[side]
+        pd_v = norm_pd_mm(t_pd.get(side)) or t_pd.get(side)
+        if pd_v:
+            p_pd[side] = pd_v
 
     for k in ("gueltig_ab", "auftrag", "rechnung"):
         if tsv_data.get(k) and not base.get(k):

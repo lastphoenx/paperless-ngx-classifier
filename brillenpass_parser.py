@@ -137,6 +137,34 @@ def _norm_val(v: str | float | int | None) -> str | None:
     return s
 
 
+def _on_quarter_grid(v: str | float | int | None) -> bool:
+    """Dioptrien sind Vielfache von 0.25 — 2.93/0.23 sind OCR-Müll."""
+    if v is None or v == "":
+        return True
+    try:
+        f = float(str(v).replace(",", ".").lstrip("+"))
+    except (ValueError, TypeError):
+        return False
+    return abs(f * 4 - round(f * 4)) < 0.01
+
+
+def norm_pd_mm(raw: str | float | int | None) -> str | None:
+    """PD in mm — ohne Plus-Vorzeichen."""
+    if raw is None:
+        return None
+    s = str(raw).strip().replace(",", ".")
+    if not s:
+        return None
+    try:
+        f = float(s.lstrip("+"))
+    except ValueError:
+        return None
+    if not 20.0 <= abs(f) <= 40.0:
+        return None
+    out = f"{f:.1f}".rstrip("0").rstrip(".")
+    return out if "." in out else f"{out}.0"
+
+
 def strict_diopter_token(raw: str | float | int | None) -> str | None:
     """Dioptrie ohne Raten bei grossen Ganzzahlen (293/275 → verworfen)."""
     raw_s = str(raw or "").strip()
@@ -171,8 +199,13 @@ def plausible_refraktion_eye(eye: dict | None) -> bool:
             f = float(str(v).replace(",", ".").lstrip("+"))
             if not lo <= f <= hi:
                 return False
+            if not _on_quarter_grid(v):
+                return False
         except ValueError:
             return False
+    add = eye.get("add")
+    if add and not _on_quarter_grid(add):
+        return False
     achse = eye.get("achse")
     if achse is not None and str(achse).strip() != "":
         try:
@@ -521,16 +554,19 @@ def _coerce_vision_eye(eye: dict | None) -> dict | None:
     if not eye or not isinstance(eye, dict):
         return eye
     cleaned = {
-        "sph": _norm_val(eye.get("sph")),
-        "cyl": _norm_val(eye.get("cyl")),
+        "sph": strict_diopter_token(eye.get("sph")),
+        "cyl": strict_diopter_token(eye.get("cyl")),
         "achse": re.sub(r"\D", "", str(eye["achse"])) if eye.get("achse") is not None else None,
         "prisma": None,
         "basis": None,
-        "add": _norm_val(eye.get("add")),
+        "add": strict_diopter_token(eye.get("add")) or _norm_val(eye.get("add")),
     }
     if cleaned["achse"] == "":
         cleaned["achse"] = None
-    return _sanitize_eye(cleaned)
+    sanitized = _sanitize_eye(cleaned)
+    if sanitized and not plausible_refraktion_eye(sanitized):
+        return None
+    return sanitized
 
 
 def normalize_vision_brillenpass(
@@ -545,18 +581,7 @@ def normalize_vision_brillenpass(
     out = deepcopy(data)
     pd_out = out.setdefault("pd", {"rechts": None, "links": None})
     for side in ("rechts", "links"):
-        raw_pd = pd_out.get(side)
-        if isinstance(raw_pd, (int, float)):
-            pd_out[side] = _norm_val(raw_pd)
-        else:
-            pd_out[side] = _nullish(raw_pd)
-        if pd_out[side]:
-            try:
-                pf = abs(float(str(pd_out[side]).replace(",", ".").lstrip("+")))
-                if not (25 <= pf <= 35):
-                    pd_out[side] = None
-            except ValueError:
-                pd_out[side] = None
+        pd_out[side] = norm_pd_mm(pd_out.get(side))
 
     for dist in ("fern", "naehe"):
         block = out.setdefault(dist, _empty_eye_block())
@@ -570,25 +595,21 @@ def normalize_vision_brillenpass(
             # Legacy: prisma/basis aus alten Vision-Läufen → PD retten, Felder leeren
             basis = eye.get("basis")
             if basis and not pd_out.get(side):
-                try:
-                    bf = abs(float(str(basis).replace(",", ".").lstrip("+")))
-                    if 25 <= bf <= 35:
-                        pd_out[side] = str(basis).replace(",", ".")
-                except ValueError:
-                    pass
+                pd_out[side] = norm_pd_mm(basis)
             prisma = eye.get("prisma")
             if prisma and not pd_out.get(side):
-                try:
-                    f = abs(float(str(prisma).replace(",", ".").lstrip("+")))
-                    if 25 <= f <= 35:
-                        pd_out[side] = str(prisma).replace(",", ".")
-                except ValueError:
-                    pass
+                pd_out[side] = norm_pd_mm(prisma)
             coerced = _coerce_vision_eye(eye)
             add = (coerced or {}).get("add")
             if add and not _plausible_reading_add(add, parser_hint):
                 coerced["add"] = None
             block[side] = coerced
+    for dist in ("fern", "naehe"):
+        block = out.get(dist) or {}
+        for side in ("rechts", "links"):
+            eye = block.get(side)
+            if eye and not plausible_refraktion_eye(eye):
+                block[side] = None
     if out.get("gueltig_ab"):
         out["gueltig_ab"] = normalize_gueltig_ab_iso(out.get("gueltig_ab"))
     if ocr_text:
@@ -628,9 +649,9 @@ def apply_ocr_brillenpass_crosscheck(ocr_text: str, data: dict) -> dict:
         out[target_dist][side] = _sanitize_eye(eye)
     for side in ("rechts", "links"):
         if pd_map.get(side):
-            out.setdefault("pd", {"rechts": None, "links": None})[side] = str(
-                pd_map[side]
-            ).replace(",", ".")
+            pd_v = norm_pd_mm(pd_map[side])
+            if pd_v:
+                out.setdefault("pd", {"rechts": None, "links": None})[side] = pd_v
     return out
 
 
@@ -1513,7 +1534,7 @@ def _pd_or_add(raw: str | None) -> tuple[str | None, str | None]:
     except ValueError:
         return None, None
     if 15 <= f <= 40:
-        return None, _norm_val(raw)
+        return None, norm_pd_mm(raw)
     if f < 5:
         return _norm_val(raw), None
     return None, None
