@@ -1074,6 +1074,7 @@ CF_VERARBEITUNG    = int(os.environ.get("CF_VERARBEITUNG_ID",    "0"))  # 0 = de
 CF_PERSON          = int(os.environ.get("CF_PERSON_ID",          "0"))  # 0 = deaktiviert
 CF_DOK_ID          = int(os.environ.get("CF_DOK_ID",             "0"))  # 0 = deaktiviert — Paperless-Dokument-ID
 CF_STEUERJAHR      = int(os.environ.get("CF_STEUERJAHR_ID",        "0"))  # 0 = deaktiviert — Integer
+CF_AUSGESTELLT     = int(os.environ.get("CF_AUSGESTELLT_ID",       "0"))  # 0 = deaktiviert — Belegdatum
 STEUERRELEVANT_TAG = os.environ.get("STEUERRELEVANT_TAG", "Steuerrelevant")
 
 # Tags die diesen Regex-Mustern entsprechen lösen KEINEN Confidence-Downgrade aus
@@ -4639,6 +4640,7 @@ def main():
         person_name=person_name,
         auto_stp=auto_stp,
         steuerjahr=_steuerjahr,
+        ausstellungsdatum=datum,
         family_kennzeichen=(
             _family_kz_match[0].get("kennzeichen_display", "") if _family_kz_match else ""
         ),
@@ -4843,6 +4845,7 @@ def build_custom_fields(
     auto_stp: bool = False,
     steuerjahr: int | None = None,
     family_kennzeichen: str = "",
+    ausstellungsdatum: str | None = None,
 ) -> list[dict]:
     """
     Custom Fields für Paperless PATCH zusammenstellen.
@@ -4977,6 +4980,9 @@ def build_custom_fields(
         _add_select(CF_VERARBEITUNG, "auto STP", "Verarbeitung", pipeline=True)
     if steuerjahr and CF_STEUERJAHR:
         _add(CF_STEUERJAHR, steuerjahr, "Steuerjahr", pipeline=True)
+
+    if ausstellungsdatum and CF_AUSGESTELLT:
+        _add(CF_AUSGESTELLT, ausstellungsdatum, "Ausgestellt", pipeline=True)
 
     return fields
 
