@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.64"  # 12.64: Schulbericht mehrseitige Vision (Handschrift)
+POST_CONSUME_VERSION = "12.65"  # 12.65: Schulbericht zweistufig HTR → Text-Extract
 import re
 import sys
 import json
@@ -67,9 +67,16 @@ from document_date import (
     validate_issue_date,
 )
 from schulbericht_vision import (
+    EXTRACT_SYSTEM,
+    HTR_NUM_PREDICT,
+    HTR_VISION_SYSTEM,
+    SCHULBERICHT_DPI,
     SCHULBERICHT_NUM_PREDICT,
     SCHULBERICHT_VISION_SYSTEM,
     analyze_schulbericht_pdf,
+    analyze_schulbericht_two_stage,
+    build_htr_transcribe_prompt,
+    build_extract_from_transcript_prompt,
     build_schulbericht_vision_prompt,
     looks_like_schulbericht,
     schulbericht_to_vision_meta,
@@ -1885,7 +1892,7 @@ def vision_schulbericht_page(
     page: int,
     page_total: int,
 ) -> dict:
-    """Eine Schulbericht-Seite per Vision-LLM (mehr Token als Standard-Vision)."""
+    """E2E: eine Seite → Schulbericht-JSON (Debug/Vergleich)."""
     if not image_b64:
         return {}
     user_content = build_schulbericht_vision_prompt(ocr_text, page, page_total)
@@ -1902,7 +1909,7 @@ def vision_schulbericht_page(
                 "system": SCHULBERICHT_VISION_SYSTEM,
                 "stream": False,
                 "format": "json",
-                "options": {"temperature": 0.1, "num_predict": SCHULBERICHT_NUM_PREDICT},
+                "options": {"temperature": 0.0, "num_predict": SCHULBERICHT_NUM_PREDICT},
             },
             timeout=VISION_TIMEOUT,
         )
@@ -1910,17 +1917,93 @@ def vision_schulbericht_page(
         data = extract_json_from_response(raw)
         return data if isinstance(data, dict) else {}
     except Exception as e:
-        log.warning("Schulbericht-Vision Seite %d/%d fehlgeschlagen: %s", page, page_total, e)
+        log.warning("Schulbericht-E2E Seite %d/%d fehlgeschlagen: %s", page, page_total, e)
         return {}
 
 
+def vision_htr_page(image_b64: str, page: int, page_total: int) -> dict:
+    """Stufe 1: zeilengetreue HTR einer Seite."""
+    if not image_b64:
+        return {}
+    user_content = build_htr_transcribe_prompt(page, page_total)
+    try:
+        resp = ollama_post(
+            "api/chat",
+            {
+                "model": MODEL_VISION,
+                "messages": [{
+                    "role": "user",
+                    "content": user_content,
+                    "images": [image_b64],
+                }],
+                "system": HTR_VISION_SYSTEM,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.0, "num_predict": HTR_NUM_PREDICT},
+            },
+            timeout=VISION_TIMEOUT,
+        )
+        raw = resp.get("message", {}).get("content", "")
+        data = extract_json_from_response(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning("Schulbericht-HTR Seite %d/%d fehlgeschlagen: %s", page, page_total, e)
+        return {}
+
+
+def extract_schulbericht_from_transcript(transcript: str) -> dict:
+    """Stufe 2: Schulbericht-Felder aus Transkription (Text-LLM, kein Bild)."""
+    if not transcript.strip():
+        return {}
+    model = os.environ.get("SCHULBERICHT_EXTRACT_MODEL", MODEL_LLM)
+    prompt = build_extract_from_transcript_prompt(transcript)
+    try:
+        resp = ollama_post(
+            "api/chat",
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "system": EXTRACT_SYSTEM,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.0, "num_predict": 1024},
+            },
+            timeout=LLM_TIMEOUT,
+        )
+        raw = resp.get("message", {}).get("content", "")
+        data = extract_json_from_response(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        log.warning("Schulbericht-Extract fehlgeschlagen: %s", e)
+        return {}
+
+
+def _schulbericht_pdf_to_b64(pdf_path: str, page: int) -> Optional[str]:
+    return pdf_to_base64_image(pdf_path, page=page, dpi=SCHULBERICHT_DPI)
+
+
 def vision_schulbericht_multipage(pdf_path: str, ocr_text: str) -> dict:
+    """E2E mehrseitig (Fallback / Debug)."""
     return analyze_schulbericht_pdf(
         pdf_path,
         ocr_text,
-        pdf_to_b64=lambda p, pg: pdf_to_base64_image(p, page=pg),
+        pdf_to_b64=_schulbericht_pdf_to_b64,
         vision_page=vision_schulbericht_page,
     )
+
+
+def vision_schulbericht_pipeline(pdf_path: str) -> dict:
+    """Produktiv: HTR → Extract. Fallback auf E2E wenn HTR leer."""
+    sb = analyze_schulbericht_two_stage(
+        pdf_path,
+        pdf_to_b64=_schulbericht_pdf_to_b64,
+        htr_page=vision_htr_page,
+        extract_from_text=extract_schulbericht_from_transcript,
+    )
+    if sb:
+        return sb
+    log.warning("Schulbericht-Pipeline: HTR/Extract leer — Fallback E2E")
+    return vision_schulbericht_multipage(pdf_path, "")
 
 
 def vision_brillenpass_analyze(
@@ -3888,8 +3971,8 @@ def main():
     log.info("Schritt 2: Vision-LLM (%s)", MODEL_VISION)
     vision_meta = _disambiguate_vision_money_fields(vision_analyze(image_b64, ocr_text))
     if pdf_path and looks_like_schulbericht(vision_meta, ocr_text):
-        log.info("Schulbericht erkannt — mehrseitige Vision startet")
-        sb_data = vision_schulbericht_multipage(pdf_path, ocr_text)
+        log.info("Schulbericht erkannt — Pipeline HTR → Extract (%d dpi)", SCHULBERICHT_DPI)
+        sb_data = vision_schulbericht_pipeline(pdf_path)
         if sb_data:
             vision_meta = {**vision_meta, **schulbericht_to_vision_meta(sb_data)}
     log.info("Vision: %s", json.dumps(vision_meta, ensure_ascii=False))
