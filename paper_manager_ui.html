@@ -16,6 +16,7 @@
     --danger:    #ef4444;
     --text:      #e2e8f0;
     --muted:     #64748b;
+    --label:     #9eb0c4;
     --radius:    8px;
     --font:      'JetBrains Mono', 'Fira Code', monospace;
   }
@@ -37,6 +38,7 @@
     background: rgba(79,156,249,.1); }
   .nav-badge { margin-left: auto; background: var(--danger); color: #fff;
     border-radius: 10px; padding: 1px 7px; font-size: 11px; }
+  .nav-badge.warn { background: var(--warn); color: #1a1d27; font-weight: 700; }
 
   /* Cards */
   .card { background: var(--surface); border: 1px solid var(--border);
@@ -65,7 +67,8 @@
   /* Review Form */
   .review-panel { position: sticky; top: 0; }
   .field-group { margin-bottom: 14px; }
-  label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
+  label { display: block; color: var(--label); font-size: 11px; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
+  .col-label { color: var(--label); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
   input[type=text], textarea, select {
     width: 100%; background: var(--bg); border: 1px solid var(--border);
     color: var(--text); border-radius: var(--radius); padding: 8px 10px;
@@ -306,7 +309,7 @@
   </div>
   <div class="nav-item" onclick="showView('manifest')" id="nav-manifest">
     <span>S</span> Speicherpfade
-    <span class="nav-badge" id="manifest-pending-count" style="display:none;background:var(--warn)">0</span>
+    <span class="nav-badge warn" id="manifest-pending-count" style="display:none">0</span>
   </div>
   <div class="nav-item" onclick="showView('family')" id="nav-family">
     <span>👪</span> Familie
@@ -655,9 +658,9 @@
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr 32px;gap:6px;margin-bottom:6px">
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ID <span style="font-weight:normal">(intern, eindeutig)</span></div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ANZEIGENAME</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ORDNER-PREFIX</div>
+        <div class="col-label" style="padding:0 4px">ID <span style="font-weight:normal;text-transform:none">(intern, eindeutig)</span></div>
+        <div class="col-label" style="padding:0 4px">ANZEIGENAME</div>
+        <div class="col-label" style="padding:0 4px">ORDNER-PREFIX</div>
         <div></div>
       </div>
       <div id="family-personen"></div>
@@ -676,6 +679,7 @@
       <p style="color:var(--muted);font-size:11px;margin:8px 0 12px;line-height:1.7">
         Einträge in <strong>family.json</strong> steuern das CF «Auto-Kennzeichen» und die Person (aus OCR/Vision erkannt).
         Optional: <strong>Ordner automatisch setzen</strong> für Werkstatt/MFK-Rechnungen (deterministisch, ohne LLM).
+        Spalte <strong style="color:var(--label)">TAG</strong>: Paperless-Tag bei Kennzeichen-Match (z.&nbsp;B. Mofa).
         Gemeinsame Kennzeichen (z.&nbsp;B. Mofa): Referenz + Person, Routing aus — Korrespondent/Beziehungen bestimmen den Ordner.<br>
         Jede Referenz nur <strong>einmal</strong>. Werte müssen als Option im Paperless-Select «Auto-Kennzeichen» existieren.
         Policen- und Vertragsnummern gehören in <strong>Beziehungen</strong>, nicht hierher.
@@ -690,12 +694,13 @@
           <button type="button" class="btn btn-primary" style="font-size:11px" onclick="addFzKategorie()">+ Kategorie</button>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr minmax(80px,auto) 1fr 110px 1fr 32px;gap:6px;margin-bottom:6px">
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">REFERENZ</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">KATEGORIE</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">PERSON</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ORDNER AUTOM.</div>
-        <div style="font-size:10px;color:var(--muted);padding:0 4px">ZIEL-ORDNER</div>
+      <div style="display:grid;grid-template-columns:1fr minmax(80px,auto) minmax(110px,auto) 1fr 110px 1fr 32px;gap:6px;margin-bottom:6px">
+        <div class="col-label" style="padding:0 4px">REFERENZ</div>
+        <div class="col-label" style="padding:0 4px">KATEGORIE</div>
+        <div class="col-label" style="padding:0 4px">TAG</div>
+        <div class="col-label" style="padding:0 4px">PERSON</div>
+        <div class="col-label" style="padding:0 4px">ORDNER AUTOM.</div>
+        <div class="col-label" style="padding:0 4px">ZIEL-ORDNER</div>
         <div></div>
       </div>
       <div id="family-fahrzeuge"></div>
@@ -899,7 +904,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.97';
+const UI_VERSION = '2.98';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -1821,6 +1826,11 @@ function addTag(event, containerId) {
   chip.innerHTML = `${val}<span class="remove" onclick="removeTag(this,'${containerId}')">×</span>`;
   container.insertBefore(chip, input);
   input.value = '';
+  if (containerId.startsWith('dt-syns-')) {
+    const dtId = containerId.replace('dt-syns-', '');
+    const t = _dtEntries[dtId];
+    if (t) renderDtSynWarnBanner(dtId, t.name);
+  }
 }
 
 function removeTag(el, containerId) {
@@ -1833,6 +1843,11 @@ function removeTag(el, containerId) {
   if (!container) return;
   const tags = getTagsFromContainer(containerId).filter(t => t !== val);
   container.setAttribute('data-tags', JSON.stringify(tags));
+  if (containerId.startsWith('dt-syns-')) {
+    const dtId = containerId.replace('dt-syns-', '');
+    const t = _dtEntries[dtId];
+    if (t) renderDtSynWarnBanner(dtId, t.name);
+  }
 }
 
 function getTagsFromContainer(containerId) {
@@ -3156,11 +3171,47 @@ function renderDoctypes(items) {
           : `<div style="color:var(--muted);font-size:11px;font-style:italic">Keine Ausschluss-Keywords</div>`}
         ${(t.fix_tags||[]).length ? `<div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">FIX-TAGS: </span>${t.fix_tags.map(s=>`<span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent);margin-right:3px;font-size:11px">${s}</span>`).join('')}</div>` : ''}
         ${countFeldprofilFields(t.feldprofil) ? `<div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">FELDPROFIL: </span><span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa;font-size:11px">${countFeldprofilFields(t.feldprofil)} Felder konfiguriert</span></div>` : ''}
+        ${(() => {
+          const w = dtSynonymWarnings(t);
+          return w.length ? `<div style="margin-top:6px;padding:6px 10px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:4px;color:#fbbf24;font-size:11px;line-height:1.45">${w.map(x => `<div>⚠ ${x}</div>`).join('')}</div>` : '';
+        })()}
         <div style="margin-top:6px;font-size:10px;color:var(--muted)">Paperless #${t.id}</div>
       </div>
       <div id="dt-edit-${t.id}" style="display:none"></div>
     </div>`;
   }).join('');
+}
+
+function dtSynonymWarnings(dt) {
+  const warnings = [];
+  const name = (dt.name || '').trim();
+  const syns = dt.synonyme || [];
+  for (const s of syns) {
+    if (s.toLowerCase() === name.toLowerCase()) {
+      warnings.push(`Synonym «${s}» ist identisch mit dem Dokumenttyp-Namen — Pipeline ignoriert es (doppelte Registrierung).`);
+    }
+    const other = (_dtAllResults || []).find(t => t.id !== dt.id && t.name.toLowerCase() === s.toLowerCase());
+    if (other) {
+      warnings.push(`Synonym «${s}» kollidiert mit Dokumenttyp «${other.name}».`);
+    }
+  }
+  const seen = new Set();
+  for (const s of syns) {
+    const k = s.toLowerCase();
+    if (seen.has(k)) warnings.push(`Synonym «${s}» ist doppelt in der Liste.`);
+    seen.add(k);
+  }
+  return warnings;
+}
+
+function renderDtSynWarnBanner(dtId, dtName) {
+  const el = document.getElementById(`dt-syn-warn-${dtId}`);
+  if (!el) return;
+  const syns = getTagsFromContainer(`dt-syns-${dtId}`);
+  const w = dtSynonymWarnings({ id: dtId, name: dtName, synonyme: syns });
+  if (!w.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = '';
+  el.innerHTML = w.map(x => `<div style="margin-bottom:3px">⚠ ${x}</div>`).join('');
 }
 
 function filterDoctypes(q) {
@@ -3190,8 +3241,9 @@ async function openDtEdit(dtId) {
   view.style.display = 'none';
   edit.innerHTML = `
     <div style="margin-top:12px">
+      <div id="dt-syn-warn-${dtId}" style="display:none;margin-bottom:10px;padding:8px 12px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);border-radius:6px;color:#fbbf24;font-size:11px;line-height:1.5"></div>
       <div class="field-group">
-        <label>Synonyme <span style="color:var(--muted);font-size:10px">(ENTER zum Hinzufügen — müssen global einmalig sein)</span></label>
+        <label>Synonyme <span style="color:var(--label);font-size:10px;font-weight:normal;text-transform:none">(ENTER zum Hinzufügen — müssen global einmalig sein)</span></label>
         <div class="tags-input" id="dt-syns-${dtId}" data-tags='${JSON.stringify(t.synonyme||[])}'>
           ${(t.synonyme||[]).map(s => tagChip(s, `dt-syns-${dtId}`)).join('')}
           <input type="text" placeholder="Synonym..." onkeydown="addTag(event,'dt-syns-${dtId}')">
@@ -3231,6 +3283,7 @@ async function openDtEdit(dtId) {
       </div>
     </div>`;
   edit.style.display = '';
+  renderDtSynWarnBanner(dtId, t.name);
 }
 
 function closeDtEdit(dtId) {
@@ -4141,6 +4194,7 @@ function removeFzKategorie(kat) {
 
 async function loadFamilyConfig() {
   try {
+    await ensureAllTagsLoaded();
     const r = await fetch(`${API_BASE}/family`);
     _familyData = await r.json();
     ensureFzKategorien();
@@ -4221,6 +4275,7 @@ function normalizeFahrzeug(fz) {
     fz.routing_ordner = !!(fz.ordner && String(fz.ordner).trim());
   }
   if (!fz.routing_ordner) fz.ordner = '';
+  fz.default_tag = (fz.default_tag || '').trim();
   return fz;
 }
 
@@ -4245,6 +4300,29 @@ function fzOrdnerSelectOptions(current) {
     return `<option value="${_escAttr(n)}" ${n === cur ? 'selected' : ''}>${_escAttr(n)}</option>`;
   }).join('');
   return html;
+}
+
+function fzTagSelectOptions(current) {
+  const tags = (window._allTags || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  const cur = (current || '').trim();
+  let html = '<option value="">— kein Tag —</option>';
+  if (cur && !tags.some(t => t.name === cur)) {
+    html += `<option value="${_escAttr(cur)}" selected>${_escAttr(cur)} (unbekannt)</option>`;
+  }
+  html += tags.map(t => {
+    const n = t.name || '';
+    return `<option value="${_escAttr(n)}" ${n === cur ? 'selected' : ''}>${_escAttr(n)}</option>`;
+  }).join('');
+  return html;
+}
+
+async function ensureAllTagsLoaded() {
+  if (window._allTags?.length) return;
+  try {
+    const r = await fetch(`${API_BASE}/paperless/tags`);
+    const d = await r.json();
+    window._allTags = (d.results || []).filter(t => !t.name.startsWith('pending'));
+  } catch (e) { window._allTags = window._allTags || []; }
 }
 
 function renderFamilyFahrzeuge(d) {
@@ -4275,12 +4353,16 @@ function renderFamilyFahrzeuge(d) {
   }
 
   fContainer.innerHTML = list.map((fz, i) => `
-    <div style="display:grid;grid-template-columns:1fr minmax(80px,auto) 1fr 110px 1fr 32px;gap:6px;margin-bottom:6px;align-items:center">
+    <div style="display:grid;grid-template-columns:1fr minmax(80px,auto) minmax(110px,auto) 1fr 110px 1fr 32px;gap:6px;margin-bottom:6px;align-items:center">
       <input type="text" placeholder="AG 123456" value="${fz.kennzeichen||''}"
         style="font-family:monospace;text-transform:uppercase"
         oninput="_familyData.fahrzeuge[${i}].kennzeichen=this.value.toUpperCase()">
       <select onchange="_familyData.fahrzeuge[${i}].typ=this.value">
         ${katOptions((fz.typ||'').toLowerCase(), (fz.typ||'').toLowerCase())}
+      </select>
+      <select title="Deterministisches Tag bei Kennzeichen-Match"
+        onchange="_familyData.fahrzeuge[${i}].default_tag=this.value">
+        ${fzTagSelectOptions(fz.default_tag || '')}
       </select>
       <select onchange="_familyData.fahrzeuge[${i}].person_id=this.value">
         <option value="">Person…</option>
@@ -4323,7 +4405,7 @@ function addFamilyFahrzeug() {
   }
   _familyData.fahrzeuge = _familyData.fahrzeuge || [];
   const defaultTyp = fzKategorienList(_familyData)[0];
-  _familyData.fahrzeuge.push({kennzeichen: '', person_id: '', typ: defaultTyp, ordner: '', routing_ordner: false});
+  _familyData.fahrzeuge.push({kennzeichen: '', person_id: '', typ: defaultTyp, default_tag: '', ordner: '', routing_ordner: false});
   renderFamilyFahrzeuge(_familyData);
 }
 function removeFamilyPerson(i) {
@@ -4728,14 +4810,14 @@ function _renderBezFromData() {
 
         <!-- REF-NR -->
         <div>
-          <div style="font-size:9px;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px">Ref-Nr</div>
+          <div class="col-label" style="font-size:9px;margin-bottom:3px">Ref-Nr</div>
           <input type="text" value="${bez.referenznummer||''}" style="font-size:11px;width:100%"
             oninput="_bezUpdate(${i},'referenznummer',this.value)" placeholder="z.B. LV_889.117">
         </div>
 
         <!-- PERSON -->
         <div>
-          <div style="font-size:9px;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px">Person</div>
+          <div class="col-label" style="font-size:9px;margin-bottom:3px">Person</div>
           <select style="font-size:11px;width:100%" onchange="_bezUpdate(${i},'person',this.value)">
             <option value="">— alle —</option>
             ${personen.map(p => `<option value="${p.id}" ${bez.person===p.id?'selected':''}>${p.anzeigename||p.id}</option>`).join('')}
@@ -4744,7 +4826,7 @@ function _renderBezFromData() {
 
         <!-- ERLAUBTE DOCTYPEN -->
         <div>
-          <div style="font-size:9px;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px">Erlaubte Doctypen</div>
+          <div class="col-label" style="font-size:9px;margin-bottom:3px">Erlaubte Doctypen</div>
           <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px;min-height:20px">${dtChips || '<span style="font-size:10px;color:var(--muted);font-style:italic">alle</span>'}</div>
           <select style="font-size:10px;width:100%" onchange="_bezAddDoctyp(${i},this.value);this.value=''">
             <option value="">+ Doctyp hinzufügen</option>
@@ -4754,7 +4836,7 @@ function _renderBezFromData() {
 
         <!-- FIX-TAGS -->
         <div>
-          <div style="font-size:9px;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px">Fix-Tags</div>
+          <div class="col-label" style="font-size:9px;margin-bottom:3px">Fix-Tags</div>
           <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px;min-height:20px">${tagChips || '<span style="font-size:10px;color:var(--muted);font-style:italic">keine</span>'}</div>
           <select style="font-size:10px;width:100%" onchange="_bezAddTag(${i},this.value);this.value=''">
             <option value="">+ Tag hinzufügen</option>
@@ -4764,7 +4846,7 @@ function _renderBezFromData() {
 
         <!-- ORDNER -->
         <div>
-          <div style="font-size:9px;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:.5px">Ordner <span style="color:var(--danger)">*</span></div>
+          <div class="col-label" style="font-size:9px;margin-bottom:3px">Ordner <span style="color:var(--danger)">*</span></div>
           <select style="font-size:11px;width:100%" onchange="_bezUpdate(${i},'ordner',this.value)">
             ${_bezSpOptions.replace(`value="${bez.ordner}"`, `value="${bez.ordner}" selected`)}
           </select>
