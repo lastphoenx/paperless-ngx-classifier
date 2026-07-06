@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.41"  # 2.41: needs_add Schleife — IndentationError behoben
-UI_VERSION = "2.80"
+UI_VERSION = "2.81"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -52,6 +52,7 @@ from brillenpass_parser import (
     detect_parser,
     find_brillenpass_period_duplicate,
     has_brillenpass_values,
+    hydrate_messung_from_diagnose,
     latest_brillenpass_version,
     merge_brillenpass_version,
     normalize_parser_name,
@@ -1838,6 +1839,8 @@ def _repair_brillenpass_store(data: dict) -> bool:
             if iso and iso != v.get("gueltig_ab"):
                 v["gueltig_ab"] = iso
                 changed = True
+            if hydrate_messung_from_diagnose(v):
+                changed = True
         sorted_vers = sort_brillenpass_versions(vers)
         correct = resolve_brillenpass_aktuell(sorted_vers)
         if sorted_vers != (e.get("versionen") or []):
@@ -1974,6 +1977,7 @@ def api_brillenpass_manual(body: dict = Body(...)):
         vorschlag["parser"] = body["parser"]
     vorschlag.setdefault("fern", {"rechts": None, "links": None})
     vorschlag.setdefault("naehe", {"rechts": None, "links": None})
+    vorschlag.setdefault("messung", {"rechts": None, "links": None})
     vorschlag.setdefault("glas", {"beschreibung": "", "index": None, "durchmesser": None, "beschichtungen": []})
     vorschlag.setdefault("extraktion", {"quelle": "manual", "confidence": "hoch"})
 
@@ -2149,6 +2153,7 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
         "rechnung": vorschlag.get("rechnung", ""),
         "fern": vorschlag.get("fern") or {"rechts": None, "links": None},
         "naehe": vorschlag.get("naehe") or {"rechts": None, "links": None},
+        "messung": vorschlag.get("messung") or {"rechts": None, "links": None},
         "glas": vorschlag.get("glas") or {},
         "pd": vorschlag.get("pd") or {"rechts": None, "links": None},
         "extraktion": vorschlag.get("extraktion") or {"quelle": "review", "confidence": "hoch"},
