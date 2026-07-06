@@ -120,9 +120,10 @@ def test_corr_vendor_parsers():
 def test_fielmann_pass():
     r = parse_fielmann_pass(FIELMANN_PASS_OCR)
     assert r["parser"] == "fielmann_brillenpass"
-    assert r["naehe"]["rechts"]["sph"] == "+0.25"
-    assert r["naehe"]["rechts"]["add"] == "+1.25"
-    assert r["naehe"]["links"]["achse"] == "105"
+    assert r["extraktion"]["layout"] == "messung"
+    assert r["messung"]["rechts"]["sph"] == "+0.25"
+    assert r["messung"]["rechts"]["add"] == "+1.25"
+    assert r["messung"]["links"]["achse"] == "105"
     assert r["gueltig_ab"] == "2019-09-10"
     assert "Zeiss" in r["glas"]["beschreibung"]
     assert has_brillenpass_values(r)
@@ -131,10 +132,10 @@ def test_fielmann_pass():
 def test_mcoptic_pass():
     r = parse_mcoptic_pass(MCOPTIC_PASS_OCR)
     assert r["parser"] == "mcoptic_brillenpass"
-    assert r["extraktion"]["nutzung"] == "office"
+    assert r["extraktion"]["layout"] == "messung"
     assert r["fern"]["rechts"] is None
-    assert r["naehe"]["rechts"]["add"] == "+1.50"
-    assert r["naehe"]["links"]["cyl"] == "-0.50"
+    assert r["messung"]["rechts"]["add"] == "+1.50"
+    assert r["messung"]["links"]["cyl"] == "-0.50"
     assert r["pd"]["rechts"] == "31.5"
     assert r["pd"]["links"] == "32.0"
     assert r["gueltig_ab"] == "2023-10-15"
@@ -143,12 +144,12 @@ def test_mcoptic_pass():
 
 def test_mcoptic_pass_fern_einstaerke():
     r = parse_mcoptic_pass(MCOPTIC_PASS_FERN)
-    assert r["extraktion"]["nutzung"] == "fern"
-    assert r["fern"]["rechts"]["sph"] == "-1.00"
-    assert r["fern"]["rechts"]["cyl"] == "-0.50"
-    assert r["fern"]["rechts"]["achse"] == "90"
-    assert r["fern"]["links"]["sph"] == "-1.25"
-    assert r["naehe"]["rechts"] is None
+    assert r["extraktion"]["layout"] == "messung"
+    assert r["messung"]["rechts"]["sph"] == "-1.00"
+    assert r["messung"]["rechts"]["cyl"] == "-0.50"
+    assert r["messung"]["rechts"]["achse"] == "90"
+    assert r["messung"]["links"]["sph"] == "-1.25"
+    assert r["fern"]["rechts"] is None
     assert r["pd"]["rechts"] == "30.0"
     assert r["pd"]["links"] == "31.0"
     assert r["gueltig_ab"] == "2022-03-15"
@@ -157,10 +158,10 @@ def test_mcoptic_pass_fern_einstaerke():
 
 def test_mcoptic_pass_2012_pd_with_empty_columns():
     r = parse_mcoptic_pass(MCOPTIC_PASS_2012_OCR)
-    assert r["fern"]["rechts"]["sph"] == "-3.00"
-    assert r["fern"]["rechts"]["cyl"] == "-1.00"
-    assert r["fern"]["rechts"]["achse"] == "176"
-    assert r["fern"]["links"]["cyl"] == "-1.25"
+    assert r["messung"]["rechts"]["sph"] == "-3.00"
+    assert r["messung"]["rechts"]["cyl"] == "-1.00"
+    assert r["messung"]["rechts"]["achse"] == "176"
+    assert r["messung"]["links"]["cyl"] == "-1.25"
     assert r["pd"]["rechts"] == "29.5"
     assert r["pd"]["links"] == "31.5"
     assert r["gueltig_ab"] == "2012-04-26"
@@ -194,14 +195,14 @@ def test_should_trigger_brillenpass_optiker_keywords():
 
 
 def test_mcoptic_rechnung_table_naehe_both_eyes():
-    """Rechnung mit Pass-Tabelle (ADD) → beide Augen Nähe."""
+    """Rechnung mit Pass-Tabelle (ADD) → messung beide Augen."""
     r = parse_mcoptic_rechnung(MCOPTIC_RECHNUNG_TABLE_OCR)
     assert r["parser"] == "mcoptic_rechnung"
-    assert r["naehe"]["rechts"]["sph"] == "+0.25"
-    assert r["naehe"]["rechts"]["cyl"] == "-0.25"
-    assert r["naehe"]["rechts"]["achse"] == "57"
-    assert r["naehe"]["links"]["sph"] == "+0.00"
-    assert r["naehe"]["links"]["achse"] == "110"
+    assert r["messung"]["rechts"]["sph"] == "+0.25"
+    assert r["messung"]["rechts"]["cyl"] == "-0.25"
+    assert r["messung"]["rechts"]["achse"] == "57"
+    assert r["messung"]["links"]["sph"] == "+0.00"
+    assert r["messung"]["links"]["achse"] == "110"
     assert r["pd"]["rechts"] == "31.5"
     assert r["pd"]["links"] == "31.5"
 
@@ -220,8 +221,9 @@ def test_consolidate_near_bucket_moves_fern_to_naehe():
          "naehe": {"rechts": None, "links": {"sph": "+0.00", "cyl": "-0.25", "achse": "110", "add": "+1.50"}}},
         {},
     )
-    assert merged["naehe"]["rechts"]["sph"] == "+0.25"
-    assert merged["naehe"]["links"]["sph"] == "+0.00"
+    assert merged["extraktion"]["layout"] == "messung"
+    assert merged["messung"]["rechts"]["sph"] == "+0.25"
+    assert merged["messung"]["links"]["sph"] == "+0.00"
     assert merged["fern"]["rechts"] is None
 
 
@@ -239,10 +241,10 @@ def test_merge_mcoptic_split_vision():
         },
     }
     m = merge_brillenpass(parser, vision)
-    assert m["fern"]["rechts"]["sph"] == "-1.00"
-    assert m["fern"]["links"]["sph"] == "-1.25"
-    assert m["fern"]["rechts"].get("basis") is None
-    assert m["naehe"]["links"] is None
+    assert m["messung"]["rechts"]["sph"] == "-1.00"
+    assert m["messung"]["links"]["sph"] == "-1.25"
+    assert m["messung"]["rechts"].get("basis") is None
+    assert m["fern"]["rechts"] is None
 
 
 def test_vision_only_plus_sph_not_auto_negated():
@@ -302,15 +304,15 @@ def test_merge_brillenpass_version_collects_document_ids():
 def test_augenarzt():
     r = parse_augenarzt(AUGENARZT_OCR)
     assert r["parser"] == "augenarzt_verordnung"
-    assert r["naehe"]["rechts"]["sph"] == "+0.50"
-    assert r["naehe"]["rechts"]["add"] == "+1.50"
+    assert r["messung"]["rechts"]["sph"] == "+0.50"
+    assert r["messung"]["rechts"]["add"] == "+1.50"
     assert r["gueltig_ab"] == "2025-03-28"
 
 
 def test_optik_meyer_rechnung():
     r = parse_optik_meyer_moehlin(MEYER_OCR)
     assert r["parser"] == "optik_meyer_rechnung"
-    assert r["naehe"]["rechts"]["add"] == "+1.25"
+    assert r["messung"]["rechts"]["add"] == "+1.25"
     assert "2022" in (r.get("rechnung") or "2022")
     assert has_brillenpass_values(r)
 
@@ -381,8 +383,8 @@ def test_consolidate_ignores_hallucinated_integer_add():
     }
     norm = normalize_vision_brillenpass(vision)
     merged = merge_brillenpass({}, norm, prefer_vision=True)
-    assert merged["fern"]["rechts"]["sph"] == "-2.75"
-    assert merged["naehe"]["rechts"] is None
+    assert merged["messung"]["rechts"]["sph"] == "-2.75"
+    assert merged["messung"]["links"]["sph"] == "-1.00"
     assert merged["pd"]["links"] == "31.0"
 
 
@@ -396,9 +398,9 @@ def test_mcoptic_card_doc3563_both_pd():
         "1490LG ORGA 150 HMC MAX"
     )
     r = parse_mcoptic_pass(text)
-    assert r["fern"]["rechts"]["sph"] == "-2.75"
-    assert r["fern"]["links"]["sph"] == "-1.00"
-    assert r["fern"]["links"]["achse"] == "0"
+    assert r["messung"]["rechts"]["sph"] == "-2.75"
+    assert r["messung"]["links"]["sph"] == "-1.00"
+    assert r["messung"]["links"]["achse"] == "0"
     assert r["pd"]["rechts"] == "29.5"
     assert r["pd"]["links"] == "31.0"
     assert r["gueltig_ab"] == "2015-06-10"
@@ -441,7 +443,7 @@ def test_consolidate_near_bucket_still_moves_real_add():
          "naehe": {"rechts": None, "links": {"sph": "+0.00", "cyl": "-0.25", "achse": "110", "add": "+1.50"}}},
         {},
     )
-    assert merged["naehe"]["rechts"]["sph"] == "+0.25"
+    assert merged["messung"]["rechts"]["sph"] == "+0.25"
     assert merged["fern"]["rechts"] is None
 
 
@@ -454,24 +456,23 @@ L 0.00 -0.25 110 1.50 31.5
 """
 
 
-def test_office_comfort_pro_routes_to_naehe_only():
+def test_office_comfort_pro_routes_to_messung():
     r = parse_mcoptic_pass(THOMAS_OFFICE_OCR)
-    assert r["extraktion"]["nutzung"] == "office"
+    assert r["extraktion"]["layout"] == "messung"
     assert r["fern"]["rechts"] is None
-    assert r["fern"]["links"] is None
-    assert r["naehe"]["rechts"]["sph"] == "+0.25"
-    assert r["naehe"]["links"]["sph"] == "+0.00"
-    assert r["naehe"]["links"]["add"] == "+1.50"
+    assert r["messung"]["rechts"]["sph"] == "+0.25"
+    assert r["messung"]["links"]["sph"] == "+0.00"
+    assert r["messung"]["links"]["add"] == "+1.50"
 
 
-def test_progressive_routes_to_fern_with_add():
+def test_single_table_with_gleitsicht_still_messung():
     text = """
     Gleitsicht Progressive Varilux
     R +1.00 -0.50 90 2.00 32.0
     L +0.75 -0.25 85 2.00 31.5
     """
     r = parse_mcoptic_pass(text)
-    assert r["extraktion"]["nutzung"] == "progressive"
-    assert r["fern"]["rechts"]["sph"] == "+1.00"
-    assert r["fern"]["rechts"]["add"] == "+2.00"
-    assert r["naehe"]["rechts"] is None
+    assert r["extraktion"]["layout"] == "messung"
+    assert r["messung"]["rechts"]["sph"] == "+1.00"
+    assert r["messung"]["rechts"]["add"] == "+2.00"
+    assert r["fern"]["rechts"] is None

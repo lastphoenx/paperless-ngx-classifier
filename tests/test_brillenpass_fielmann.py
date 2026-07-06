@@ -36,12 +36,13 @@ def test_parse_date():
 
 def test_parse_fielmann_naehe():
     r = parse_fielmann_brillenpass(FIELMANN_OCR)
-    assert r["naehe"]["rechts"]["sph"] == "+0.50"
-    assert r["naehe"]["rechts"]["cyl"] == "-0.50"
-    assert r["naehe"]["rechts"]["achse"] == "65"
-    assert r["naehe"]["rechts"]["add"] == "+1.75"
-    assert r["naehe"]["rechts"]["prisma"] is None
-    assert r["naehe"]["links"]["sph"] == "+0.25"
+    assert r["extraktion"]["layout"] == "messung"
+    assert r["messung"]["rechts"]["sph"] == "+0.50"
+    assert r["messung"]["rechts"]["cyl"] == "-0.50"
+    assert r["messung"]["rechts"]["achse"] == "65"
+    assert r["messung"]["rechts"]["add"] == "+1.75"
+    assert r["messung"]["rechts"]["prisma"] is None
+    assert r["messung"]["links"]["sph"] == "+0.25"
     assert r["glas"]["index"] == "1.6"
     assert r["glas"]["durchmesser"] == 75
     assert "Blaufilter" in r["glas"]["beschichtungen"]
@@ -59,8 +60,8 @@ def test_merge_vision_prisma_to_add():
         },
     }
     merged = merge_brillenpass(None, vision)
-    assert merged["naehe"]["rechts"]["add"] == "1.75" or merged["naehe"]["rechts"]["add"] == "+1.75"
-    assert merged["naehe"]["rechts"]["prisma"] is None
+    assert merged["messung"]["rechts"]["add"] == "1.75" or merged["messung"]["rechts"]["add"] == "+1.75"
+    assert merged["messung"]["rechts"]["prisma"] is None
 
 
 def test_merge_vision_fills_gap():
@@ -73,5 +74,5 @@ def test_merge_vision_fills_gap():
         "glas": {"index": None},
     }
     merged = merge_brillenpass(parser, vision)
-    assert merged["naehe"]["rechts"]["sph"] == "+0.50"
-    assert merged["fern"]["rechts"]["sph"] == "+1.00"
+    assert merged["messung"]["rechts"]["sph"] == "+0.50"
+    assert merged["messung"]["links"]["sph"] == "+0.25"

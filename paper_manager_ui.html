@@ -5108,6 +5108,41 @@ function _bpCollectEye(prefix) {
   return eye.sph ? eye : null;
 }
 
+function _bpEffectiveMessung(v) {
+  const m = v.messung || {};
+  if (m.rechts?.sph || m.links?.sph) return m;
+  if ((v.extraktion || {}).layout === 'fern_naehe') return null;
+  const pick = (side) => {
+    const f = (v.fern || {})[side] || {};
+    const n = (v.naehe || {})[side] || {};
+    const eye = { ...n, ...f };
+    return eye.sph ? eye : (n.sph ? n : (f.sph ? f : null));
+  };
+  const rechts = pick('rechts'), links = pick('links');
+  if (rechts?.sph || links?.sph) return { rechts, links };
+  return null;
+}
+
+function _bpShowDualDist(v) {
+  return (v.extraktion || {}).layout === 'fern_naehe';
+}
+
+function _bpEyeGridHtml(v) {
+  if (_bpShowDualDist(v)) {
+    return `<div class="bp-eye-grid" style="margin-top:12px">
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Rechts</div>${_bpEyeFields('bp-nr', (v.naehe||{}).rechts)}</div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Links</div>${_bpEyeFields('bp-nl', (v.naehe||{}).links)}</div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Rechts</div>${_bpEyeFields('bp-fr', (v.fern||{}).rechts)}</div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Links</div>${_bpEyeFields('bp-fl', (v.fern||{}).links)}</div>
+      </div>`;
+  }
+  const m = _bpEffectiveMessung(v) || {};
+  return `<div class="bp-eye-grid" style="margin-top:12px">
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Rechts</div>${_bpEyeFields('bp-mr', m.rechts)}</div>
+        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Links</div>${_bpEyeFields('bp-ml', m.links)}</div>
+      </div>`;
+}
+
 function _bpComputeDiff(old, neu) {
   if (!old || !neu) return {};
   const flat = (root, dist, side) => {
@@ -5137,6 +5172,10 @@ function _bpComputeDiff(old, neu) {
   };
   const oldFlat = { ...flatGlas(old), ...flatPd(old) };
   const newFlat = { ...flatGlas(neu), ...flatPd(neu) };
+  for (const side of ['rechts', 'links']) {
+    Object.assign(oldFlat, flat(old, 'messung', side));
+    Object.assign(newFlat, flat(neu, 'messung', side));
+  }
   for (const dist of ['fern', 'naehe']) {
     for (const side of ['rechts', 'links']) {
       Object.assign(oldFlat, flat(old, dist, side));
@@ -5218,12 +5257,7 @@ function renderBrillenpassReviewPanel(entry) {
         <input type="date" id="bp-gueltig-ab" value="${v.gueltig_ab || ''}">
       </div>
       ${_bpDiagnoseHtml(v)}
-      <div class="bp-eye-grid" style="margin-top:12px">
-        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Rechts</div>${_bpEyeFields('bp-nr', (v.naehe||{}).rechts)}</div>
-        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Nähe Links</div>${_bpEyeFields('bp-nl', (v.naehe||{}).links)}</div>
-        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Rechts</div>${_bpEyeFields('bp-fr', (v.fern||{}).rechts)}</div>
-        <div><div style="font-size:11px;font-weight:600;margin-bottom:6px">Fern Links</div>${_bpEyeFields('bp-fl', (v.fern||{}).links)}</div>
-      </div>
+      ${_bpEyeGridHtml(v)}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
         <div class="field-group"><label>PD Rechts (mm)</label><input type="text" id="bp-pd-r" value="${(v.pd||{}).rechts || ''}" style="font-size:12px"></div>
         <div class="field-group"><label>PD Links (mm)</label><input type="text" id="bp-pd-l" value="${(v.pd||{}).links || ''}" style="font-size:12px"></div>
@@ -5271,12 +5305,24 @@ function selectBrillenpassReview(idx) {
 function _bpCollectVorschlag(entry) {
   const v = entry.vorschlag || {};
   const dm = document.getElementById('bp-glas-dm')?.value;
+  const emptyEye = () => ({ rechts: null, links: null });
+  const dual = !!document.getElementById('bp-fr');
+  const eyes = dual
+    ? {
+        fern: { rechts: _bpCollectEye('bp-fr'), links: _bpCollectEye('bp-fl') },
+        naehe: { rechts: _bpCollectEye('bp-nr'), links: _bpCollectEye('bp-nl') },
+        messung: emptyEye(),
+      }
+    : {
+        messung: { rechts: _bpCollectEye('bp-mr'), links: _bpCollectEye('bp-ml') },
+        fern: emptyEye(),
+        naehe: emptyEye(),
+      };
   return {
     ...v,
     gueltig_ab: document.getElementById('bp-gueltig-ab')?.value || v.gueltig_ab,
     auftrag: document.getElementById('bp-auftrag')?.value || v.auftrag,
-    fern: { rechts: _bpCollectEye('bp-fr'), links: _bpCollectEye('bp-fl') },
-    naehe: { rechts: _bpCollectEye('bp-nr'), links: _bpCollectEye('bp-nl') },
+    ...eyes,
     pd: {
       rechts: document.getElementById('bp-pd-r')?.value?.trim() || null,
       links: document.getElementById('bp-pd-l')?.value?.trim() || null,
