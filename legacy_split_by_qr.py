@@ -345,6 +345,8 @@ def find_split_markers(
     *,
     regex: str = DEFAULT_QR_REGEX,
     dpi: int = DEFAULT_DPI,
+    backends: tuple[str, ...] | None = None,
+    dpis: tuple[int, ...] | None = None,
 ) -> tuple[list[tuple[str, int]], int, list[dict], dict]:
     """
     [(barcode, start_page), …] — 1-basierte Startseiten.
@@ -356,13 +358,14 @@ def find_split_markers(
         raise RuntimeError("pypdf fehlt") from e
 
     total = len(PdfReader(pdf_path).pages)
-    dpis = _FALLBACK_DPIS if dpi == DEFAULT_DPI else (dpi,)
+    use_backends = backends or _RENDER_BACKENDS
+    use_dpis = dpis or (_FALLBACK_DPIS if dpi == DEFAULT_DPI else (dpi,))
     best_markers: list[tuple[str, int]] = []
     best_debug: list[dict] = []
     best_meta: dict = {}
 
-    for backend in _RENDER_BACKENDS:
-        for try_dpi in dpis:
+    for backend in use_backends:
+        for try_dpi in use_dpis:
             try:
                 images = convert_pdf_pages(pdf_path, dpi=try_dpi, backend=backend)
             except Exception as e:
@@ -458,6 +461,43 @@ def split_pdf_by_qr(
 
 def _marker_score(markers: list[tuple[str, int]]) -> int:
     return sum(1 for name, _ in markers if name != "Kein_Barcode")
+
+
+def scan_pdf_file(
+    pdf_path: str,
+    label: str = "file",
+    *,
+    regex: str = DEFAULT_QR_REGEX,
+    dpi: int = DEFAULT_DPI,
+    quick: bool = False,
+) -> dict:
+    """PDF direkt vom Dateisystem scannen (wie legacy_qr_split_test.py)."""
+    backends = ("ghostscript",) if quick else _RENDER_BACKENDS
+    dpis = (150, 300) if quick else None
+    markers, total, qr_debug, scan_meta = find_split_markers(
+        pdf_path, regex=regex, dpi=dpi, backends=backends, dpis=dpis,
+    )
+    pdf_bytes = Path(pdf_path).read_bytes()
+    score = _marker_score(markers)
+    return {
+        "label": label,
+        "pdf_bytes": pdf_bytes,
+        "markers": markers,
+        "total": total,
+        "qr_debug": qr_debug,
+        "scan_meta": {**(scan_meta or {}), "path": pdf_path},
+        "rank": (score, sum(1 for x in qr_debug if x.get("matched"))),
+    }
+
+
+def _scan_pdf_bytes_quick(label: str, pdf_bytes: bytes, *, regex: str, dpi: int) -> dict:
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+        tf.write(pdf_bytes)
+        tmp = tf.name
+    try:
+        return scan_pdf_file(tmp, label, regex=regex, dpi=dpi, quick=True)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
 
 
 def _scan_pdf_bytes(label: str, pdf_bytes: bytes, *, regex: str, dpi: int) -> dict:

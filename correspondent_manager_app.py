@@ -31,8 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.47"  # 2.47: Legacy-Split nur Archiv wenn Original ohne QR (UI ~10s)
-UI_VERSION = "2.88"
+__version__ = "2.48"  # 2.48: Legacy-Split async + PDF von Disk (wie CLI)
+UI_VERSION = "2.89"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -84,6 +84,7 @@ PENDING_NEW_CORR_TAG     = os.environ.get("PENDING_NEW_CORR_TAG",      "pending_
 PENDING_BRILLENPASS_TAG  = os.environ.get("PENDING_BRILLENPASS_TAG",  "pending_brillenpass")
 BRILLENPASS_DEDUP_DAYS     = int(os.environ.get("BRILLENPASS_DEDUP_DAYS", "21"))
 PAPERLESS_CONSUME_DIR      = os.environ.get("PAPERLESS_CONSUME_DIR", "/mnt/paperless-data/consume")
+PAPERLESS_MEDIA_ROOT       = os.environ.get("PAPERLESS_MEDIA_ROOT", "/mnt/paperless-media")
 LEGACY_SPLIT_QR_REGEX      = os.environ.get("LEGACY_SPLIT_QR_REGEX", r"^[0-9]{6}_[^\s]+$")
 ALL_PENDING_TAGS         = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG, PENDING_BRILLENPASS_TAG}
 
@@ -127,6 +128,8 @@ _BG_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pm-bg")
 _AUTH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pm-auth")
 # Legacy QR-Split — pro Seite 600 DPI, kann Minuten dauern
 _LEGACY_SPLIT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pm-lsplit")
+_LEGACY_SPLIT_JOBS: dict[str, dict] = {}
+_LEGACY_SPLIT_JOBS_LOCK = threading.Lock()
 
 # Session-Cache — reduziert Paperless-Profile-Calls bei init()-API-Burst
 _SESSION_CACHE: dict[str, tuple[bool, float]] = {}
@@ -772,33 +775,264 @@ def pl_download_pdf_variants(doc_id: int) -> list[tuple[str, bytes, str]]:
 
 def _legacy_split_resolve_document(doc_id: int, regex: str) -> tuple[dict, str] | None:
     """
-    Original laden & scannen (~10s); Archiv nur wenn Original keine QR-Marker hat.
+    PDF vom Datenträger scannen (wie CLI); API-Download nur als Fallback.
     """
-    from legacy_split_by_qr import DEFAULT_DPI, _marker_score, _scan_pdf_bytes
+    from legacy_split_by_qr import (
+        DEFAULT_DPI,
+        _marker_score,
+        _scan_pdf_bytes,
+        _scan_pdf_bytes_quick,
+        scan_pdf_file,
+    )
 
     orig_name = f"{doc_id}.pdf"
     best: dict | None = None
+
+    disk_path: str | None = None
+    try:
+        from post_consume import resolve_document_pdf
+        disk_path = resolve_document_pdf(doc_id)
+    except Exception as e:
+        log.warning("Legacy-Split resolve_document_pdf #%s: %s", doc_id, e)
+
+    if disk_path and Path(disk_path).is_file():
+        try:
+            doc = pl_get(f"/documents/{doc_id}/")
+            orig_name = doc.get("original_file_name") or orig_name
+        except Exception as e:
+            log.warning("Legacy-Split Metadaten #%s: %s", doc_id, e)
+        best = scan_pdf_file(disk_path, "original", regex=regex, dpi=DEFAULT_DPI)
+        if _marker_score(best["markers"]) >= 1:
+            log.info(
+                "Legacy-Split #%s: Disk %s (%d Marker)",
+                doc_id, disk_path, _marker_score(best["markers"]),
+            )
+            return best, orig_name
 
     try:
         orig_bytes, orig_name = pl_download_pdf(doc_id, original=True)
         best = _scan_pdf_bytes("original", orig_bytes, regex=regex, dpi=DEFAULT_DPI)
         if _marker_score(best["markers"]) >= 1:
-            log.info("Legacy-Split #%s: Original reicht (%d Marker)", doc_id, _marker_score(best["markers"]))
+            log.info("Legacy-Split #%s: API-Original (%d Marker)", doc_id, _marker_score(best["markers"]))
             return best, orig_name
     except Exception as e:
-        log.warning("Legacy-Split Original #%s: %s", doc_id, e)
+        log.warning("Legacy-Split Original API #%s: %s", doc_id, e)
+        best = None
 
     try:
         arch_bytes, arch_name = pl_download_pdf(doc_id, original=False)
-        cand = _scan_pdf_bytes("archiv", arch_bytes, regex=regex, dpi=DEFAULT_DPI)
+        cand = _scan_pdf_bytes_quick("archiv", arch_bytes, regex=regex, dpi=DEFAULT_DPI)
         if best is None or cand["rank"] > best["rank"]:
             return cand, arch_name
     except Exception as e:
-        log.warning("Legacy-Split Archiv #%s: %s", doc_id, e)
+        log.warning("Legacy-Split Archiv API #%s: %s", doc_id, e)
 
     if best:
         return best, orig_name
     return None
+
+
+def _lsplit_job_key(doc_id: int, dry_run: bool) -> str:
+    return f"{doc_id}:{'preview' if dry_run else 'split'}"
+
+
+def _lsplit_job_get(key: str) -> dict:
+    with _LEGACY_SPLIT_JOBS_LOCK:
+        return dict(_LEGACY_SPLIT_JOBS.get(key) or {})
+
+
+def _lsplit_job_set(key: str, **fields) -> None:
+    with _LEGACY_SPLIT_JOBS_LOCK:
+        job = dict(_LEGACY_SPLIT_JOBS.get(key) or {})
+        job.update(fields)
+        job["updated_at"] = time.time()
+        _LEGACY_SPLIT_JOBS[key] = job
+
+
+def _legacy_split_preview_payload(
+    best: dict,
+    orig_name: str,
+    *,
+    doc_id: int,
+    regex: str,
+    scan_seconds: float,
+    dry_run: bool,
+) -> dict:
+    from legacy_split_by_qr import has_real_qr_splits
+
+    markers = best["markers"]
+    total = best["total"]
+    qr_debug = best["qr_debug"]
+    scan_meta = best.get("scan_meta") or {}
+    source = best["label"]
+    qr_matched = sum(1 for x in qr_debug if x.get("matched"))
+
+    preview = []
+    for i, (barcode, from_page) in enumerate(markers):
+        to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
+        preview.append({
+            "barcode": barcode,
+            "from_page": from_page,
+            "to_page": to_page,
+            "is_prefix": barcode == "Kein_Barcode",
+        })
+
+    if dry_run:
+        if not has_real_qr_splits(markers):
+            pages_with_qr = 0
+            return {
+                "ok": False,
+                "dry_run": True,
+                "document_id": doc_id,
+                "pages": total,
+                "splits": [],
+                "qr_matched": qr_matched,
+                "qr_seen": len(qr_debug),
+                "qr_debug": qr_debug[:50],
+                "source": source,
+                "scan_seconds": scan_seconds,
+                "scan_meta": scan_meta,
+                "message": (
+                    f"Keine QR-Codes passend zu Regex auf {total} Seiten "
+                    f"(Quelle: {source}, {scan_seconds}s, Regex: {regex})"
+                ),
+            }
+        pages_with_qr = len({d["page"] for d in qr_debug if d.get("matched")})
+        render = scan_meta.get("backend", "?")
+        dpi = scan_meta.get("dpi", "?")
+        return {
+            "ok": True,
+            "dry_run": True,
+            "document_id": doc_id,
+            "pages": total,
+            "splits": preview,
+            "qr_matched": qr_matched,
+            "qr_seen": len(qr_debug),
+            "qr_debug": qr_debug[:50],
+            "source": source,
+            "scan_seconds": scan_seconds,
+            "scan_meta": scan_meta,
+            "orig_name": orig_name,
+            "message": (
+                f"{total} Seiten → {len(preview)} Teile "
+                f"({qr_matched} QR auf {pages_with_qr} Seiten, "
+                f"{source}, {render}@{dpi}dpi, {scan_seconds}s)"
+            ),
+        }
+    return {
+        "best": best,
+        "orig_name": orig_name,
+        "preview": preview,
+        "source": source,
+        "scan_seconds": scan_seconds,
+        "scan_meta": scan_meta,
+    }
+
+
+def _run_legacy_split_job(
+    doc_id: int,
+    regex: str,
+    dry_run: bool,
+    consume_dir: str,
+    job_key: str,
+) -> None:
+    from legacy_split_by_qr import has_real_qr_splits, split_paperless_document
+
+    t0 = time.monotonic()
+    try:
+        _lsplit_job_set(job_key, status="running", message="PDF laden & QR scannen (Ghostscript)…")
+        resolved = _legacy_split_resolve_document(doc_id, regex)
+        scan_seconds = round(time.monotonic() - t0, 1)
+        if not resolved:
+            _lsplit_job_set(
+                job_key,
+                status="error",
+                error=f"Dokument #{doc_id} — weder Disk noch API-PDF mit QR",
+                scan_seconds=scan_seconds,
+            )
+            return
+
+        best, orig_name = resolved
+        if dry_run:
+            payload = _legacy_split_preview_payload(
+                best, orig_name,
+                doc_id=doc_id, regex=regex, scan_seconds=scan_seconds, dry_run=True,
+            )
+            _lsplit_job_set(job_key, status="done", **payload)
+            return
+
+        if not has_real_qr_splits(best["markers"]):
+            _lsplit_job_set(
+                job_key,
+                status="error",
+                error=f"Keine QR-Split-Marker ({best['label']}, {best['total']} Seiten)",
+                scan_seconds=scan_seconds,
+            )
+            return
+
+        consume = Path(consume_dir)
+        if not consume.exists():
+            _lsplit_job_set(
+                job_key, status="error",
+                error=f"Consume-Ordner nicht gefunden: {consume}",
+            )
+            return
+
+        _lsplit_job_set(job_key, status="running", message="Teile nach consume/ schreiben…")
+        parts = split_paperless_document(
+            best["pdf_bytes"],
+            consume,
+            original_filename=orig_name,
+            regex=regex,
+            markers=best["markers"],
+            total=best["total"],
+        )
+        if not parts:
+            _lsplit_job_set(job_key, status="error", error="Keine Split-Teile geschrieben")
+            return
+
+        detail = "; ".join(
+            f"{p['barcode']} S.{p['from_page']}–{p['to_page']}" for p in parts
+        )
+        _lsplit_job_set(
+            job_key,
+            status="done",
+            ok=True,
+            dry_run=False,
+            document_id=doc_id,
+            source=best["label"],
+            scan_seconds=scan_seconds,
+            scan_meta=best.get("scan_meta") or {},
+            parts=parts,
+            message=(
+                f"{len(parts)} Teil(e) nach {consume} geschrieben "
+                f"({best['label']}, {scan_seconds}s) — Pipeline startet ({detail})"
+            ),
+        )
+    except Exception as e:
+        log.exception("Legacy-Split Job #%s", doc_id)
+        _lsplit_job_set(
+            job_key,
+            status="error",
+            error=str(e),
+            scan_seconds=round(time.monotonic() - t0, 1),
+        )
+
+
+async def _run_legacy_split_bg(
+    doc_id: int,
+    regex: str,
+    dry_run: bool,
+    consume_dir: str,
+    job_key: str,
+) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        _BG_EXECUTOR,
+        functools.partial(
+            _run_legacy_split_job, doc_id, regex, dry_run, consume_dir, job_key,
+        ),
+    )
 
 
 def resolve_group_ids(group_names: list[str]) -> list[int]:
@@ -2255,138 +2489,69 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
 
 
 @app.post("/api/legacy-split/trigger/{doc_id}")
-async def api_legacy_split_trigger(doc_id: int, body: dict = Body(default={})):
-    """Paperless-Dokument per QR splitten → Teile nach consume/ (volle Pipeline)."""
-    from legacy_split_by_qr import (
-        split_paperless_document,
-        has_real_qr_splits,
-    )
-
+async def api_legacy_split_trigger(
+    doc_id: int,
+    background_tasks: BackgroundTasks,
+    body: dict = Body(default={}),
+):
+    """Paperless-Dokument per QR splitten — async (UI pollt Status, kein nginx-Timeout)."""
     dry_run = bool(body.get("dry_run", False))
+    sync = bool(body.get("sync", False))
     regex = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
-    consume_dir = Path(body.get("consume_dir") or PAPERLESS_CONSUME_DIR)
+    consume_dir = str(body.get("consume_dir") or PAPERLESS_CONSUME_DIR)
+    job_key = _lsplit_job_key(doc_id, dry_run)
 
-    loop = asyncio.get_running_loop()
-    t_scan = time.monotonic()
+    if sync:
+        loop = asyncio.get_running_loop()
+        t_scan = time.monotonic()
+        await loop.run_in_executor(
+            _LEGACY_SPLIT_EXECUTOR,
+            functools.partial(_run_legacy_split_job, doc_id, regex, dry_run, consume_dir, job_key),
+        )
+        job = _lsplit_job_get(job_key)
+        if job.get("status") == "error":
+            raise HTTPException(400, job.get("error", "Legacy-Split fehlgeschlagen"))
+        job["scan_seconds"] = job.get("scan_seconds") or round(time.monotonic() - t_scan, 1)
+        return job
 
-    resolved_pack = await loop.run_in_executor(
-        _LEGACY_SPLIT_EXECUTOR,
-        functools.partial(_legacy_split_resolve_document, doc_id, regex),
-    )
-    scan_seconds = round(time.monotonic() - t_scan, 1)
-    if not resolved_pack:
-        raise HTTPException(400, f"Dokument #{doc_id} — weder Original noch Archiv-PDF ladbar")
-
-    best, orig_name = resolved_pack
-    source = best["label"]
-    pdf_bytes = best["pdf_bytes"]
-    markers = best["markers"]
-    total = best["total"]
-    qr_debug = best["qr_debug"]
-    scan_meta = best.get("scan_meta") or {}
-    qr_matched = sum(1 for x in qr_debug if x.get("matched"))
-
-    def _split_preview() -> list[dict]:
-        preview = []
-        for i, (barcode, from_page) in enumerate(markers):
-            to_page = markers[i + 1][1] - 1 if i + 1 < len(markers) else total
-            preview.append({
-                "barcode": barcode,
-                "from_page": from_page,
-                "to_page": to_page,
-                "is_prefix": barcode == "Kein_Barcode",
-            })
-        return preview
-
-    if dry_run:
-        if not has_real_qr_splits(markers):
-            return {
-                "ok": False,
-                "dry_run": True,
-                "document_id": doc_id,
-                "pages": total,
-                "splits": [],
-                "qr_matched": qr_matched,
-                "qr_seen": len(qr_debug),
-                "qr_debug": qr_debug[:50],
-                "source": source,
-                "scan_seconds": scan_seconds,
-                "scan_meta": scan_meta,
-                "message": (
-                    f"Keine QR-Codes passend zu Regex auf {total} Seiten "
-                    f"(Quelle: {source}, {scan_seconds}s, Regex: {regex})"
-                ),
-            }
-        preview = _split_preview()
-        pages_with_qr = len({d["page"] for d in qr_debug if d.get("matched")})
-        render = scan_meta.get("backend", "?")
-        dpi = scan_meta.get("dpi", "?")
+    existing = _lsplit_job_get(job_key)
+    if existing.get("status") == "running":
         return {
-            "ok": True,
-            "dry_run": True,
+            "async": True,
             "document_id": doc_id,
-            "pages": total,
-            "splits": preview,
-            "qr_matched": qr_matched,
-            "qr_seen": len(qr_debug),
-            "qr_debug": qr_debug[:50],
-            "source": source,
-            "scan_seconds": scan_seconds,
-            "scan_meta": scan_meta,
-            "message": (
-                f"{total} Seiten → {len(preview)} Teile "
-                f"({qr_matched} QR auf {pages_with_qr} Seiten, "
-                f"{source}, {render}@{dpi}dpi, {scan_seconds}s)"
-            ),
+            "status": "running",
+            "message": existing.get("message", "QR-Scan läuft bereits…"),
         }
 
-    if not consume_dir.exists():
-        raise HTTPException(400, f"Consume-Ordner nicht gefunden: {consume_dir}")
-
-    if not has_real_qr_splits(markers):
-        raise HTTPException(
-            400,
-            f"Keine QR-Split-Marker ({source}, {total} Seiten, Regex: {regex})",
-        )
-
-    try:
-        parts = await loop.run_in_executor(
-            _LEGACY_SPLIT_EXECUTOR,
-            functools.partial(
-                split_paperless_document,
-                pdf_bytes,
-                consume_dir,
-                original_filename=orig_name,
-                regex=regex,
-                markers=markers,
-                total=total,
-            ),
-        )
-    except Exception as e:
-        raise HTTPException(500, f"Split fehlgeschlagen: {e}") from e
-
-    if not parts:
-        raise HTTPException(
-            400,
-            "Keine QR-Split-Marker gefunden — Dokument hat keine passenden "
-            f"Metadaten-QR-Codes (Quelle: {source}, Regex: {regex})",
-        )
-
-    detail = "; ".join(
-        f"{p['barcode']} S.{p['from_page']}–{p['to_page']}" for p in parts
+    _lsplit_job_set(
+        job_key,
+        status="running",
+        message="QR-Scan startet…",
+        document_id=doc_id,
+        dry_run=dry_run,
+    )
+    background_tasks.add_task(
+        _run_legacy_split_bg, doc_id, regex, dry_run, consume_dir, job_key,
     )
     return {
-        "ok": True,
-        "message": (
-            f"{len(parts)} Teil(e) nach {consume_dir} geschrieben "
-            f"({source}, {scan_seconds}s) — Pipeline startet ({detail})"
-        ),
+        "async": True,
         "document_id": doc_id,
-        "source": source,
-        "scan_seconds": scan_seconds,
-        "scan_meta": scan_meta,
-        "parts": parts,
+        "status": "running",
+        "message": "QR-Scan läuft (Ghostscript ~10s)…",
     }
+
+
+@app.get("/api/legacy-split/trigger-status/{doc_id}")
+def api_legacy_split_trigger_status(doc_id: int, dry_run: bool = True):
+    """Status eines Legacy-Split-Jobs (UI-Polling)."""
+    job = _lsplit_job_get(_lsplit_job_key(doc_id, dry_run))
+    if not job:
+        return {
+            "status": "unknown",
+            "document_id": doc_id,
+            "message": "Kein Job — Vorschau erneut starten",
+        }
+    return job
 
 
 @app.patch("/api/brillenpass/{person_id}")
