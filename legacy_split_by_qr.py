@@ -70,7 +70,8 @@ def _zbarimg_decode(img_path: str) -> list[str]:
 def _enhance_page_image(image):
     """Kontrast für schwache QR auf Scan/Archiv-PDF."""
     from PIL import ImageOps
-    return ImageOps.autocontrast(image.convert("L"))
+    gray = ImageOps.autocontrast(image.convert("L"))
+    return gray.convert("RGB")
 
 
 def scan_page_qrs(
@@ -96,7 +97,7 @@ def scan_page_qrs(
         )
         if not images:
             continue
-        for variant in (images[0], _enhance_page_image(images[0])):
+        for variant in (images[0].convert("RGB"), _enhance_page_image(images[0])):
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
                 tmp = tf.name
             try:
@@ -243,6 +244,60 @@ def split_pdf_by_qr(
         log.info("Split: %s (S. %d–%d)", filename, from_page, to_page)
 
     return results
+
+
+def _marker_score(markers: list[tuple[str, int]]) -> int:
+    """Mehr echte Marker = besser (Kein_Barcode zählt nicht)."""
+    return sum(1 for name, _ in markers if name != "Kein_Barcode")
+
+
+def resolve_best_pdf_for_split(
+    pdf_variants: list[tuple[str, bytes]],
+    *,
+    regex: str = DEFAULT_QR_REGEX,
+    dpi: int = DEFAULT_DPI,
+) -> tuple[str, bytes, list[tuple[str, int]], int, list[dict]] | None:
+    """
+    Probiert mehrere PDF-Quellen (original, archiv) — wählt die mit meisten QR-Markern.
+    Returns: (source_label, pdf_bytes, markers, total_pages, qr_debug) oder None.
+    """
+    best: dict | None = None
+    for label, pdf_bytes in pdf_variants:
+        if not pdf_bytes:
+            continue
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+            tf.write(pdf_bytes)
+            tmp = tf.name
+        try:
+            markers, total, qr_debug = find_split_markers(tmp, regex=regex, dpi=dpi)
+            score = _marker_score(markers)
+            seen = sum(1 for x in qr_debug if x.get("matched"))
+            log.info(
+                "Legacy-Split Scan %s: %d Seiten, %d Marker, %d QR-Treffer",
+                label, total, score, seen,
+            )
+            rank = (score, seen)
+            candidate = {
+                "rank": rank,
+                "label": label,
+                "pdf_bytes": pdf_bytes,
+                "markers": markers,
+                "total": total,
+                "qr_debug": qr_debug,
+            }
+            if best is None or rank > best["rank"]:
+                best = candidate
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+    if best is None:
+        return None
+    return (
+        best["label"],
+        best["pdf_bytes"],
+        best["markers"],
+        best["total"],
+        best["qr_debug"],
+    )
 
 
 def split_paperless_document(
