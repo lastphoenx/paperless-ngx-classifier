@@ -306,6 +306,7 @@
   </div>
   <div class="nav-item" onclick="showView('manifest')" id="nav-manifest">
     <span>S</span> Speicherpfade
+    <span class="nav-badge" id="manifest-pending-count" style="display:none;background:var(--warn)">0</span>
   </div>
   <div class="nav-item" onclick="showView('family')" id="nav-family">
     <span>👪</span> Familie
@@ -898,7 +899,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.96';
+const UI_VERSION = '2.97';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -1039,6 +1040,7 @@ async function init() {
     }
   } catch(e) { if (e.message !== 'auth') applyPaperlessLinks(effectivePaperlessBase()); }
   await loadPending();
+  await loadManifestPendingCount();
   await loadPlCorrespondents();
   await loadCorrMap();
   await loadAllStoragePaths();
@@ -3464,6 +3466,22 @@ async function createManifestOrdner() {
 let _mfEntries = {};
 let _mfAllOrdner = [];
 
+function updateManifestPendingBadge(ordner) {
+  const n = (ordner || []).filter(e => e.pending === true).length;
+  const badge = document.getElementById('manifest-pending-count');
+  if (!badge) return;
+  badge.textContent = n;
+  badge.style.display = n > 0 ? '' : 'none';
+}
+
+async function loadManifestPendingCount() {
+  try {
+    const r = await fetch(`${API_BASE}/manifest`);
+    const d = await r.json();
+    updateManifestPendingBadge(d.ordner || []);
+  } catch (e) { /* ignore */ }
+}
+
 async function loadManifest() {
   try {
     const r = await fetch(`${API_BASE}/manifest`);
@@ -3472,6 +3490,7 @@ async function loadManifest() {
     if (!d.ordner?.length) { container.innerHTML = '<div class="empty">Kein Manifest</div>'; return; }
     _mfEntries = {};
     _mfAllOrdner = d.ordner;
+    updateManifestPendingBadge(d.ordner);
     d.ordner.forEach(e => {
       const eid = e.pfad.replace(/[^a-z0-9]/gi,'_');
       _mfEntries[eid] = e;
@@ -3483,7 +3502,11 @@ async function loadManifest() {
 function renderManifest(ordner) {
   const container = document.getElementById('manifest-list');
   if (!ordner.length) { container.innerHTML = '<div class="empty">Keine Treffer</div>'; return; }
-  container.innerHTML = ordner.map(e => {
+  const sorted = [...ordner].sort((a, b) => {
+    if (!!a.pending !== !!b.pending) return a.pending ? -1 : 1;
+    return a.pfad.localeCompare(b.pfad);
+  });
+  container.innerHTML = sorted.map(e => {
     const eid = e.pfad.replace(/[^a-z0-9]/gi,'_');
     const isPending = e.pending === true;
     return `<div class="card" style="${isPending ? 'border-left:3px solid var(--warn)' : ''}">
