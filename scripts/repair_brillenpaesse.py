@@ -10,7 +10,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from brillenpass_parser import hydrate_messung_from_diagnose  # noqa: E402
+from brillenpass_parser import (  # noqa: E402
+    compute_brillenpass_diff,
+    dedupe_brillenpass_versions_by_document,
+    hydrate_messung_from_diagnose,
+    sort_brillenpass_versions,
+)
 
 BP_PATH = Path(os.environ.get(
     "BRILLENPAESSE_JSON",
@@ -93,11 +98,24 @@ def _apply_doc_patch(version: dict) -> bool:
 def repair_store(data: dict) -> int:
     fixes = 0
     for entry in data.get("eintraege", []):
-        for version in entry.get("versionen") or []:
+        vers = list(entry.get("versionen") or [])
+        for version in vers:
             if hydrate_messung_from_diagnose(version):
                 fixes += 1
             if _apply_doc_patch(version):
                 fixes += 1
+        deduped, dedup_changed = dedupe_brillenpass_versions_by_document(vers)
+        if dedup_changed:
+            fixes += 1
+            vers = deduped
+            for i, v in enumerate(vers):
+                prev = vers[i - 1] if i > 0 else None
+                v["diff_zu_vorher"] = compute_brillenpass_diff(prev, v)
+            entry["versionen"] = vers
+            from brillenpass_parser import resolve_brillenpass_aktuell
+            entry["aktuell"] = resolve_brillenpass_aktuell(vers) or entry.get("aktuell")
+        elif vers != entry.get("versionen"):
+            entry["versionen"] = vers
     return fixes
 
 

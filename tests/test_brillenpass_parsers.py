@@ -313,6 +313,51 @@ def test_merge_brillenpass_version_collects_document_ids():
     assert m["extraktion"]["dedup_merged"] is True
 
 
+def test_dedupe_brillenpass_versions_by_document():
+    from brillenpass_parser import dedupe_brillenpass_versions_by_document
+
+    pass_version = {
+        "id": "bp-2022-03-15-mcoptic",
+        "gueltig_ab": "2022-03-15",
+        "korrespondent": "McOptic",
+        "document_id": 3559,
+        "document_ids": [3559, 3560],
+        "fern": {
+            "rechts": {"sph": "-2.50", "cyl": "-1.25", "achse": "178"},
+            "links": {"sph": "-0.75", "cyl": "-1.50", "achse": "177"},
+        },
+        "naehe": {"rechts": None, "links": None},
+        "glas": {"beschreibung": "0120RX Comfort SV", "beschichtungen": ["SSV CRYSTAL"]},
+        "messung": {"rechts": None, "links": None},
+    }
+    rechnung_version = {
+        "id": "bp-22.03.2022-mcoptic",
+        "gueltig_ab": "2022-03-22",
+        "korrespondent": "McOptic",
+        "document_id": 3559,
+        "document_ids": [3559, 3569],
+        "auftrag": "Sonnenbrille Gold",
+        "rechnung": "FV31821-1026",
+        "fern": {
+            "rechts": {"sph": "-2.5", "cyl": "-1.25", "achse": "178", "basis": "A°"},
+            "links": {"sph": "-0.75", "cyl": "-1.5", "achse": "177", "basis": "A°"},
+        },
+        "naehe": {"rechts": None, "links": None},
+        "glas": {"beschreibung": "Upgrade Gold"},
+        "messung": {"rechts": None, "links": None},
+    }
+    merged, changed = dedupe_brillenpass_versions_by_document([pass_version, rechnung_version])
+    assert changed is True
+    assert len(merged) == 1
+    m = merged[0]
+    assert m["gueltig_ab"] == "2022-03-22"
+    assert m["id"] == "bp-2022-03-22-mcoptic"
+    assert m["document_ids"] == [3559, 3560, 3569]
+    assert m["rechnung"] == "FV31821-1026"
+    assert "0120RX" in m["glas"]["beschreibung"]
+    assert m["fern"]["rechts"]["basis"] == "A°"
+
+
 def test_augenarzt():
     r = parse_augenarzt(AUGENARZT_OCR)
     assert r["parser"] == "augenarzt_verordnung"

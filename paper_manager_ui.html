@@ -194,7 +194,8 @@
   .bp-person-head { font-size: 14px; font-weight: 700; color: #f1f5f9; margin-bottom: 12px; letter-spacing: -0.02em; }
   .bp-person-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
   @media (max-width: 700px) { .bp-person-cards { grid-template-columns: 1fr; } }
-  .bp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; cursor: pointer; min-width: 0; }
+  .bp-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 0; }
+  .bp-card.bp-card-click { cursor: pointer; }
   .bp-card:hover { border-color: var(--accent); }
   .bp-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .bp-card-body { font-size: 11px; color: #cbd5e1; margin-top: 8px; line-height: 1.55; }
@@ -203,6 +204,8 @@
   .bp-dist-label { font-size: 10px; font-weight: 700; color: var(--accent); letter-spacing: .04em; margin-bottom: 2px; }
   .bp-eye-row { margin-bottom: 2px; }
   .bp-eye-lbl { color: #94a3b8; margin-right: 2px; }
+  .bp-bemerkung { color: #f87171; font-size: 11px; margin-top: 8px; line-height: 1.45; white-space: pre-wrap; }
+  .bp-bemerkung-empty { color: #64748b; font-size: 10px; font-style: italic; }
   .bp-diff-new { color: #4ade80; }
   .bp-diff-old { color: var(--muted); text-decoration: line-through; font-size: 11px; }
   .bp-eye-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -890,7 +893,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '2.92';
+const UI_VERSION = '2.93';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
 
 function isWorkflowTag(name) {
@@ -5077,6 +5080,9 @@ function _bpRenderOverviewCard(e) {
   const c = e.current || {};
   const glas = c.glas || {};
   const pd = c.pd || {};
+  const vid = c.id || '';
+  const pid = e.person_id || '';
+  const bem = (c.bemerkung || '').trim();
   const badge = e.pending_review && e.is_latest
     ? '<span class="badge" style="background:#f59e0b">Review offen</span>' : '';
   const latestBadge = e.is_latest
@@ -5088,19 +5094,67 @@ function _bpRenderOverviewCard(e) {
     ? _bpFmtMessungBlock(messung)
     : [_bpFmtDistBlock('Nähe', c.naehe || {}), _bpFmtDistBlock('Fern', c.fern || {})].filter(Boolean).join('');
   const pdHtml = _bpFmtPd(pd);
+  const editBtn = vid
+    ? `<button type="button" class="btn btn-ghost" style="padding:2px 7px;font-size:10px;line-height:1"
+        title="Bemerkung bearbeiten" onclick="event.stopPropagation();_bpToggleBemerkungEdit('${_escAttr(pid)}','${_escAttr(vid)}')">✎</button>`
+    : '';
+  const bemSlot = vid
+    ? `<div id="bp-bem-${_escAttr(pid)}-${_escAttr(vid)}">${_bpBemerkungDisplay(bem)}</div>`
+    : (bem ? `<div class="bp-bemerkung">${_escAttr(bem)}</div>` : '');
   return `<div class="bp-card">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:6px">
       <div class="bp-card-meta" style="margin:0">Stand: ${c.gueltig_ab || '—'} · ${c.korrespondent || '—'}</div>
-      <span>${badge}${latestBadge}</span>
+      <span style="display:flex;align-items:center;gap:4px">${badge}${latestBadge}${editBtn}</span>
     </div>
     <div class="bp-card-body">
       ${distHtml || '<div class="bp-eye-row">Keine Glaswerte</div>'}
       ${pdHtml ? `<div class="bp-eye-row" style="margin-top:4px"><span class="bp-eye-lbl">PD</span> ${pdHtml}</div>` : ''}
       <div class="bp-eye-row" style="margin-top:6px"><span class="bp-eye-lbl">Glas</span> ${_bpFmtGlas(glas)}</div>
       ${c.auftrag ? `<div class="bp-eye-row"><span class="bp-eye-lbl">Auftrag</span> ${c.auftrag}</div>` : ''}
+      ${bemSlot}
     </div>
     <div style="margin-top:8px">${docLink}</div>
   </div>`;
+}
+
+function _bpBemerkungDisplay(text) {
+  const t = (text || '').trim();
+  if (!t) return '<span class="bp-bemerkung-empty">Keine Bemerkung</span>';
+  return `<div class="bp-bemerkung">${_escAttr(t)}</div>`;
+}
+
+function _bpToggleBemerkungEdit(personId, versionId) {
+  const slot = document.getElementById(`bp-bem-${personId}-${versionId}`);
+  if (!slot) return;
+  const person = _bpOverview.find(p => p.person_id === personId);
+  const ver = (person?.versionen || []).find(v => v.id === versionId);
+  const cur = (ver?.bemerkung || '').trim();
+  slot.innerHTML = `
+    <textarea id="bp-bem-ta-${_escAttr(personId)}-${_escAttr(versionId)}" rows="2"
+      style="width:100%;font-size:11px;margin-top:6px;resize:vertical">${_escAttr(cur)}</textarea>
+    <div style="margin-top:4px;display:flex;gap:6px">
+      <button type="button" class="btn btn-primary" style="padding:3px 10px;font-size:11px"
+        onclick="event.stopPropagation();_bpSaveBemerkung('${_escAttr(personId)}','${_escAttr(versionId)}')">Speichern</button>
+      <button type="button" class="btn btn-ghost" style="padding:3px 10px;font-size:11px"
+        onclick="event.stopPropagation();_bpRenderOverview()">Abbrechen</button>
+    </div>`;
+  slot.querySelector('textarea')?.focus();
+}
+
+async function _bpSaveBemerkung(personId, versionId) {
+  const ta = document.getElementById(`bp-bem-ta-${personId}-${versionId}`);
+  const text = (ta?.value || '').trim();
+  try {
+    await _fetchJson(`${API_BASE}/brillenpass/${encodeURIComponent(personId)}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({version_id: versionId, version: {bemerkung: text || ''}}),
+    });
+    showToast('Bemerkung gespeichert', 'success');
+    await loadBrillenpassView();
+  } catch (e) {
+    showToast(e.message || 'Speichern fehlgeschlagen', 'error');
+  }
 }
 
 function _bpRenderOverview() {
@@ -5314,7 +5368,7 @@ function _bpRenderReviewList() {
     return;
   }
   el.innerHTML = _bpReview.map(e => `
-    <div class="bp-card" onclick="selectBrillenpassReview(${e.index})">
+    <div class="bp-card bp-card-click" onclick="selectBrillenpassReview(${e.index})">
       <strong>${e.anzeigename}</strong>
       ${e.source === 'manual' ? '<span class="badge" style="background:#6366f1;margin-left:6px">manuell</span>' : ''}
       <div style="font-size:11px;color:var(--muted);margin-top:4px">

@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.51"  # 2.51: Legacy-QR Regex .env \\s-Fix (sonst ewiger Scan)
-UI_VERSION = "2.92"
+__version__ = "2.52"  # 2.52: Brillenpass Dok-Dedup + Bemerkung PATCH
+UI_VERSION = "2.93"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -49,7 +49,9 @@ from brillenpass_parser import (
     VENDOR_PARSERS,
     build_version_id,
     chronological_prev_version,
+    collect_document_ids,
     compute_brillenpass_diff,
+    dedupe_brillenpass_versions_by_document,
     detect_parser,
     find_brillenpass_period_duplicate,
     has_brillenpass_values,
@@ -2199,6 +2201,16 @@ def _repair_brillenpass_store(data: dict) -> bool:
                 changed = True
             if hydrate_messung_from_diagnose(v):
                 changed = True
+        deduped, dedup_changed = dedupe_brillenpass_versions_by_document(vers)
+        if dedup_changed:
+            vers = deduped
+            changed = True
+        for i, v in enumerate(vers):
+            prev = vers[i - 1] if i > 0 else None
+            new_diff = compute_brillenpass_diff(prev, v)
+            if v.get("diff_zu_vorher") != new_diff:
+                v["diff_zu_vorher"] = new_diff
+                changed = True
         sorted_vers = sort_brillenpass_versions(vers)
         correct = resolve_brillenpass_aktuell(sorted_vers)
         if sorted_vers != (e.get("versionen") or []):
@@ -2499,9 +2511,16 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
 
     vers = bp_entry.setdefault("versionen", [])
     prev = chronological_prev_version(vers, gueltig_ab)
-    dup_idx = find_brillenpass_period_duplicate(
-        vers, gueltig_ab, korrespondent, max_days=BRILLENPASS_DEDUP_DAYS,
-    )
+    dup_idx = None
+    if doc_id:
+        for i, v in enumerate(vers):
+            if doc_id in collect_document_ids(v):
+                dup_idx = i
+                break
+    if dup_idx is None:
+        dup_idx = find_brillenpass_period_duplicate(
+            vers, gueltig_ab, korrespondent, max_days=BRILLENPASS_DEDUP_DAYS,
+        )
     incoming = {
         "gueltig_ab": gueltig_ab,
         "korrespondent": korrespondent,
