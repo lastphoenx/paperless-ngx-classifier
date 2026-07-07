@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.55"  # 2.55: Fahrzeug-Tag-Dropdown, UI-Kontrast, Synonym-Warnung
-UI_VERSION = "3.07"
+__version__ = "2.56"  # 2.56: HTR pending API, Korrespondenten HTR-Overrides
+UI_VERSION = "3.08"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -684,6 +684,25 @@ def _normalize_brillenpass(raw) -> dict:
         "parsers": parsers if aktiv else [],
         "typische_begriffe": begriffe if aktiv else [],
     }
+
+
+def _normalize_htr_overrides(raw) -> dict:
+    """Sparse Map: Dokumenttyp (lower) → HTR-Profilname oder off."""
+    from handwriting_vision import HTR_PROFILE_OFF, list_htr_profile_names
+
+    if not raw or not isinstance(raw, dict):
+        return {}
+    allowed = set(list_htr_profile_names()) | {HTR_PROFILE_OFF, "auto"}
+    out: dict[str, str] = {}
+    for key, val in raw.items():
+        k = str(key or "").strip().lower()
+        v = str(val or "").strip().lower()
+        if not k or not v:
+            continue
+        if v not in allowed:
+            continue
+        out[k] = v
+    return out
 
 
 def _normalize_beziehung_fields(bez: dict) -> None:
@@ -2464,6 +2483,26 @@ def api_brillenpass_trigger(
     }
 
 
+@app.get("/api/htr/pending", response_class=JSONResponse)
+def api_htr_pending():
+    """Offene HTR-Entscheidungen (pending_htr_decision.jsonl)."""
+    path = Path(os.environ.get(
+        "PENDING_HTR_DECISION_JSONL",
+        "/opt/paperless-scripts/training/pending_htr_decision.jsonl",
+    ))
+    if not path.exists():
+        return {"results": []}
+    rows = []
+    for ln in path.read_text(encoding="utf-8").split("\n"):
+        if not ln.strip():
+            continue
+        try:
+            rows.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    return {"results": rows}
+
+
 @app.post("/api/htr/trigger/{doc_id}")
 def api_htr_trigger(
     doc_id: int,
@@ -2474,8 +2513,10 @@ def api_htr_trigger(
     from htr_runner import htr_job_run, htr_job_set
 
     profile = (body.get("profile") or "").strip().lower()
-    if profile and profile not in ("default", "schulbericht", "auto", "off"):
-        raise HTTPException(400, "profile muss default, schulbericht, auto oder off sein")
+    from handwriting_vision import HTR_PROFILE_OFF, list_htr_profile_names
+    allowed = set(list_htr_profile_names()) | {HTR_PROFILE_OFF, "auto", ""}
+    if profile and profile not in allowed:
+        raise HTTPException(400, f"profile muss einer von {sorted(allowed - {''})} sein")
 
     msg = f"HTR für Dok #{doc_id} ({profile or 'auto'}) — kann mehrere Minuten dauern…"
     htr_job_set(doc_id, status="running", message=msg)
@@ -3063,7 +3104,8 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     for field in ["varianten", "match", "default_dokumenttyp", "default_dokumenttyp_id",
                   "typische_ordner", "notiz", "extraktion_muster", "erwartungen",
                   "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
-                  "nicht_verwechseln_mit", "beziehungen", "kuerzel", "identifikatoren", "brillenpass"]:
+                  "nicht_verwechseln_mit", "beziehungen", "kuerzel", "identifikatoren", "brillenpass",
+                  "htr_profile_mode", "htr_profiles_by_document_type"]:
         if field in body:
             val = body[field]
             if field == "kuerzel":
@@ -3074,6 +3116,10 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
                 val = _normalize_identifikatoren(body[field])
             elif field == "brillenpass":
                 val = _normalize_brillenpass(body[field])
+            elif field == "htr_profiles_by_document_type":
+                val = _normalize_htr_overrides(body[field])
+            elif field == "htr_profile_mode":
+                val = (body[field] or "use_document_type").strip().lower()
             entry[field] = val
 
     for bez in entry.get("beziehungen", []):
@@ -3088,6 +3134,8 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     entry.setdefault("beziehungen", [])
     entry.setdefault("kuerzel", "")
     entry.setdefault("identifikatoren", {"uid": [], "iban": [], "email": [], "telefon": []})
+    entry.setdefault("htr_profile_mode", "use_document_type")
+    entry.setdefault("htr_profiles_by_document_type", {})
 
     # default_dokumenttyp_id synchronisieren falls nur Name geändert
     if "default_dokumenttyp" in body and "default_dokumenttyp_id" not in body:

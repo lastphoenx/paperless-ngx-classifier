@@ -67,6 +67,49 @@ def _doctype_name_from_doc(doc: dict, pl_get_dt) -> str:
         return ""
 
 
+def _correspondent_entry_from_doc(doc: dict, pc) -> tuple[dict | None, str | None]:
+    corr_id = doc.get("correspondent")
+    if not corr_id:
+        return None, None
+    try:
+        pl_corr = pc.paperless_get(f"/correspondents/{corr_id}/")
+        corr_name = (pl_corr.get("name") or "").strip()
+    except Exception:
+        return None, None
+    if not corr_name:
+        return None, None
+    corr_map = pc._load_corr_map()
+    entry = pc._resolve_corr_entry(corr_map, corr_name)
+    return entry, corr_name
+
+
+def _remove_pending_htr_decision(document_id: int) -> None:
+    import post_consume as pc  # noqa: WPS433
+
+    path = pc.PENDING_HTR_DECISION_PATH
+    if not path.exists():
+        return
+    kept = []
+    for ln in path.read_text(encoding="utf-8").split("\n"):
+        if not ln.strip():
+            continue
+        try:
+            row = json.loads(ln)
+            if row.get("document_id") != document_id:
+                kept.append(ln)
+        except json.JSONDecodeError:
+            kept.append(ln)
+    path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    try:
+        tag_id = pc._get_by_name("tags", pc.PENDING_HTR_DECISION_TAG)
+        if tag_id:
+            doc = pc.paperless_get(f"/documents/{document_id}/")
+            tags = [t for t in (doc.get("tags") or []) if t != tag_id]
+            pc.paperless_patch(f"/documents/{document_id}/", {"tags": tags})
+    except Exception as e:
+        log.warning("pending_htr_decision Tag entfernen fehlgeschlagen: %s", e)
+
+
 def reprocess_htr_document(
     document_id: int,
     *,
@@ -75,9 +118,11 @@ def reprocess_htr_document(
     """HTR für bestehendes Dokument. Schreibt Paperless-Notiz mit Transkript."""
     import post_consume as pc  # noqa: WPS433
     from handwriting_vision import (  # noqa: WPS433
+        HTR_ACTION_RUN,
         HtrPipelineDeps,
+        decide_htr_action,
         format_htr_note_summary,
-        resolve_htr_profile,
+        normalize_document_type_key,
         run_htr_pipeline,
     )
 
@@ -98,17 +143,27 @@ def reprocess_htr_document(
         doc,
         lambda dt_id: pc.paperless_get(f"/document_types/{dt_id}/"),
     )
-    profile = resolve_htr_profile(
+    corr_entry, corr_name = _correspondent_entry_from_doc(doc, pc)
+    dt_key, _ = normalize_document_type_key(doctype_name) if doctype_name else (None, "paperless")
+
+    resolution = decide_htr_action(
         vision_meta,
         ocr_text,
-        doctype_name=doctype_name,
         explicit=profile_override or None,
+        correspondent=corr_entry,
+        correspondent_match="paperless" if corr_entry else None,
+        document_type_key=dt_key,
+        document_type_source="paperless",
     )
-    if not profile:
+    pc.write_audit_entry(document_id, "htr_pre_resolution", resolution.to_audit_dict())
+
+    if resolution.action != HTR_ACTION_RUN:
         return {
             "ok": False,
-            "error": "Kein HTR-Profil (Dokumenttyp=off oder keine Handschrift erkannt). "
-                     "Profil manuell wählen: default oder schulbericht.",
+            "error": (
+                f"Kein HTR-Profil (action={resolution.action}, source={resolution.htr_profile_source}). "
+                "Profil manuell wählen oder Dokumenttyp/Korrespondent prüfen."
+            ),
         }
 
     deps = HtrPipelineDeps(
@@ -117,9 +172,19 @@ def reprocess_htr_document(
         schulbericht_page_e2e=pc.vision_schulbericht_page,
         extract_schulbericht=pc.extract_schulbericht_from_transcript,
     )
-    htr_meta = run_htr_pipeline(profile, pdf_path, ocr_text, deps)
+    htr_meta = run_htr_pipeline(resolution, pdf_path, ocr_text, deps)
     if not htr_meta:
-        return {"ok": False, "error": f"HTR-Profil '{profile}' lieferte kein Ergebnis"}
+        return {
+            "ok": False,
+            "error": f"HTR-Profil '{resolution.profile_name}' lieferte kein Ergebnis",
+        }
+
+    if resolution.variants:
+        pc.write_audit_entry(document_id, "htr", {
+            **resolution.to_audit_dict(),
+            "variants": resolution.variants,
+            "correspondent": corr_name,
+        })
 
     note_body = format_htr_note_summary(htr_meta)
     try:
@@ -127,13 +192,15 @@ def reprocess_htr_document(
     except Exception as e:
         log.warning("HTR-Notiz für #%s fehlgeschlagen: %s", document_id, e)
 
+    _remove_pending_htr_decision(document_id)
+
     conf = htr_meta.get("htr_confidence") or htr_meta.get("schulbericht_confidence")
     return {
         "ok": True,
         "document_id": document_id,
-        "profile": profile,
+        "profile": resolution.profile_name,
         "confidence": conf,
-        "message": f"HTR ({profile}) abgeschlossen — Notiz am Dokument",
+        "message": f"HTR ({resolution.profile_name}) abgeschlossen — Notiz am Dokument",
         "htr_meta": htr_meta,
     }
 
@@ -144,7 +211,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description="HTR für bestehendes Paperless-Dokument")
     ap.add_argument("document_id", type=int)
-    ap.add_argument("--profile", default="", help="default | schulbericht (sonst auto)")
+    ap.add_argument("--profile", default="", help="Profil aus htr_profiles.json (sonst auto)")
     args = ap.parse_args()
     out = reprocess_htr_document(args.document_id, profile_override=args.profile)
     print(json.dumps(out, ensure_ascii=False, indent=2, default=str))

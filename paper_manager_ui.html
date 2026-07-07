@@ -876,11 +876,19 @@
           <option value="">Profil auto</option>
           <option value="default">default — zeilengetreu</option>
           <option value="schulbericht">schulbericht — HTR + Extract</option>
-          <option value="off">off — abbrechen (nur Test)</option>
+          <option value="schulbericht_crop_strong">schulbericht_crop_strong</option>
+          <option value="off">off — abbrechen</option>
         </select>
         <button class="btn btn-primary" onclick="triggerHtr()">▶ HTR starten</button>
       </div>
       <div id="htr-trigger-status" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
+    </div>
+    <div class="card" style="padding:14px 16px;margin-top:16px">
+      <div class="card-title" style="font-size:13px;margin-bottom:8px">Offene HTR-Entscheidungen</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        Dokumente mit Tag <code>pending_htr_decision</code> — nach Review Doctype/Korrespondent setzen, dann HTR starten.
+      </p>
+      <div id="htr-pending-list" style="font-size:12px;color:var(--muted)">Lade…</div>
     </div>
   </div>
 
@@ -953,8 +961,8 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.07';
-const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass']);
+const UI_VERSION = '3.08';
+const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
   return WORKFLOW_TAGS.has(name);
@@ -1226,6 +1234,7 @@ function showView(name) {
     Promise.all(loaders).then(() => loadFamilyConfig());
   }
   if (name === 'brillenpass') loadBrillenpassView();
+  if (name === 'handschrift') loadHandschriftView();
   if (name === 'legacy-split') {
     const inp = document.getElementById('lsplit-id');
     if (inp && !inp.value) {
@@ -2310,6 +2319,9 @@ function renderCorrMap(eintraege) {
           <span style="color:var(--muted);font-size:11px">NICHT VERWECHSELN: </span>
           ${(e.nicht_verwechseln_mit).map(t=>`<span class="badge" style="background:rgba(245,158,11,.12);color:#fbbf24">${t}</span>`).join('')}
         </div>` : ''}
+        ${Object.keys(e.htr_profiles_by_document_type||{}).length ? `<div style="margin-bottom:6px">
+          <span class="badge" style="background:rgba(34,197,94,.12);color:var(--success)">✍ HTR: ${Object.keys(e.htr_profiles_by_document_type||{}).length} Override(s)</span>
+        </div>` : ''}
         ${(e.brillenpass||{}).aktiv ? `<div style="margin-bottom:6px">
           <span class="badge" style="background:rgba(16,185,129,.15);color:#34d399">👓 Brillenpass (${(e.brillenpass||{}).vendor || ((e.brillenpass||{}).parsers||[]).join('+') || (e.brillenpass||{}).parser || '?'})</span>
         </div>` : ''}
@@ -2530,6 +2542,22 @@ function toggleCorrEdit(idx, entry) {
       <div class="field-group">
         <label>Notiz</label>
         <textarea id="ce-notiz-${idx}">${entry.notiz||''}</textarea>
+      </div>
+      <div class="field-group" style="padding-top:10px;border-top:1px dashed var(--border)">
+        <label>✍ HTR-Profile
+          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:6px">
+            Standard = Dokumenttyp; nur Abweichungen pflegen
+          </span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;color:var(--text);margin-bottom:8px">
+          <input type="checkbox" id="ce-htr-use-dt-${idx}" checked disabled>
+          Dokumenttyp-Standard verwenden
+        </label>
+        <div id="ce-htr-overrides-${idx}">
+          ${renderHtrOverridesEdit(entry.htr_profiles_by_document_type||{}, idx)}
+        </div>
+        <button class="btn btn-ghost" style="margin-top:6px;font-size:11px"
+          onclick="addHtrOverrideRow(${idx})">+ Override hinzufügen</button>
       </div>
       <div class="field-group" style="padding-top:10px;border-top:1px dashed var(--border)">
         <label>👓 Brillenpass
@@ -2769,6 +2797,53 @@ async function checkKuerzelUnique(input, idx, corrName) {
   }
 }
 
+// ──────────────────────────────────────────────
+// HTR OVERRIDE EDITOR (Korrespondenten)
+// ──────────────────────────────────────────────
+const HTR_PROFILE_OPTIONS = ['default', 'schulbericht', 'schulbericht_crop_strong', 'off'];
+
+function renderHtrOverridesEdit(overrides, idx) {
+  const rows = Object.entries(overrides || {});
+  if (!rows.length) return '<div style="color:var(--muted);font-size:11px">Keine Overrides — Dokumenttyp-Standard gilt.</div>';
+  return rows.map(([dt, prof], ri) => renderHtrOverrideRow(idx, ri, dt, prof)).join('');
+}
+
+function renderHtrOverrideRow(idx, ri, doctype, profile) {
+  const dtOpts = (window._allDocTypes||[]).map(t =>
+    `<option value="${t.name}" ${t.name.toLowerCase()===String(doctype||'').toLowerCase()?'selected':''}>${t.name}</option>`
+  ).join('');
+  const profOpts = HTR_PROFILE_OPTIONS.map(p =>
+    `<option value="${p}" ${p===profile?'selected':''}>${p}</option>`
+  ).join('');
+  return `<div class="htr-override-row" data-row="${ri}" style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+    <select class="htr-ov-dt" style="font-size:12px;max-width:180px">
+      <option value="">— Dokumenttyp —</option>${dtOpts}
+      ${doctype && !(window._allDocTypes||[]).some(t=>t.name.toLowerCase()===String(doctype).toLowerCase()) ? `<option value="${doctype}" selected>${doctype}</option>` : ''}
+    </select>
+    <select class="htr-ov-prof" style="font-size:12px;max-width:200px">${profOpts}</select>
+    <button type="button" class="btn btn-ghost" style="font-size:11px;padding:4px 8px" onclick="this.closest('.htr-override-row').remove()">×</button>
+  </div>`;
+}
+
+function addHtrOverrideRow(idx) {
+  const box = document.getElementById(`ce-htr-overrides-${idx}`);
+  if (!box) return;
+  const ri = box.querySelectorAll('.htr-override-row').length;
+  box.insertAdjacentHTML('beforeend', renderHtrOverrideRow(idx, ri, '', 'default'));
+}
+
+function collectHtrOverrides(idx) {
+  const box = document.getElementById(`ce-htr-overrides-${idx}`);
+  if (!box) return {};
+  const out = {};
+  box.querySelectorAll('.htr-override-row').forEach(row => {
+    const dt = (row.querySelector('.htr-ov-dt')?.value || '').trim().toLowerCase();
+    const prof = (row.querySelector('.htr-ov-prof')?.value || '').trim().toLowerCase();
+    if (dt && prof) out[dt] = prof;
+  });
+  return out;
+}
+
 async function saveCorrEdit(idx, nameParam) {
   flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-email-${idx}`, `ce-tel-${idx}`,
                   `ce-nvm-${idx}`, `ce-ord-${idx}`, `ce-bp-begriffe-${idx}`,
@@ -2811,6 +2886,8 @@ async function saveCorrEdit(idx, nameParam) {
       parser: (getTagsFromContainer(`ce-bp-parsers-${idx}`)[0] || ''),
       typische_begriffe: getTagsFromContainer(`ce-bp-begriffe-${idx}`),
     },
+    htr_profile_mode: 'use_document_type',
+    htr_profiles_by_document_type: collectHtrOverrides(idx),
   };
   try {
     const r = await fetch(`${API_BASE}/correspondents/${encodeURIComponent(name)}`, {
@@ -5825,6 +5902,27 @@ async function _pollHtrTrigger(docId, statusEl) {
   showToast('HTR: Timeout — journalctl -u correspondent-manager', 'error');
 }
 
+async function loadHandschriftView() {
+  const el = document.getElementById('htr-pending-list');
+  if (!el) return;
+  try {
+    const d = await _fetchJson(`${API_BASE}/htr/pending`);
+    const rows = d.results || [];
+    if (!rows.length) {
+      el.innerHTML = '<span style="color:var(--muted)">Keine offenen HTR-Entscheidungen.</span>';
+      return;
+    }
+    el.innerHTML = rows.map(r => `
+      <div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <a href="${paperlessDocUrl(r.document_id)}" target="_blank" rel="noopener">Dok #${r.document_id}</a>
+        <span>${r.htr_profile_source || '?'} · confidence ${r.profile_confidence || '?'}</span>
+        <button class="btn btn-ghost" style="font-size:11px" onclick="document.getElementById('htr-trigger-id').value=${r.document_id};triggerHtr()">▶ HTR</button>
+      </div>`).join('');
+  } catch (e) {
+    el.textContent = 'Liste nicht ladbar';
+  }
+}
+
 async function triggerHtr() {
   const id = parseInt(document.getElementById('htr-trigger-id')?.value || '', 10);
   const profile = document.getElementById('htr-trigger-profile')?.value || '';
@@ -5847,6 +5945,7 @@ async function triggerHtr() {
     }
     showToast(d.message || 'HTR gestartet', 'success');
     if (status) status.textContent = d.message || 'OK';
+    loadHandschriftView();
   } catch (e) {
     if (status) status.textContent = String(e.message || e);
     showToast('HTR: ' + (e.message || e), 'error');

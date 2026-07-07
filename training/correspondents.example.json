@@ -110,6 +110,10 @@
         "vendor": "fielmann",
         "typische_begriffe": ["Brillenglas", "Nähe Rechts", "Asph.Hochbr"]
       },
+      "htr_profile_mode": "use_document_type",
+      "htr_profiles_by_document_type": {
+        "rechnung": "off"
+      },
       "_paperless": {
         "id": null,
         "is_insensitive": true,
@@ -145,6 +149,19 @@
         "aktiv": true,
         "vendor": "optik_meyer",
         "typische_begriffe": ["Optik Meyer", "Verordnung", "Glasart"]
+      },
+      "_paperless": {"id": null, "is_insensitive": true}
+    },
+    {
+      "name": "Schule Muster",
+      "varianten": ["Schule Muster AG"],
+      "match": ["schule muster"],
+      "matching_algorithm": "any",
+      "default_dokumenttyp": "Schulbericht",
+      "typische_ordner": ["Familie/Schule"],
+      "htr_profile_mode": "use_document_type",
+      "htr_profiles_by_document_type": {
+        "schulbericht": "schulbericht_crop_strong"
       },
       "_paperless": {"id": null, "is_insensitive": true}
     },

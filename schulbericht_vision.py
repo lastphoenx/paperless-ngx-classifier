@@ -57,7 +57,16 @@ def _nullish(val: object) -> bool:
     if val is None:
         return True
     s = str(val).strip().lower()
-    return s in ("", "null", "none", "nicht verfügbar", "nicht angegeben", "n/a")
+    return s in ("", "null", "none", "nicht verfügbar", "nicht angegeben", "n/a", "kurzer hinweis", "kurzer hinweis oder null")
+
+
+def _clean_quality_note(val: object) -> str | None:
+    if _nullish(val):
+        return None
+    s = str(val).strip()
+    if s.lower() in ("kurzer hinweis", "kurzer hinweis oder null", "kein hinweis", "none"):
+        return None
+    return s
 
 
 def build_schulbericht_vision_prompt(
@@ -91,7 +100,7 @@ def build_schulbericht_vision_prompt(
         '  "leistungen": "Kurzfassung oder null",\n'
         '  "handschrift_lesbarkeit": "gut|mittel|schlecht",\n'
         '  "confidence": 0.0,\n'
-        '  "hinweise": "Unsicherheiten oder null"\n'
+        '  "quality_note": null\n'
         "}\n\n"
         f"OCR-Text (meist leer bei Handschrift):\n{ocr_snip or '(leer)'}"
     )
@@ -111,14 +120,17 @@ def build_htr_transcribe_prompt(page: int = 1, page_total: int = 1) -> str:
         "- Wenn ein Wort unsicher ist, markiere es mit [?] direkt im Wort.\n"
         "- Wenn ein Wort nicht lesbar ist, schreibe [unleserlich].\n"
         "- Trenne gedruckten Text und handschriftlichen Text.\n"
-        "- KEINE separate Wortliste — Unsicherheit nur als [?] im Fliesstext.\n\n"
+        "- KEINE separate Wortliste — Unsicherheit nur als [?] im Fliesstext.\n"
+        "- Setze \"quality_note\" auf null, wenn du keinen konkreten Hinweis hast.\n"
+        "- Schreibe niemals Platzhalter wie \"kurzer Hinweis\".\n\n"
         "Antworte exakt als JSON (kompakt, keine langen Listen am Ende):\n"
         "{\n"
         f'  "seite": {page},\n'
         '  "gedruckt": ["..."],\n'
         '  "handschrift_zeilen": ["eine Zeile pro Array-Eintrag"],\n'
-        '  "unsicherheit": "kurzer Hinweis oder null",\n'
-        '  "qualitaet": "gut|mittel|schlecht"\n'
+        '  "qualitaet": "gut|mittel|schlecht",\n'
+        '  "confidence": 0.0,\n'
+        '  "quality_note": null\n'
         "}\n"
     )
 
@@ -226,19 +238,28 @@ def salvage_htr_json(raw: str) -> dict | None:
 
 
 def normalize_htr_page(data: dict | None) -> dict:
-    """Legacy-Felder bereinigen, leere unsichere_woerter ignorieren."""
+    """Legacy-Felder bereinigen, quality_note normalisieren."""
     if not data:
         return {}
     out = dict(data)
     legacy = out.pop("unsichere_woerter", None)
+    if "unsicherheit" in out and "quality_note" not in out:
+        out["quality_note"] = out.pop("unsicherheit")
     if isinstance(legacy, list):
         cleaned = []
         for x in legacy:
             s = str(x).strip()
             if s and s not in cleaned:
                 cleaned.append(s)
-        if cleaned and _nullish(out.get("unsicherheit")):
-            out["unsicherheit"] = ", ".join(cleaned[:8])
+        if cleaned and _nullish(out.get("quality_note")):
+            out["quality_note"] = ", ".join(cleaned[:8])
+    out["quality_note"] = _clean_quality_note(out.get("quality_note"))
+    conf = out.get("confidence")
+    if conf is not None:
+        try:
+            out["confidence"] = float(conf)
+        except (TypeError, ValueError):
+            out.pop("confidence", None)
     return out
 
 
@@ -273,16 +294,20 @@ def merge_htr_transcribe_pages(
         for item in p.get("handschrift_zeilen") or []:
             if item and str(item).strip():
                 lines.append(str(item).strip())
-        u = p.get("unsicherheit")
+        u = p.get("quality_note")
         if u and not _nullish(u):
             notes.append(str(u).strip())
     volltext = "\n".join([*printed, *lines])
     total = pages_total if pages_total is not None else len(pages)
     ok = len(pages)
+    model_confidences = [
+        float(p["confidence"]) for p in pages
+        if isinstance(p.get("confidence"), (int, float))
+    ]
     return {
         "gedruckt": printed,
         "handschrift_zeilen": lines,
-        "unsicherheit": "; ".join(notes) if notes else None,
+        "quality_note": "; ".join(notes) if notes else None,
         "volltext": volltext,
         "seiten_anzahl": ok,
         "pages_ok": ok,
@@ -290,7 +315,18 @@ def merge_htr_transcribe_pages(
         "pages_failed": max(0, total - ok),
         "pages_salvaged": salvaged,
         "qualitaet": pages[-1].get("qualitaet") if pages else "schlecht",
+        "_model_confidence": round(sum(model_confidences) / len(model_confidences), 2) if model_confidences else None,
     }
+
+
+def merge_htr_variant_results(parts: list[dict]) -> dict:
+    """Mehrere Crop-Varianten einer Seite zu einem Seiten-Transkript mergen."""
+    if not parts:
+        return {}
+    if len(parts) == 1:
+        return normalize_htr_page(parts[0])
+    ordered = sorted(parts, key=lambda p: str(p.get("_variant_id") or ""))
+    return merge_htr_transcribe_pages(ordered, pages_total=1)
 
 
 def estimate_htr_confidence(htr: dict) -> float:
@@ -425,40 +461,70 @@ def _analyze_pdf_pages(
     pdf_path: str,
     label: str,
     *,
-    pdf_to_b64: Callable[[str, int], Optional[str]],
-    page_analyze: Callable[[str, int, int], dict],
-) -> list[dict]:
+    resolution=None,
+    pdf_to_b64: Callable[[str, int], Optional[str]] | None = None,
+    page_analyze: Callable[..., dict],
+) -> tuple[list[dict], dict]:
+    from image_crop import render_page_variants
+
     total = pdf_page_count(pdf_path)
     log.info("%s: %d Seite(n) in %s", label, total, pdf_path)
     pages: list[dict] = []
+    variants_audit: dict = {}
     for page in range(1, total + 1):
-        b64 = pdf_to_b64(pdf_path, page)
-        if not b64:
-            log.warning("%s Seite %d/%d: kein Bild", label, page, total)
-            continue
-        data = page_analyze(b64, page, total)
-        if data:
-            pages.append(data)
-            log.info("%s Seite %d/%d: %s", label, page, total, json.dumps(data, ensure_ascii=False)[:200])
-    return pages
+        page_parts: list[dict] = []
+        variant_ids: list[str] = []
+        if resolution and resolution.config:
+            variants = render_page_variants(
+                pdf_path,
+                page,
+                resolution.config,
+                resolution.crop_mode_effective,
+            )
+        elif pdf_to_b64:
+            b64 = pdf_to_b64(pdf_path, page)
+            variants = [("full", b64)] if b64 else []
+        else:
+            variants = []
+
+        for variant_id, b64 in variants:
+            if not b64:
+                continue
+            data = page_analyze(b64, page, total, variant_id)
+            if data:
+                data["_variant_id"] = variant_id
+                page_parts.append(data)
+                variant_ids.append(variant_id)
+                log.info(
+                    "%s Seite %d/%d [%s]: %s",
+                    label, page, total, variant_id,
+                    json.dumps(data, ensure_ascii=False)[:200],
+                )
+        if variant_ids:
+            variants_audit[f"page_{page}"] = variant_ids
+        if page_parts:
+            pages.append(merge_htr_variant_results(page_parts))
+    return pages, variants_audit
 
 
 def analyze_schulbericht_pdf(
     pdf_path: str,
     ocr_text: str,
     *,
-    pdf_to_b64: Callable[[str, int], Optional[str]],
+    resolution=None,
+    pdf_to_b64: Callable[[str, int], Optional[str]] | None = None,
     vision_page: Callable[[str, str, int, int], dict],
 ) -> dict:
     """E2E: alle Seiten direkt → Schulbericht-JSON (nur Debug/Vergleich)."""
 
-    def _page(b64: str, page: int, total: int) -> dict:
+    def _page(b64: str, page: int, total: int, variant_id: str = "full") -> dict:
         return vision_page(b64, ocr_text, page, total)
 
-    pages = _analyze_pdf_pages(
+    pages, _ = _analyze_pdf_pages(
         pdf_path, "Schulbericht-E2E",
+        resolution=resolution,
         pdf_to_b64=pdf_to_b64,
-        page_analyze=lambda b64, p, t: _page(b64, p, t),
+        page_analyze=_page,
     )
     merged = merge_schulbericht_pages(pages)
     if merged:
@@ -472,16 +538,20 @@ def analyze_schulbericht_pdf(
 def analyze_schulbericht_two_stage(
     pdf_path: str,
     *,
-    pdf_to_b64: Callable[[str, int], Optional[str]],
-    htr_page: Callable[[str, int, int], dict],
+    resolution=None,
+    pdf_to_b64: Callable[[str, int], Optional[str]] | None = None,
+    htr_page: Callable[..., dict],
     extract_from_text: Callable[[str], dict],
 ) -> dict:
     """Produktiv: HTR aller Seiten → Text-Extraktion (ohne Bild)."""
-    pages = _analyze_pdf_pages(
+    pages, variants = _analyze_pdf_pages(
         pdf_path, "Schulbericht-HTR",
+        resolution=resolution,
         pdf_to_b64=pdf_to_b64,
         page_analyze=htr_page,
     )
+    if resolution is not None:
+        resolution.variants = variants
     total = pdf_page_count(pdf_path)
     htr = merge_htr_transcribe_pages(pages, pages_total=total)
     transcript = (htr.get("volltext") or "").strip()

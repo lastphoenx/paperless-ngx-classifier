@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.39.py — Paperless-NGX Post-Consume Pipeline v12.39
+post_consume_v12.68.py — Paperless-NGX Post-Consume Pipeline v12.68
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.67"  # 12.67: HTR-Profil-Routing (default/schulbericht) per Dokumenttyp
+POST_CONSUME_VERSION = "12.68"  # 12.68: HTR Hybrid (decide_htr_action, Crop-Varianten, pending_htr_decision)
 import re
 import sys
 import json
@@ -67,8 +67,12 @@ from document_date import (
     validate_issue_date,
 )
 from handwriting_vision import (
+    HTR_ACTION_DEFER,
+    HTR_ACTION_RUN,
     HtrPipelineDeps,
-    resolve_htr_profile,
+    audit_missed_correspondent_override,
+    decide_htr_action,
+    normalize_document_type_key,
     run_htr_pipeline,
 )
 from schulbericht_vision import (
@@ -1927,8 +1931,8 @@ def vision_schulbericht_page(
         return {}
 
 
-def vision_htr_page(image_b64: str, page: int, page_total: int) -> dict:
-    """Stufe 1: zeilengetreue HTR einer Seite."""
+def vision_htr_page(image_b64: str, page: int, page_total: int, variant_id: str = "full") -> dict:
+    """Stufe 1: zeilengetreue HTR einer Seite (optional pro Crop-Variante)."""
     if not image_b64:
         return {}
     user_content = build_htr_transcribe_prompt(page, page_total)
@@ -1950,9 +1954,15 @@ def vision_htr_page(image_b64: str, page: int, page_total: int) -> dict:
             timeout=VISION_TIMEOUT,
         )
         raw = resp.get("message", {}).get("content", "")
-        return parse_htr_response(raw)
+        data = parse_htr_response(raw)
+        if data:
+            data["_variant_id"] = variant_id
+        return data
     except Exception as e:
-        log.warning("Schulbericht-HTR Seite %d/%d fehlgeschlagen: %s", page, page_total, e)
+        log.warning(
+            "Schulbericht-HTR Seite %d/%d [%s] fehlgeschlagen: %s",
+            page, page_total, variant_id, e,
+        )
         return {}
 
 
@@ -2307,6 +2317,37 @@ def write_pending_brillenpass(
         person_id, korrespondent_name, document_id,
     )
     return True
+
+
+def write_pending_htr_decision(document_id: int, resolution_audit: dict) -> None:
+    """HTR-Defer in pending_htr_decision.jsonl — Dedupe pro document_id."""
+    import fcntl as _fcntl
+
+    PENDING_HTR_DECISION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "document_id": document_id,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **resolution_audit,
+    }
+    lines: list[str] = []
+    if PENDING_HTR_DECISION_PATH.exists():
+        for ln in PENDING_HTR_DECISION_PATH.read_text(encoding="utf-8").split("\n"):
+            if not ln.strip():
+                continue
+            try:
+                row = json.loads(ln)
+                if row.get("document_id") != document_id:
+                    lines.append(ln)
+            except json.JSONDecodeError:
+                lines.append(ln)
+    lines.append(json.dumps(entry, ensure_ascii=False))
+    with open(PENDING_HTR_DECISION_PATH, "w", encoding="utf-8") as f:
+        _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
+        try:
+            f.write("\n".join(lines) + "\n")
+        finally:
+            _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
+    log.info("Pending-HTR: Dok #%s → pending_htr_decision", document_id)
 
 
 def maybe_queue_brillenpass(
@@ -3200,9 +3241,17 @@ PENDING_REVIEW_TAG       = os.environ.get("PENDING_REVIEW_TAG",       "pending_r
 PENDING_QS_TAG           = os.environ.get("PENDING_QS_TAG",           "pending_qs")
 PENDING_NEW_CORR_TAG     = os.environ.get("PENDING_NEW_CORR_TAG",      "pending_new_correspondent")
 PENDING_BRILLENPASS_TAG  = os.environ.get("PENDING_BRILLENPASS_TAG",  "pending_brillenpass")
+PENDING_HTR_DECISION_TAG = os.environ.get("PENDING_HTR_DECISION_TAG", "pending_htr_decision")
+PENDING_HTR_DECISION_PATH = Path(os.environ.get(
+    "PENDING_HTR_DECISION_JSONL",
+    "/opt/paperless-scripts/training/pending_htr_decision.jsonl",
+))
 
 # Alle System-Pending-Tags (für cleanup beim Freigeben)
-ALL_PENDING_TAGS = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG, PENDING_BRILLENPASS_TAG}
+ALL_PENDING_TAGS = {
+    PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR_TAG,
+    PENDING_BRILLENPASS_TAG, PENDING_HTR_DECISION_TAG,
+}
 HIGH_THRESHOLD  = int(os.environ.get("HIGH_THRESHOLD",  "90"))  # ergaenzung
 MERGE_THRESHOLD = int(os.environ.get("MERGE_THRESHOLD", "80"))  # merge_into — höher = weniger False Positives
 
@@ -3975,11 +4024,33 @@ def main():
         image_b64 = pdf_to_base64_image(pdf_path)
     log.info("Schritt 2: Vision-LLM (%s)", MODEL_VISION)
     vision_meta = _disambiguate_vision_money_fields(vision_analyze(image_b64, ocr_text))
-    htr_profile = resolve_htr_profile(vision_meta, ocr_text)
-    if pdf_path and htr_profile:
+
+    _htr_pre_resolution = None
+    _needs_pending_htr_decision = False
+    corr_map_htr = _load_corr_map()
+    _early_corr, _early_ident = _match_correspondent_by_identifikatoren(
+        corr_map_htr, ocr_text, qr_meta=qr_meta, vision_meta=vision_meta,
+    )
+    _early_corr_htr = _early_corr if _early_ident in ("UID", "IBAN", "E-Mail") else None
+    _htr_pre_resolution = decide_htr_action(
+        vision_meta,
+        ocr_text,
+        correspondent=_early_corr_htr,
+        correspondent_match=_early_ident if _early_corr_htr else None,
+    )
+    _htr_audit = _htr_pre_resolution.to_audit_dict()
+    if _htr_pre_resolution.config:
+        _htr_audit["crop_mode_effective"] = _htr_pre_resolution.crop_mode_effective
+    write_audit_entry(document_id, "htr_pre_resolution", _htr_audit)
+
+    if pdf_path and _htr_pre_resolution.action == HTR_ACTION_RUN:
         log.info(
-            "Handschrift erkannt — HTR-Profil '%s' (%d dpi)",
-            htr_profile, SCHULBERICHT_DPI,
+            "Handschrift — HTR %s (Profil '%s', confidence=%s, crop=%s, %d dpi)",
+            _htr_pre_resolution.action,
+            _htr_pre_resolution.profile_name,
+            _htr_pre_resolution.profile_confidence,
+            _htr_pre_resolution.crop_mode_effective,
+            (_htr_pre_resolution.config.dpi if _htr_pre_resolution.config else SCHULBERICHT_DPI),
         )
         htr_deps = HtrPipelineDeps(
             pdf_to_b64=_schulbericht_pdf_to_b64,
@@ -3987,9 +4058,21 @@ def main():
             schulbericht_page_e2e=vision_schulbericht_page,
             extract_schulbericht=extract_schulbericht_from_transcript,
         )
-        htr_meta = run_htr_pipeline(htr_profile, pdf_path, ocr_text, htr_deps)
+        htr_meta = run_htr_pipeline(_htr_pre_resolution, pdf_path, ocr_text, htr_deps)
         if htr_meta:
             vision_meta = {**vision_meta, **htr_meta}
+        if _htr_pre_resolution.variants:
+            write_audit_entry(document_id, "htr", {
+                **_htr_audit,
+                "variants": _htr_pre_resolution.variants,
+            })
+    elif _htr_pre_resolution.action == HTR_ACTION_DEFER:
+        log.info(
+            "HTR deferred — Profil unsicher (source=%s), pending_htr_decision",
+            _htr_pre_resolution.htr_profile_source,
+        )
+        _needs_pending_htr_decision = True
+        write_pending_htr_decision(document_id, _htr_audit)
     log.info("Vision: %s", json.dumps(vision_meta, ensure_ascii=False))
     write_audit_entry(document_id, "vision", vision_meta)
 
@@ -4112,6 +4195,16 @@ def main():
             _corr_entry = _match_korrespondent_eintrag(corr_map, vision_absender)
         if _corr_entry:
             log.info("Stufe 1: Korrespondent '%s' gefunden", _corr_entry["name"])
+            if _htr_pre_resolution:
+                _dt_used = _htr_pre_resolution.document_type_used
+                if not _dt_used:
+                    raw_vis = vision_meta.get("dokumenttyp_visuell")
+                    _dt_used, _ = normalize_document_type_key(str(raw_vis) if raw_vis else None)
+                _missed = audit_missed_correspondent_override(
+                    _htr_pre_resolution, _corr_entry, document_type_used=_dt_used,
+                )
+                if _missed:
+                    write_audit_entry(document_id, "htr_override_missed", _missed)
             _beziehung = _match_beziehung_v2(_corr_entry, vision_empfaenger, ocr_text,
                                                       dokumenttyp_visuell=vision_meta.get("dokumenttyp_visuell", ""),
                                                       vision_meta=vision_meta)
@@ -4555,6 +4648,9 @@ def main():
     # 3. QS-Modus aktiv → pending_qs (auch wenn LLM sicher war)
     if PENDING_MODE == "always" and not _llm_unsicher and not pending_review_needed:
         _add_pending_tag(PENDING_QS_TAG, "PENDING_MODE=always")
+
+    if _needs_pending_htr_decision:
+        _add_pending_tag(PENDING_HTR_DECISION_TAG, "HTR-Entscheidung offen (Profil unsicher)")
 
     if tag_ids:
         patch["tags"] = list(dict.fromkeys(tag_ids))
