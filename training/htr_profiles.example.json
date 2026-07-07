@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "beschreibung": "HTR-Profil-Registry: Pipeline + Cropping. Referenziert von document_types.json und Korrespondenten-Overrides.",
+  "profile": {
+    "default": {
+      "pipeline": "default",
+      "crop_mode": "trim",
+      "dpi": 220,
+      "enhance": true
+    },
+    "schulbericht": {
+      "pipeline": "schulbericht",
+      "crop_mode": "horizontal",
+      "dpi": 220,
+      "horizontal_bands": [0.0, 0.34, 0.68, 1.0],
+      "band_padding_px": 12,
+      "enhance": true
+    },
+    "schulbericht_crop_strong": {
+      "pipeline": "schulbericht",
+      "crop_mode": "horizontal",
+      "dpi": 240,
+      "horizontal_bands": [0.0, 0.30, 0.65, 1.0],
+      "band_padding_px": 16,
+      "enhance": true
+    }
+  }
+}

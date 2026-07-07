@@ -34,6 +34,7 @@ FILES=(
   document_date.py
   schulbericht_vision.py
   handwriting_vision.py
+  image_crop.py
   htr_runner.py
   brillenpass_parser.py
   brillenpass_tsv.py
@@ -71,6 +72,18 @@ for f in "${FILES[@]}"; do
     chmod +x "$TARGET/$dest_name"
   fi
 done
+
+mkdir -p "$TARGET/training"
+HTR_EXAMPLE="$REPO_DIR/training/htr_profiles.example.json"
+HTR_DEST="$TARGET/training/htr_profiles.json"
+if [[ -f "$HTR_EXAMPLE" ]]; then
+  if [[ ! -f "$HTR_DEST" ]]; then
+    cp -v "$HTR_EXAMPLE" "$HTR_DEST"
+    echo "==> htr_profiles.json aus Example angelegt"
+  else
+    echo "==> htr_profiles.json existiert bereits — nicht überschrieben"
+  fi
+fi
 
 if [[ "$RESTART" -eq 1 ]] && systemctl is-active --quiet correspondent-manager 2>/dev/null; then
   echo "==> Restart correspondent-manager"
