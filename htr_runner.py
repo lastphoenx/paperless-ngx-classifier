@@ -105,7 +105,7 @@ def _remove_pending_htr_decision(document_id: int) -> None:
         if tag_id:
             doc = pc.paperless_get(f"/documents/{document_id}/")
             tags = [t for t in (doc.get("tags") or []) if t != tag_id]
-            pc.paperless_patch(f"/documents/{document_id}/", {"tags": tags})
+            pc.paperless_patch(document_id, {"tags": tags})
     except Exception as e:
         log.warning("pending_htr_decision Tag entfernen fehlgeschlagen: %s", e)
 
@@ -120,7 +120,9 @@ def reprocess_htr_document(
     from handwriting_vision import (  # noqa: WPS433
         HTR_ACTION_RUN,
         HtrPipelineDeps,
+        build_htr_content_append,
         decide_htr_action,
+        extract_htr_searchable_text,
         format_htr_note_summary,
         normalize_document_type_key,
         run_htr_pipeline,
@@ -187,6 +189,18 @@ def reprocess_htr_document(
         })
 
     note_body = format_htr_note_summary(htr_meta)
+    htr_text = extract_htr_searchable_text(htr_meta)
+    content_updated = False
+    if htr_text:
+        new_content = build_htr_content_append(ocr_text, htr_text)
+        content_updated = pc.paperless_patch(document_id, {"content": new_content})
+        if content_updated:
+            log.info("HTR-Text in Dokument-Content geschrieben (%d Zeichen)", len(htr_text))
+        else:
+            log.warning("HTR-Content-PATCH fehlgeschlagen für #%s", document_id)
+    else:
+        log.warning("HTR ohne durchsuchbaren Text für #%s", document_id)
+
     try:
         pc.paperless_post_note(document_id, note_body)
     except Exception as e:
@@ -200,7 +214,10 @@ def reprocess_htr_document(
         "document_id": document_id,
         "profile": resolution.profile_name,
         "confidence": conf,
-        "message": f"HTR ({resolution.profile_name}) abgeschlossen — Notiz am Dokument",
+        "message": (
+            f"HTR ({resolution.profile_name}) abgeschlossen — "
+            + ("Text in Dokument-Inhalt (durchsuchbar)" if content_updated else "Notiz am Dokument (Content-PATCH fehlgeschlagen)")
+        ),
         "htr_meta": htr_meta,
     }
 

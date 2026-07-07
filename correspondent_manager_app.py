@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.56"  # 2.56: HTR pending API, Korrespondenten HTR-Overrides
-UI_VERSION = "3.08"
+UI_VERSION = "3.09"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body

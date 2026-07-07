@@ -852,7 +852,7 @@
     <div class="view-header">
       <h2>Handschrift (HTR)</h2>
       <p style="color:var(--muted);font-size:13px;margin-top:4px">
-        Mehrstufige Handschrift-Erkennung für bestehende Dokumente — Ergebnis als Paperless-Notiz.
+        Mehrstufige Handschrift-Erkennung — Transkript wird in den <strong>durchsuchbaren Dokument-Inhalt</strong> geschrieben (Tab «Inhalt»), zusätzlich Kurznotiz.
       </p>
     </div>
     <div class="card" style="padding:16px 18px;margin-bottom:16px">
@@ -961,7 +961,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.08';
+const UI_VERSION = '3.09';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -5885,7 +5885,7 @@ async function _pollHtrTrigger(docId, statusEl) {
         continue;
       }
       if (j.status === 'done') {
-        const msg = j.message || 'HTR abgeschlossen — Paperless-Notiz prüfen';
+        const msg = j.message || 'HTR abgeschlossen — Inhalt-Tab prüfen (durchsuchbar)';
         if (statusEl) statusEl.textContent = msg;
         showToast(msg, 'success');
         return;

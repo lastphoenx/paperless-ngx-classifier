@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.69"  # 12.69: ensure_dok_id früh, sanitize null-safe, sanitize-Fehler nicht fatal
+POST_CONSUME_VERSION = "12.70"  # 12.70: HTR-Transkript in durchsuchbaren Document-Content
 import re
 import sys
 import json
@@ -71,7 +71,9 @@ from handwriting_vision import (
     HTR_ACTION_RUN,
     HtrPipelineDeps,
     audit_missed_correspondent_override,
+    build_htr_content_append,
     decide_htr_action,
+    extract_htr_searchable_text,
     normalize_document_type_key,
     run_htr_pipeline,
 )
@@ -4034,6 +4036,7 @@ def main():
     except Exception as e:
         log.warning("Dokument-Info Abruf fehlgeschlagen: %s", e)
         ocr_text = ""
+        ocr_text_full = ""
 
     if not ocr_text:
         log.warning("Kein OCR-Text — Vision-LLM arbeitet nur mit Bild")
@@ -4482,6 +4485,12 @@ def main():
 
     # ── Schritt 5: Paperless API Patch ───────────────────────────────────────
     patch = {}
+
+    # HTR-Transkript in durchsuchbaren Content (Paperless-Volltextsuche)
+    _htr_search = extract_htr_searchable_text(vision_meta)
+    if _htr_search:
+        patch["content"] = build_htr_content_append(ocr_text_full or ocr_text, _htr_search)
+        log.info("HTR in Document-Content: %d Zeichen", len(_htr_search))
 
     # Zentrale Permissions — verhindert "Private"-Anzeige für andere User
     patch.update(_default_permissions())
