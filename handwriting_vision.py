@@ -523,6 +523,72 @@ def run_htr_pipeline(
     return meta
 
 
+HTR_CONTENT_MARKER = "--- Handschrift (HTR) ---"
+
+
+def extract_htr_searchable_text(meta: dict) -> str:
+    """HTR-Ergebnis als Plain-Text für Paperless content (Volltextsuche)."""
+    if not meta:
+        return ""
+
+    sb = meta.get("_schulbericht") or {}
+    htr = meta.get("_htr") or sb.get("_htr") or {}
+
+    voll = (meta.get("htr_volltext") or htr.get("volltext") or "").strip()
+    if not voll:
+        lines = htr.get("handschrift_zeilen") or []
+        voll = "\n".join(str(x) for x in lines if x).strip()
+    if not voll:
+        printed = htr.get("gedruckt") or []
+        voll = "\n".join(str(x) for x in printed if x).strip()
+
+    parts: list[str] = []
+    vor = (sb.get("schueler_vorname") or "").strip()
+    nach = (sb.get("schueler_nachname") or "").strip()
+    name = f"{vor} {nach}".strip() or (meta.get("empfaenger") or "").strip()
+    if name:
+        parts.append(f"Schüler: {name}")
+    if sb.get("klasse"):
+        parts.append(f"Klasse: {sb['klasse']}")
+    if sb.get("semester_oder_zeitraum"):
+        parts.append(f"Zeitraum: {sb['semester_oder_zeitraum']}")
+    if sb.get("schule"):
+        parts.append(f"Schule: {sb['schule']}")
+    if sb.get("lehrperson"):
+        parts.append(f"Lehrperson: {sb['lehrperson']}")
+
+    ah = (sb.get("arbeits_haltung") or sb.get("arbeitshaltung") or "").strip()
+    leist = (sb.get("leistungen") or "").strip()
+    if ah:
+        parts.append(f"Arbeitshaltung: {ah}")
+    if leist:
+        parts.append(f"Leistungen: {leist}")
+
+    if voll:
+        if parts:
+            parts.append("")
+        parts.append(voll)
+    elif not parts and meta.get("besonderheiten"):
+        parts.append(str(meta["besonderheiten"]).strip())
+    elif not parts and meta.get("handschrift"):
+        parts.append(str(meta["handschrift"]).strip())
+
+    return "\n".join(parts).strip()
+
+
+def build_htr_content_append(existing: str, htr_text: str) -> str:
+    """HTR-Block an content anhängen (bei Re-Run alten Block ersetzen)."""
+    existing = (existing or "").strip()
+    htr_text = (htr_text or "").strip()
+    if not htr_text:
+        return existing
+    idx = existing.find(HTR_CONTENT_MARKER)
+    if idx >= 0:
+        existing = existing[:idx].rstrip()
+    block = f"{HTR_CONTENT_MARKER}\n{htr_text}"
+    return f"{existing}\n\n{block}".strip() if existing else block
+
+
 def format_htr_note_summary(meta: dict) -> str:
     """Kurzfassung für Paperless-Notiz nach nachträglicher HTR."""
     prof = meta.get("htr_profile") or meta.get("_schulbericht") and "schulbericht" or "?"
@@ -545,7 +611,14 @@ def format_htr_note_summary(meta: dict) -> str:
         voll = (meta["_htr"] or {}).get("volltext") or ""
     if not voll and meta.get("_schulbericht"):
         sb = meta["_schulbericht"] or {}
-        voll = sb.get("volltext") or sb.get("arbeitshaltung") or ""
+        htr = sb.get("_htr") or {}
+        voll = sb.get("volltext") or htr.get("volltext") or ""
+        if not voll:
+            ah = sb.get("arbeits_haltung") or sb.get("arbeitshaltung") or ""
+            leist = sb.get("leistungen") or ""
+            voll = "\n\n".join(x for x in (ah, leist) if x).strip()
+    if not voll and meta.get("handschrift"):
+        voll = str(meta["handschrift"]).strip()
     if voll:
         snippet = str(voll).strip()
         if len(snippet) > 2500:
