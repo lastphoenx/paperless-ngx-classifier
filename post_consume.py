@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.68"  # 12.68: HTR Hybrid (decide_htr_action, Crop-Varianten, pending_htr_decision)
+POST_CONSUME_VERSION = "12.69"  # 12.69: ensure_dok_id früh, sanitize null-safe, sanitize-Fehler nicht fatal
 import re
 import sys
 import json
@@ -1215,6 +1215,34 @@ def paperless_patch(document_id: int, payload: dict) -> bool:
         log.error("PATCH /api/documents/%s → %s %s", document_id, r.status_code, r.text[:300])
         return False
     return True
+
+
+def ensure_dok_id(document_id: int) -> bool:
+    """CF Dok-ID = Paperless document id — idempotent, andere Custom Fields bleiben erhalten."""
+    if not CF_DOK_ID or not document_id:
+        return False
+    try:
+        doc = paperless_get(f"/documents/{document_id}/")
+        if not doc:
+            log.warning("ensure_dok_id: Dokument #%s nicht lesbar", document_id)
+            return False
+        cfs = {
+            cf["field"]: cf["value"]
+            for cf in doc.get("custom_fields", [])
+            if cf.get("field") is not None
+        }
+        if cfs.get(CF_DOK_ID) == document_id:
+            return True
+        merged = [{"field": fid, "value": val} for fid, val in cfs.items() if fid != CF_DOK_ID]
+        merged.append({"field": CF_DOK_ID, "value": document_id})
+        ok = paperless_patch(document_id, {"custom_fields": merged})
+        if ok:
+            log.info("ensure_dok_id: CF Dok-ID=%s gesetzt", document_id)
+        return ok
+    except Exception as e:
+        log.warning("ensure_dok_id fehlgeschlagen (Dok #%s): %s", document_id, e)
+        return False
+
 
 def paperless_get_notes(document_id: int) -> list:
     """Gibt alle Notizen eines Dokuments zurück."""
@@ -2760,6 +2788,10 @@ def sanitize_decision(decision: dict, manifest: list[dict], similar_entries: lis
     """
     import copy
     decision = copy.deepcopy(decision)  # KRITISCH 1: nie original mutieren
+    # JSON-null vom LLM → leere Strings (sonst .get("key","") liefert None)
+    for _k in ("korrespondent", "titel", "dokumenttyp_semantisch", "ordner", "begruendung"):
+        if decision.get(_k) is None:
+            decision[_k] = ""
     violations = []
     ordner_liste = [e.get("pfad", "?") for e in manifest]
 
@@ -2810,8 +2842,11 @@ def sanitize_decision(decision: dict, manifest: list[dict], similar_entries: lis
             log.info("Sanitize: Tags verworfen (trivial, kein Downgrade): %s", removed - non_trivial_removed)
 
     # Tag-Ausschluss via tags.json
-    _pseudo_ocr    = " ".join(filter(None, [decision.get("korrespondent",""), decision.get("titel",""), decision.get("dokumenttyp_semantisch","")]))
-    _pseudo_vision = {"absender": decision.get("korrespondent",""), "dokumenttyp_visuell": decision.get("dokumenttyp_semantisch","")}
+    _pseudo_ocr    = " ".join(filter(None, [str(decision.get("korrespondent") or ""),
+                                          str(decision.get("titel") or ""),
+                                          str(decision.get("dokumenttyp_semantisch") or "")]))
+    _pseudo_vision = {"absender": str(decision.get("korrespondent") or ""),
+                      "dokumenttyp_visuell": str(decision.get("dokumenttyp_semantisch") or "")}
     clean_tags = _filter_excluded_tags(clean_tags, _pseudo_ocr, _pseudo_vision)
 
     # Confidence-Downgrade wenn Tags ausserhalb der Vorschläge
@@ -3961,6 +3996,9 @@ def main():
 
     document_id = int(DOCUMENT_ID)
 
+    # Dok-ID sofort setzen — unabhängig von LLM/Vision; überlebt Pipeline-Abbruch
+    ensure_dok_id(document_id)
+
     start_time = time.monotonic()
 
     # ── Manifest + Korrekturen laden ──────────────────────────────────────────
@@ -4361,7 +4399,16 @@ def main():
             log.info("Stufe 2: fix_tags hinzugefügt: %s", _corr_fix_tags_global)
 
     # ── Sanitization direkt nach LLM-Output ──────────────────────────────────
-    decision, had_violations = sanitize_decision(decision, manifest, similar_entries)
+    try:
+        decision, had_violations = sanitize_decision(decision, manifest, similar_entries)
+    except Exception as e:
+        log.error("sanitize_decision fehlgeschlagen — mit Roh-Decision weiter: %s", e, exc_info=True)
+        had_violations = True
+        for _k in ("korrespondent", "titel", "dokumenttyp_semantisch", "ordner", "begruendung"):
+            if decision.get(_k) is None:
+                decision[_k] = ""
+        if decision.get("confidence") not in ("hoch", "mittel", "tief"):
+            decision["confidence"] = "tief"
 
     # Beziehungsvorschlag aus LLM-Output extrahieren (Stufe 3 → pending_beziehungen)
     bez_vorschlag = decision.pop("beziehungs_vorschlag", None)
@@ -5569,6 +5616,11 @@ if __name__ == "__main__":
             _release_pipeline_lock(lock_fd)
     except Exception:
         log.critical("Unbehandelter Fehler:\n%s", traceback.format_exc())
+        if DOCUMENT_ID and PAPERLESS_TOKEN:
+            try:
+                ensure_dok_id(int(DOCUMENT_ID))
+            except Exception as _e:
+                log.warning("ensure_dok_id im Fehlerfall fehlgeschlagen: %s", _e)
     finally:
         # Prüfen ob wir der letzte sind BEVOR wir uns deregistrieren
         # remaining = alle anderen noch aktiven Prozesse (wir selbst ausgenommen)
