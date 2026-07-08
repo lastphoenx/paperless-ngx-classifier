@@ -12,10 +12,12 @@ from schulbericht_vision import (
     _analyze_pdf_pages,
     analyze_schulbericht_pdf,
     analyze_schulbericht_two_stage,
+    clean_htr_lines,
     estimate_htr_confidence,
     looks_like_schulbericht,
     merge_htr_transcribe_pages,
     pdf_page_count,
+    rebuild_htr_volltext,
     schulbericht_to_vision_meta,
 )
 
@@ -374,19 +376,19 @@ def default_htr_to_vision_meta(htr: dict) -> dict:
         return {}
     lines = htr.get("handschrift_zeilen") or []
     printed = htr.get("gedruckt") or []
-    handschrift = "\n".join(lines).strip()
+    handschrift = "\n".join(clean_htr_lines([str(x) for x in lines])).strip()
     if not handschrift:
-        handschrift = "\n".join(printed).strip()
+        handschrift = rebuild_htr_volltext(htr)
     meta: dict = {
         "htr_profile": "default",
         "htr_confidence": estimate_htr_confidence(htr),
-        "htr_volltext": htr.get("volltext"),
+        "htr_volltext": rebuild_htr_volltext(htr) or htr.get("volltext"),
         "_htr": htr,
     }
     if handschrift:
         meta["handschrift"] = handschrift[:4000]
-    if printed and not meta.get("handschrift"):
-        meta["handschrift"] = "\n".join(printed)[:4000]
+    elif printed:
+        meta["handschrift"] = "\n".join(clean_htr_lines([str(x) for x in printed]))[:4000]
     return meta
 
 
@@ -524,6 +526,15 @@ def run_htr_pipeline(
 
 
 HTR_CONTENT_MARKER = "--- Handschrift (HTR) ---"
+HTR_CONTENT_EXCERPT_MAX = 1800
+HTR_NOTE_FIELD_MAX = 600
+
+
+def _truncate(text: str, limit: int) -> str:
+    s = (text or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[:limit].rstrip() + "…"
 
 
 def extract_htr_searchable_text(meta: dict) -> str:
@@ -534,28 +545,21 @@ def extract_htr_searchable_text(meta: dict) -> str:
     sb = meta.get("_schulbericht") or {}
     htr = meta.get("_htr") or sb.get("_htr") or {}
 
-    voll = (meta.get("htr_volltext") or htr.get("volltext") or "").strip()
-    if not voll:
-        lines = htr.get("handschrift_zeilen") or []
-        voll = "\n".join(str(x) for x in lines if x).strip()
-    if not voll:
-        printed = htr.get("gedruckt") or []
-        voll = "\n".join(str(x) for x in printed if x).strip()
-
     parts: list[str] = []
-    vor = (sb.get("schueler_vorname") or "").strip()
-    nach = (sb.get("schueler_nachname") or "").strip()
+    vor = (sb.get("schueler_vorname") or meta.get("schueler_vorname") or "").strip()
+    nach = (sb.get("schueler_nachname") or meta.get("schueler_nachname") or "").strip()
     name = f"{vor} {nach}".strip() or (meta.get("empfaenger") or "").strip()
     if name:
         parts.append(f"Schüler: {name}")
-    if sb.get("klasse"):
-        parts.append(f"Klasse: {sb['klasse']}")
-    if sb.get("semester_oder_zeitraum"):
-        parts.append(f"Zeitraum: {sb['semester_oder_zeitraum']}")
-    if sb.get("schule"):
-        parts.append(f"Schule: {sb['schule']}")
-    if sb.get("lehrperson"):
-        parts.append(f"Lehrperson: {sb['lehrperson']}")
+    for key, label, src in [
+        ("klasse", "Klasse", sb),
+        ("semester_oder_zeitraum", "Zeitraum", sb),
+        ("schule", "Schule", sb),
+        ("lehrperson", "Lehrperson", sb),
+    ]:
+        val = (src.get(key) or meta.get(key) or "").strip()
+        if val:
+            parts.append(f"{label}: {val}")
 
     ah = (sb.get("arbeits_haltung") or sb.get("arbeitshaltung") or "").strip()
     leist = (sb.get("leistungen") or "").strip()
@@ -564,14 +568,26 @@ def extract_htr_searchable_text(meta: dict) -> str:
     if leist:
         parts.append(f"Leistungen: {leist}")
 
+    if sb:
+        hw_lines = clean_htr_lines([str(x) for x in (htr.get("handschrift_zeilen") or [])])
+        if not hw_lines and htr:
+            hw_lines = clean_htr_lines(rebuild_htr_volltext(htr).splitlines())
+        if hw_lines:
+            excerpt = _truncate("\n".join(hw_lines), HTR_CONTENT_EXCERPT_MAX)
+            if parts:
+                parts.append("")
+            parts.append(excerpt)
+        return "\n".join(parts).strip()
+
+    voll = rebuild_htr_volltext(htr) if htr else ""
+    if not voll:
+        voll = (meta.get("htr_volltext") or meta.get("handschrift") or "").strip()
     if voll:
         if parts:
             parts.append("")
-        parts.append(voll)
+        parts.append(_truncate(voll, HTR_CONTENT_EXCERPT_MAX))
     elif not parts and meta.get("besonderheiten"):
         parts.append(str(meta["besonderheiten"]).strip())
-    elif not parts and meta.get("handschrift"):
-        parts.append(str(meta["handschrift"]).strip())
 
     return "\n".join(parts).strip()
 
@@ -590,39 +606,40 @@ def build_htr_content_append(existing: str, htr_text: str) -> str:
 
 
 def format_htr_note_summary(meta: dict) -> str:
-    """Kurzfassung für Paperless-Notiz nach nachträglicher HTR."""
-    prof = meta.get("htr_profile") or meta.get("_schulbericht") and "schulbericht" or "?"
+    """Kurzfassung für Paperless-Notiz — ohne Rohtranskript-Dump."""
+    sb = meta.get("_schulbericht") or {}
+    prof = meta.get("htr_profile") or ("schulbericht" if sb else "?")
     lines = [f"[paper.manager HTR — Profil: {prof}]"]
-    if meta.get("htr_confidence") is not None:
-        lines.append(f"Confidence: {meta['htr_confidence']}")
-    if meta.get("schulbericht_confidence") is not None:
-        lines.append(f"Confidence: {meta['schulbericht_confidence']}")
+
+    conf = meta.get("schulbericht_confidence")
+    if conf is None:
+        conf = meta.get("htr_confidence")
+    if conf is not None:
+        lines.append(f"Confidence: {conf}")
+
+    field_src = {**meta, **sb}
     for key, label in [
         ("schueler_vorname", "Vorname"),
         ("schueler_nachname", "Nachname"),
         ("klasse", "Klasse"),
+        ("semester_oder_zeitraum", "Zeitraum"),
         ("schule", "Schule"),
         ("lehrperson", "Lehrperson"),
     ]:
-        if meta.get(key):
-            lines.append(f"{label}: {meta[key]}")
-    voll = meta.get("htr_volltext") or ""
-    if not voll and meta.get("_htr"):
-        voll = (meta["_htr"] or {}).get("volltext") or ""
-    if not voll and meta.get("_schulbericht"):
-        sb = meta["_schulbericht"] or {}
-        htr = sb.get("_htr") or {}
-        voll = sb.get("volltext") or htr.get("volltext") or ""
-        if not voll:
-            ah = sb.get("arbeits_haltung") or sb.get("arbeitshaltung") or ""
-            leist = sb.get("leistungen") or ""
-            voll = "\n\n".join(x for x in (ah, leist) if x).strip()
-    if not voll and meta.get("handschrift"):
-        voll = str(meta["handschrift"]).strip()
-    if voll:
-        snippet = str(voll).strip()
-        if len(snippet) > 2500:
-            snippet = snippet[:2500] + "\n…"
-        lines.append("")
-        lines.append(snippet)
+        val = field_src.get(key)
+        if val and str(val).strip():
+            lines.append(f"{label}: {str(val).strip()}")
+
+    ah = (sb.get("arbeits_haltung") or sb.get("arbeitshaltung") or "").strip()
+    leist = (sb.get("leistungen") or "").strip()
+    if ah:
+        lines.append(f"Arbeitshaltung: {_truncate(ah, HTR_NOTE_FIELD_MAX)}")
+    if leist:
+        lines.append(f"Leistungen: {_truncate(leist, HTR_NOTE_FIELD_MAX)}")
+
+    if sb:
+        lines.append("Volltext-Auszug: Dokument-Inhalt (--- Handschrift ---)")
+    elif meta.get("handschrift"):
+        lines.append(f"Transkript: {_truncate(str(meta['handschrift']), HTR_NOTE_FIELD_MAX)}")
+
     return "\n".join(lines)

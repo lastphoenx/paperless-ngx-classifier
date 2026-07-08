@@ -69,6 +69,78 @@ def _clean_quality_note(val: object) -> str | None:
     return s
 
 
+_HTR_JSON_KEY_LINES = frozenset({
+    "handschrift_zeilen", "gedruckt", "qualitaet", "confidence",
+    "quality_note", "seite", "volltext", "unsichere_woerter",
+})
+_HTR_BOILERPLATE_FRAGMENTS = (
+    "der beförderungsentscheid ist im zeugnis eingetragen",
+    "dieser bericht ist der lehrerschaft",
+    "eingesehen durch die eltern",
+    "unterzeichnet zurückzugeben",
+    "zur persönlichen besprechung gerne zur verfügung",
+)
+
+
+def _normalize_htr_line_key(line: str) -> str:
+    return re.sub(r"\s+", " ", str(line or "").strip().lower())
+
+
+def is_htr_junk_line(line: str) -> bool:
+    """Modell-Artefakte, JSON-Keys und leere Platzhalter-Zeilen."""
+    s = str(line or "").strip()
+    if not s:
+        return True
+    if re.fullmatch(r"[\.\…·]+", s):
+        return True
+    if s.lower() in _HTR_JSON_KEY_LINES:
+        return True
+    if re.fullmatch(r"(?i)schulbericht", s):
+        return True
+    if re.fullmatch(r"(?i)(arbeitshaltung|leistungen):?", s):
+        return True
+    if re.fullmatch(r"SEITE \d+ von \d+\.?", s, re.I):
+        return True
+    if len(s) <= 2 and not s.isdigit():
+        return True
+    return False
+
+
+def is_htr_boilerplate_line(line: str) -> bool:
+    low = _normalize_htr_line_key(line)
+    return any(frag in low for frag in _HTR_BOILERPLATE_FRAGMENTS)
+
+
+def clean_htr_lines(
+    lines: list[str],
+    *,
+    dedupe: bool = True,
+    drop_boilerplate: bool = True,
+) -> list[str]:
+    """Zeilen filtern und optional deduplizieren (Band-/Seiten-Overlap)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in lines:
+        s = str(raw or "").strip()
+        if is_htr_junk_line(s):
+            continue
+        if drop_boilerplate and is_htr_boilerplate_line(s):
+            continue
+        key = _normalize_htr_line_key(s)
+        if dedupe and key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def rebuild_htr_volltext(htr: dict) -> str:
+    """Bereinigter Volltext aus gedruckt + handschrift_zeilen."""
+    printed = clean_htr_lines([str(x) for x in (htr.get("gedruckt") or [])])
+    hw = clean_htr_lines([str(x) for x in (htr.get("handschrift_zeilen") or [])])
+    return "\n".join([*printed, *hw]).strip()
+
+
 def build_schulbericht_vision_prompt(
     ocr_text: str,
     page: int = 1,
@@ -122,12 +194,13 @@ def build_htr_transcribe_prompt(page: int = 1, page_total: int = 1) -> str:
         "- Trenne gedruckten Text und handschriftlichen Text.\n"
         "- KEINE separate Wortliste — Unsicherheit nur als [?] im Fliesstext.\n"
         "- Setze \"quality_note\" auf null, wenn du keinen konkreten Hinweis hast.\n"
-        "- Schreibe niemals Platzhalter wie \"kurzer Hinweis\".\n\n"
+        "- Schreibe niemals Platzhalter wie \"kurzer Hinweis\" oder nur \"...\" als Zeile.\n"
+        "- Schreibe keine JSON-Feldnamen (z.B. handschrift_zeilen) als Textzeile.\n\n"
         "Antworte exakt als JSON (kompakt, keine langen Listen am Ende):\n"
         "{\n"
         f'  "seite": {page},\n'
-        '  "gedruckt": ["..."],\n'
-        '  "handschrift_zeilen": ["eine Zeile pro Array-Eintrag"],\n'
+        '  "gedruckt": ["gedruckte Zeile"],\n'
+        '  "handschrift_zeilen": ["eine Handschrift-Zeile"],\n'
         '  "qualitaet": "gut|mittel|schlecht",\n'
         '  "confidence": 0.0,\n'
         '  "quality_note": null\n'
@@ -297,6 +370,8 @@ def merge_htr_transcribe_pages(
         u = p.get("quality_note")
         if u and not _nullish(u):
             notes.append(str(u).strip())
+    printed = clean_htr_lines(printed)
+    lines = clean_htr_lines(lines)
     volltext = "\n".join([*printed, *lines])
     total = pages_total if pages_total is not None else len(pages)
     ok = len(pages)
@@ -554,7 +629,8 @@ def analyze_schulbericht_two_stage(
         resolution.variants = variants
     total = pdf_page_count(pdf_path)
     htr = merge_htr_transcribe_pages(pages, pages_total=total)
-    transcript = (htr.get("volltext") or "").strip()
+    transcript = rebuild_htr_volltext(htr)
+    htr["volltext"] = transcript
     if not transcript:
         log.warning("Schulbericht-HTR: leere Transkription")
         return {}
