@@ -437,7 +437,7 @@ curl -s http://OLLAMA_IP:11434/api/tags | python3 -m json.tool | grep name
 docker compose logs -f webserver | grep "post_consume\|pre_consume"
 
 # paper.manager UI öffnen:
-# http://SERVER_IP:8100
+# http://SERVER_IP:8100  oder  https://paperless.example.com/corr-manager/
 ```
 
 ---

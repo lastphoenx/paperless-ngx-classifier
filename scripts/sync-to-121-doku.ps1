@@ -123,6 +123,10 @@ Write-Host "Doku:" -ForegroundColor Yellow
     @{ Src = "README.de.md";       Dst = "README.de.md" },
     @{ Src = "INSTALL.md";          Dst = "INSTALL.md" },
     @{ Src = "docs\Benutzerhandbuch_paper_manager.md"; Dst = "Benutzerhandbuch_paper_manager.md" },
+    @{ Src = "docs\Bedienungsanleitung_paper_manager.doc"; Dst = "Bedienungsanleitung_paper_manager.doc" },
+    @{ Src = "docs\Bedienungsanleitung_paper_manager.docx"; Dst = "Bedienungsanleitung_paper_manager.docx" },
+    @{ Src = "docs\DEVELOPER.md"; Dst = "DEVELOPER.md" },
+    @{ Src = "docs\VERSIONING.md"; Dst = "VERSIONING.md" },
     @{ Src = "docs\LEGACY_MIGRATION_PLAN.md"; Dst = "LEGACY_MIGRATION_PLAN.md" },
     @{ Src = "docs\LEGACY_IMPORT.md";         Dst = "LEGACY_IMPORT.md" },
     @{ Src = "docs\UPGRADE_V3.md";            Dst = "UPGRADE_V3.md" }

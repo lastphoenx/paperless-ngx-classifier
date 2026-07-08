@@ -34,6 +34,9 @@ post_consume.py       — Haupt-Pipeline (läuft nach jedem erfolgreichen Scan)
   ├─ Vision LLM       — Analysiert Dokument als Bild: Absender, Datum, Betrag,
   │                     Kennzeichen, handschriftliche Notizen ("bez. 6.2.26" → bezahlt)
   │                     Haushaltkontext injiziert: Mitglieder (nie Absender) + Arbeitgeber
+  ├─ HTR (optional)   — Mehrstufige Handschrift-Transkription (Schulberichte etc.):
+  │                     Profil-Routing → zeilengetreu → Content-Block durchsuchbar
+  │                     Strategie D: Metadaten S.1 + Transkript pro Seite
   ├─ RAG              — Embeddings (bge-m3) gleichen Dokument mit bekannten Ordnern ab
   ├─ LLM              — Klassifiziert Dokumenttyp, Tags, Speicherpfad
   ├─ Sanitiser        — Validiert gegen Manifest, Ausschluss-Keywords
@@ -76,9 +79,11 @@ Jedes Dokument wird von einem multimodalen LLM (`qwen2.5vl`) als **Bild** analys
 
 ### Handschrifterkennung
 
-Jemand schreibt `bez. 6.2.26` in die obere rechte Ecke bezahlter Rechnungen. Das Vision-Modell liest es, `parse_handschrift_bezahlt()` extrahiert das Datum, und Paperless erhält:
+**Kurznotiz «bezahlt»:** Jemand schreibt `bez. 6.2.26` in die obere rechte Ecke bezahlter Rechnungen. Das Vision-Modell liest es, `parse_handschrift_bezahlt()` extrahiert das Datum, und Paperless erhält:
 - Benutzerdefiniertes Feld `Status` → `Bezahlt`
 - Benutzerdefiniertes Feld `Bezahlt am` → `2026-02-06`
+
+**Mehrstufige HTR:** Für längere Handschrift (Schulberichte, Arztberichte) entscheidet `decide_htr_action()` nach der Baseline-Vision, ob sofort transkribiert wird (`run_now`), verschoben (`defer` → Tag `pending_htr_decision`) oder übersprungen wird. Profile in `training/htr_profiles.json`, Routing pro Dokumenttyp (`htr_profile`). Schulberichte: Extract nur aus Seite 1, Content **Strategie D** ersetzt OCR. Nachträglich: Tab **✍ Handschrift** oder `htr_runner.py`.
 
 Das ermöglicht einen starken Anwendungsfall: In Paperless nach `Bezahlt am = 2026-02-06` suchen und mit dem E-Banking-Auszug dieses Tages abgleichen.
 
@@ -147,12 +152,13 @@ Pro Dokumenttyp kann ein **Feldprofil** festlegen, welche Custom Fields extrahie
 
 Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Korrespondenten-Review** — unbekannte Absender bestätigen, ablehnen oder zusammenführen; **Kürzel** bereits beim Freigeben neuer Korrespondenten; Ablehnen leitet betroffene Dokumente in die Document-Review
-- **Dokument-Review** — 30/70-Layout mit grosser Vorschau, KI-Felder, Tags als Multiselect (bei «Neu klassifizieren» werden Tags **ersetzt**, nicht gemerged), Korrespondenten-Dropdown nur freigegebene Einträge (ohne pending-NEU)
-- **Dokumenttypen** — Synonyme und Ausschluss-Keywords verwalten
+- **Dokument-Review** — 30/70-Layout mit grosser Vorschau, KI-Felder, **editierbarer Titel** und **Belegdatum** (`tt.mm.jjjj` → Paperless `created`), Tags als Multiselect (bei «Neu klassifizieren» werden Tags **ersetzt**, nicht gemerged), Korrespondenten-Dropdown nur freigegebene Einträge (ohne pending-NEU)
+- **Dokumenttypen** — Synonyme, Ausschluss-Keywords und **Handschrift (HTR)**-Profil pro Typ
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
 - **Familie** — Personen, Fahrzeuge, Haushaltsname (keine Hardcodierung im Code); Beziehungsübersicht über alle Korrespondenten
 - **Brillenpass** — Optiker-Dokumente (Rechnung, Pass-Karte, Verordnung): Auto-Parser pro Vendor, Review-Queue, versioniert in `brillenpaesse.json`, Perioden-Dedup
+- **Handschrift (HTR)** — Nachträgliche Transkription, Profil wählen, Status-Polling (`/api/htr/*`)
 - **Legacy QR-Split** — Mehrseiten-NAS-Scans nachträglich an Metadaten-QR splitten → `consume/` → volle Pipeline
 
 **Brillenpass-Workflow:** Korrespondent mit `brillenpass.aktiv` + `vendor` (z. B. `mcoptic`) + eindeutige Person → Pipeline erkennt Format (A4 vs. Karte) → `pending_brillenpass.jsonl` → Tab **Brillenpass** → Freigabe in `brillenpaesse.json` (Dedup wenn Rechnung+Pass innerhalb 21 Tage).
@@ -283,6 +289,10 @@ Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VE
 | `brillenpass_parser.py` | Brillenpass-Parser-Registry, Auto-Detect, Dedup |
 | `brillenpass_runner.py` | Nachträgliche Brillenpass-Verarbeitung (CLI/API) |
 | `legacy_split_by_qr.py` | Legacy QR-Metadaten-Split → consume/ |
+| `handwriting_vision.py` | HTR Profil-Routing, Pre-Resolution, Content Strategie D |
+| `htr_runner.py` | Nachträgliche HTR (CLI + API-Jobs) |
+| `image_crop.py` | PDF-Render, Trim/Crop für HTR |
+| `schulbericht_vision.py` | Schulbericht HTR + Extract, Zeilenbereinigung |
 | `legacy_qr_scan_worker.py` | Subprocess-QR-Scan für paper.manager |
 | `scripts/legacy_qr_split_test.py` | CLI-Test auf CT121 |
 | `scripts/repair_brillenpaesse.py` | `messung` aus diagnose nachziehen |
@@ -305,7 +315,7 @@ Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VE
 
 ## paper.manager UI
 
-Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
+Verfügbar unter `http://SERVER_IP:8100` oder per Reverse-Proxy z. B. `https://paperless.example.com/corr-manager/` (Pfad mit Bindestrich).
 
 | Tab | Funktion |
 |---|---|
@@ -319,6 +329,7 @@ Verfügbar unter `http://SERVER_IP:8100` nach der Installation.
 | Familie | Haushaltsname, Personen, Fahrzeuge; Beziehungsübersicht über alle Korrespondenten |
 | Legacy QR-Split | Mehrseiten-Scan per Dok-ID an QR splitten → consume/ → volle Pipeline |
 | Brillenpass | Optiker-Dokumente → Auto-Parser → Review → versionierter Pass pro Person |
+| Handschrift | HTR nachträglich starten, Profil wählen, Pipeline-Erklärung |
 
 ---
 
