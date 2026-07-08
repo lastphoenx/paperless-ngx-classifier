@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.73"  # 12.73: HTR Seiten-Content Formularzeilen/Duplikate filtern
+POST_CONSUME_VERSION = "12.72"  # 12.72: Schulbericht Content-Strategie D (Metadaten S.1 + Seitentranskript)
 import re
 import sys
 import json
