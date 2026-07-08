@@ -12,6 +12,7 @@ from schulbericht_vision import (
     _analyze_pdf_pages,
     analyze_schulbericht_pdf,
     analyze_schulbericht_two_stage,
+    build_page_marked_transcript,
     clean_htr_lines,
     estimate_htr_confidence,
     looks_like_schulbericht,
@@ -530,6 +531,15 @@ HTR_CONTENT_EXCERPT_MAX = 1800
 HTR_NOTE_FIELD_MAX = 600
 
 
+def is_schulbericht_htr_meta(meta: dict | None) -> bool:
+    if not meta:
+        return False
+    if meta.get("_schulbericht"):
+        return True
+    prof = str(meta.get("htr_profile") or "").lower()
+    return prof.startswith("schulbericht")
+
+
 def _truncate(text: str, limit: int) -> str:
     s = (text or "").strip()
     if len(s) <= limit:
@@ -538,7 +548,7 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def extract_htr_searchable_text(meta: dict) -> str:
-    """HTR-Ergebnis als Plain-Text für Paperless content (Volltextsuche)."""
+    """HTR-Ergebnis als Plain-Text für Paperless content (Strategie D bei Schulbericht)."""
     if not meta:
         return ""
 
@@ -561,22 +571,17 @@ def extract_htr_searchable_text(meta: dict) -> str:
         if val:
             parts.append(f"{label}: {val}")
 
-    ah = (sb.get("arbeits_haltung") or sb.get("arbeitshaltung") or "").strip()
-    leist = (sb.get("leistungen") or "").strip()
-    if ah:
-        parts.append(f"Arbeitshaltung: {ah}")
-    if leist:
-        parts.append(f"Leistungen: {leist}")
-
     if sb:
-        hw_lines = clean_htr_lines([str(x) for x in (htr.get("handschrift_zeilen") or [])])
-        if not hw_lines and htr:
-            hw_lines = clean_htr_lines(rebuild_htr_volltext(htr).splitlines())
-        if hw_lines:
-            excerpt = _truncate("\n".join(hw_lines), HTR_CONTENT_EXCERPT_MAX)
+        seiten_texte = htr.get("seiten_texte") or []
+        marked = build_page_marked_transcript(seiten_texte)
+        if not marked:
+            hw_lines = clean_htr_lines([str(x) for x in (htr.get("handschrift_zeilen") or [])])
+            if hw_lines:
+                marked = _truncate("\n".join(hw_lines), HTR_CONTENT_EXCERPT_MAX)
+        if marked:
             if parts:
                 parts.append("")
-            parts.append(excerpt)
+            parts.append(marked)
         return "\n".join(parts).strip()
 
     voll = rebuild_htr_volltext(htr) if htr else ""
@@ -592,8 +597,13 @@ def extract_htr_searchable_text(meta: dict) -> str:
     return "\n".join(parts).strip()
 
 
-def build_htr_content_append(existing: str, htr_text: str) -> str:
-    """HTR-Block an content anhängen (bei Re-Run alten Block ersetzen)."""
+def build_htr_content_append(
+    existing: str,
+    htr_text: str,
+    *,
+    drop_ocr: bool = False,
+) -> str:
+    """HTR-Block schreiben; bei Schulbericht OCR weglassen (nur HTR-Content)."""
     existing = (existing or "").strip()
     htr_text = (htr_text or "").strip()
     if not htr_text:
@@ -601,8 +611,10 @@ def build_htr_content_append(existing: str, htr_text: str) -> str:
     idx = existing.find(HTR_CONTENT_MARKER)
     if idx >= 0:
         existing = existing[:idx].rstrip()
+    if drop_ocr:
+        existing = ""
     block = f"{HTR_CONTENT_MARKER}\n{htr_text}"
-    return f"{existing}\n\n{block}".strip() if existing else block
+    return block if not existing else f"{existing}\n\n{block}".strip()
 
 
 def format_htr_note_summary(meta: dict) -> str:
@@ -638,7 +650,7 @@ def format_htr_note_summary(meta: dict) -> str:
         lines.append(f"Leistungen: {_truncate(leist, HTR_NOTE_FIELD_MAX)}")
 
     if sb:
-        lines.append("Volltext-Auszug: Dokument-Inhalt (--- Handschrift ---)")
+        lines.append("Transkript: seitenweise im Dokument-Inhalt")
     elif meta.get("handschrift"):
         lines.append(f"Transkript: {_truncate(str(meta['handschrift']), HTR_NOTE_FIELD_MAX)}")
 

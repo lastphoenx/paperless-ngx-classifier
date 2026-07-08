@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.71"  # 12.71: HTR-Ausgabe bereinigt (kein Rohtranskript-Dump)
+POST_CONSUME_VERSION = "12.72"  # 12.72: Schulbericht Content-Strategie D (Metadaten S.1 + Seitentranskript)
 import re
 import sys
 import json
@@ -74,6 +74,7 @@ from handwriting_vision import (
     build_htr_content_append,
     decide_htr_action,
     extract_htr_searchable_text,
+    is_schulbericht_htr_meta,
     normalize_document_type_key,
     run_htr_pipeline,
 )
@@ -4489,7 +4490,11 @@ def main():
     # HTR-Transkript in durchsuchbaren Content (Paperless-Volltextsuche)
     _htr_search = extract_htr_searchable_text(vision_meta)
     if _htr_search:
-        patch["content"] = build_htr_content_append(ocr_text_full or ocr_text, _htr_search)
+        patch["content"] = build_htr_content_append(
+            ocr_text_full or ocr_text,
+            _htr_search,
+            drop_ocr=is_schulbericht_htr_meta(vision_meta),
+        )
         log.info("HTR in Document-Content: %d Zeichen", len(_htr_search))
 
     # Zentrale Permissions — verhindert "Private"-Anzeige für andere User

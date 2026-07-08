@@ -79,7 +79,13 @@ _HTR_BOILERPLATE_FRAGMENTS = (
     "eingesehen durch die eltern",
     "unterzeichnet zurückzugeben",
     "zur persönlichen besprechung gerne zur verfügung",
+    "einges ihren",
+    "einges ihrer",
 )
+
+HTR_PAGE_MARKER = "--- Seite {n} ---"
+HTR_EXTRACT_PAGE1_MAX_LINES = 45
+HTR_CONTENT_MAX_PER_PAGE = 3500
 
 
 def _normalize_htr_line_key(line: str) -> str:
@@ -100,6 +106,12 @@ def is_htr_junk_line(line: str) -> bool:
     if re.fullmatch(r"(?i)(arbeitshaltung|leistungen):?", s):
         return True
     if re.fullmatch(r"SEITE \d+ von \d+\.?", s, re.I):
+        return True
+    if re.fullmatch(r"(?i)schuljahr:?", s):
+        return True
+    if re.fullmatch(r"(?i)(einges\s+ihrer|einges\s+ihren|die:?|le:?)$", s):
+        return True
+    if re.match(r"(?i)^für\s+\w{1,12}$", s) and len(s) < 18:
         return True
     if len(s) <= 2 and not s.isdigit():
         return True
@@ -136,9 +148,63 @@ def clean_htr_lines(
 
 def rebuild_htr_volltext(htr: dict) -> str:
     """Bereinigter Volltext aus gedruckt + handschrift_zeilen."""
+    seiten = htr.get("seiten_texte")
+    if seiten:
+        return "\n\n".join(t for t in seiten if str(t).strip()).strip()
     printed = clean_htr_lines([str(x) for x in (htr.get("gedruckt") or [])])
     hw = clean_htr_lines([str(x) for x in (htr.get("handschrift_zeilen") or [])])
     return "\n".join([*printed, *hw]).strip()
+
+
+def _page_lines_from_htr_page(page: dict) -> tuple[list[str], list[str]]:
+    page = normalize_htr_page(page)
+    printed: list[str] = []
+    lines: list[str] = []
+    for item in page.get("gedruckt") or []:
+        if item and str(item).strip():
+            printed.append(str(item).strip())
+    for item in page.get("handschrift_zeilen") or []:
+        if item and str(item).strip():
+            lines.append(str(item).strip())
+    return printed, lines
+
+
+def _seite_text_from_page(page: dict) -> str:
+    printed, lines = _page_lines_from_htr_page(page)
+    printed = clean_htr_lines(printed)
+    lines = clean_htr_lines(lines)
+    return "\n".join([*printed, *lines]).strip()
+
+
+def build_page_marked_transcript(
+    seiten_texte: list[str],
+    *,
+    max_chars_per_page: int = HTR_CONTENT_MAX_PER_PAGE,
+) -> str:
+    """Mehrseitiges Transkript mit Seitentrennern."""
+    parts: list[str] = []
+    for i, text in enumerate(seiten_texte, 1):
+        body = str(text or "").strip()
+        if not body:
+            continue
+        if len(body) > max_chars_per_page:
+            body = body[:max_chars_per_page].rstrip() + "…"
+        parts.append(HTR_PAGE_MARKER.format(n=i))
+        parts.append(body)
+    return "\n\n".join(parts).strip()
+
+
+def transcript_for_metadata_extract(
+    seiten_texte: list[str],
+    *,
+    max_lines: int = HTR_EXTRACT_PAGE1_MAX_LINES,
+) -> str:
+    """Extract-Stufe nur aus Seite 1 (oder erste nicht-leere Seite)."""
+    for text in seiten_texte:
+        if not str(text or "").strip():
+            continue
+        return "\n".join(str(text).splitlines()[:max_lines]).strip()
+    return ""
 
 
 def build_schulbericht_vision_prompt(
@@ -212,6 +278,8 @@ def build_extract_from_transcript_prompt(transcript: str) -> str:
     return (
         "Extrahiere aus dieser zeilengetreuen Transkription eines Schulberichts "
         "die folgenden Felder. Nutze nur den gegebenen Text. Erfinde nichts.\n"
+        "Es handelt sich um den Kopfbereich / die erste Seite — nur Felder übernehmen, "
+        "die dort vorkommen.\n"
         "Korrigiere KEINE Tippfehler aus der Transkription — zitiere wörtlich.\n"
         "Wenn ein Feld im Text nicht vorkommt: null.\n\n"
         "Antworte als JSON:\n"
@@ -350,29 +418,28 @@ def merge_htr_transcribe_pages(
     *,
     pages_total: int | None = None,
 ) -> dict:
-    """Nur Zeilen mergen — keine Feld-Fusion aus Einzelseiten."""
+    """Zeilen mergen; pro Seite Text in seiten_texte für Content-Strategie D."""
     if not pages:
         return {}
     printed: list[str] = []
     lines: list[str] = []
+    seiten_texte: list[str] = []
     notes: list[str] = []
     salvaged = 0
     for p in pages:
         p = normalize_htr_page(p)
         if p.get("_salvaged"):
             salvaged += 1
-        for item in p.get("gedruckt") or []:
-            if item and str(item).strip():
-                printed.append(str(item).strip())
-        for item in p.get("handschrift_zeilen") or []:
-            if item and str(item).strip():
-                lines.append(str(item).strip())
+        seiten_texte.append(_seite_text_from_page(p))
+        page_p, page_l = _page_lines_from_htr_page(p)
+        printed.extend(page_p)
+        lines.extend(page_l)
         u = p.get("quality_note")
         if u and not _nullish(u):
             notes.append(str(u).strip())
     printed = clean_htr_lines(printed)
     lines = clean_htr_lines(lines)
-    volltext = "\n".join([*printed, *lines])
+    volltext = build_page_marked_transcript(seiten_texte) or "\n".join([*printed, *lines])
     total = pages_total if pages_total is not None else len(pages)
     ok = len(pages)
     model_confidences = [
@@ -382,6 +449,7 @@ def merge_htr_transcribe_pages(
     return {
         "gedruckt": printed,
         "handschrift_zeilen": lines,
+        "seiten_texte": seiten_texte,
         "quality_note": "; ".join(notes) if notes else None,
         "volltext": volltext,
         "seiten_anzahl": ok,
@@ -629,6 +697,7 @@ def analyze_schulbericht_two_stage(
         resolution.variants = variants
     total = pdf_page_count(pdf_path)
     htr = merge_htr_transcribe_pages(pages, pages_total=total)
+    seiten_texte = htr.get("seiten_texte") or []
     transcript = rebuild_htr_volltext(htr)
     htr["volltext"] = transcript
     if not transcript:
@@ -636,9 +705,17 @@ def analyze_schulbericht_two_stage(
         return {}
 
     htr_conf = estimate_htr_confidence(htr)
-    log.info("HTR merged: %d Zeilen, confidence=%.2f", len(htr.get("handschrift_zeilen") or []), htr_conf)
+    log.info(
+        "HTR merged: %d Seite(n), %d Zeilen gesamt, confidence=%.2f",
+        len(seiten_texte),
+        len(htr.get("handschrift_zeilen") or []),
+        htr_conf,
+    )
 
-    extracted = extract_from_text(transcript)
+    extract_input = transcript_for_metadata_extract(seiten_texte)
+    if not extract_input:
+        extract_input = transcript[:3000]
+    extracted = extract_from_text(extract_input)
     if not extracted:
         log.warning("Schulbericht-Extract: leeres JSON")
         return {}
