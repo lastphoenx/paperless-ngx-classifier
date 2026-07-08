@@ -111,11 +111,7 @@ def is_htr_junk_line(line: str) -> bool:
         return True
     if re.fullmatch(r"(?i)(einges\s+ihrer|einges\s+ihren|die:?|le:?)$", s):
         return True
-    if re.match(r"(?i)^für\s+\w", s) and len(s) < 28 and not re.search(r"(?i)schuljahr", s):
-        # «für Thomas Sa», «für Thomas» — Formular-Kopf, kein Fliesstext
-        if re.match(r"(?i)^für\s+[\wäöüÄÖÜß\-]+(\s+[\wäöüÄÖÜß\-]{1,4})?\.?$", s):
-            return True
-    if re.fullmatch(r"\d{3,6}", s):
+    if re.match(r"(?i)^für\s+\w{1,12}$", s) and len(s) < 18:
         return True
     if len(s) <= 2 and not s.isdigit():
         return True
@@ -150,126 +146,6 @@ def clean_htr_lines(
     return out
 
 
-_CONTENT_LABEL_PREFIX = re.compile(r"(?i)^(?:arbeitshaltung|leistungen)\s*:")
-_CONTENT_INLINE_LABEL = re.compile(r"(?i)\s+(?:arbeitshaltung|leistungen)\s*:")
-_RE_FORM_HEADER = re.compile(
-    r"(?i)^(?:für\s+.+\s+)?schuljahr\s+[\d/\-]+"
-)
-_RE_DATE_ONLY = re.compile(
-    r"(?i)^den\s+\d{1,2}\.\s*[\wäöüÄÖÜß?]+\.?\s+\d{2,4}\s*$"
-)
-_RE_LEHRPERSON_LINE = re.compile(r"(?i)^lehrperson\s*:")
-
-
-def sanitize_htr_content_line(line: str) -> str | None:
-    """Einzelne Zeile für Seiten-Content (ohne Formularfelder Arbeitshaltung/Leistungen)."""
-    s = str(line or "").strip()
-    if not s or is_htr_junk_line(s):
-        return None
-    if _CONTENT_LABEL_PREFIX.match(s):
-        return None
-    if _RE_FORM_HEADER.match(s) or _RE_LEHRPERSON_LINE.match(s) or _RE_DATE_ONLY.match(s):
-        return None
-    m = _CONTENT_INLINE_LABEL.search(s)
-    if m:
-        s = s[: m.start()].strip()
-        if len(s) < 12:
-            return None
-    return s or None
-
-
-def clean_htr_page_body(lines: list[str]) -> list[str]:
-    """Zeilen für Strategie-D-Seitentranskript filtern und deduplizieren."""
-    cleaned: list[str] = []
-    for raw in lines:
-        s = sanitize_htr_content_line(raw)
-        if s:
-            cleaned.append(s)
-    return clean_htr_lines(cleaned)
-
-
-def dedupe_repeated_text_block(text: str) -> str:
-    """Band-Overlap: gleicher Absatz zweimal hintereinander ohne Leerzeile."""
-    t = (text or "").strip()
-    if len(t) < 100:
-        return t
-    norm = _normalize_htr_line_key(t)
-    for split in range(int(len(t) * 0.38), int(len(t) * 0.62)):
-        left = _normalize_htr_line_key(t[:split])
-        right = _normalize_htr_line_key(t[split:].lstrip())
-        if len(left) < 50:
-            continue
-        if left == right or (len(left) > 80 and left in right):
-            return t[:split].strip()
-    return t
-
-
-def dedupe_text_paragraphs(text: str) -> str:
-    """Absätze innerhalb einer Seite deduplizieren."""
-    t = dedupe_repeated_text_block((text or "").strip())
-    if not t:
-        return ""
-    parts = [p.strip() for p in re.split(r"\n{2,}", t) if p.strip()]
-    if len(parts) <= 1:
-        return t
-    seen: set[str] = set()
-    out: list[str] = []
-    for p in parts:
-        key = _normalize_htr_line_key(p)
-        if len(key) < 30:
-            key_short = key
-        else:
-            key_short = key[: min(120, len(key))]
-        if key_short in seen:
-            continue
-        seen.add(key_short)
-        out.append(p)
-    return "\n\n".join(out)
-
-
-_RE_FUER_SCHUELER = re.compile(
-    r"(?i)für\s+([A-ZÄÖÜ][\wäöüß\-]+)(?:\s+([A-ZÄÖÜ][\wäöüß\-]+))?"
-)
-_RE_SCHULJAHR = re.compile(r"(?i)schuljahr\s+([\d]{1,2}/[\d]{2,4}|[\d/\-]+)")
-_RE_KLASSE = re.compile(r"(?i)(\d+)\s*Kl\.")
-_RE_LEHRPERSON = re.compile(r"(?i)lehrperson:?\s*([A-Za-zÄÖÜäöüß\.\s\-]{2,40})")
-
-
-def enrich_schulbericht_metadata_from_transcript(sb: dict, transcript: str) -> dict:
-    """Extract-Lücken aus Seite-1-Transkript per Regex auffüllen."""
-    out = dict(sb)
-    t = transcript or ""
-    if not t.strip():
-        return out
-
-    if _nullish(out.get("schueler_vorname")) or _nullish(out.get("schueler_nachname")):
-        m = _RE_FUER_SCHUELER.search(t)
-        if m:
-            if _nullish(out.get("schueler_vorname")):
-                out["schueler_vorname"] = m.group(1).strip()
-            if m.group(2) and _nullish(out.get("schueler_nachname")):
-                out["schueler_nachname"] = m.group(2).strip()
-
-    if _nullish(out.get("semester_oder_zeitraum")):
-        m = _RE_SCHULJAHR.search(t)
-        if m:
-            out["semester_oder_zeitraum"] = m.group(1).strip()
-
-    if _nullish(out.get("klasse")):
-        m = _RE_KLASSE.search(t)
-        if m:
-            out["klasse"] = f"{m.group(1)} Kl."
-
-    if _nullish(out.get("lehrperson")):
-        m = _RE_LEHRPERSON.search(t)
-        if m:
-            lp = m.group(1).strip().rstrip(".,;")
-            if lp and len(lp) > 1:
-                out["lehrperson"] = lp
-
-    return out
-
-
 def rebuild_htr_volltext(htr: dict) -> str:
     """Bereinigter Volltext aus gedruckt + handschrift_zeilen."""
     seiten = htr.get("seiten_texte")
@@ -295,9 +171,9 @@ def _page_lines_from_htr_page(page: dict) -> tuple[list[str], list[str]]:
 
 def _seite_text_from_page(page: dict) -> str:
     printed, lines = _page_lines_from_htr_page(page)
-    merged = clean_htr_page_body([*printed, *lines])
-    body = "\n".join(merged).strip()
-    return dedupe_text_paragraphs(body)
+    printed = clean_htr_lines(printed)
+    lines = clean_htr_lines(lines)
+    return "\n".join([*printed, *lines]).strip()
 
 
 def build_page_marked_transcript(
@@ -847,13 +723,6 @@ def analyze_schulbericht_two_stage(
     normalized = normalize_extracted_schulbericht(
         extracted, htr=htr, seiten=htr.get("seiten_anzahl"),
     )
-    normalized = enrich_schulbericht_metadata_from_transcript(
-        normalized, extract_input,
-    )
-    # Seitentexte nach Metadaten-Anreicherung nochmals ohne Formularfelder
-    htr["seiten_texte"] = [_seite_text_from_page(p) for p in pages]
-    htr["volltext"] = build_page_marked_transcript(htr["seiten_texte"]) or transcript
-    normalized["_htr"] = htr
     log.info(
         "Schulbericht-Extract: %s %s, Klasse=%s, confidence=%.2f",
         normalized.get("schueler_vorname"),
