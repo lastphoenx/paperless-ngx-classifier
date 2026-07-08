@@ -9,8 +9,13 @@ from schulbericht_vision import (
     HTR_PAGE_MARKER,
     build_page_marked_transcript,
     clean_htr_lines,
+    clean_htr_page_body,
+    dedupe_repeated_text_block,
+    dedupe_text_paragraphs,
+    enrich_schulbericht_metadata_from_transcript,
     is_htr_junk_line,
     merge_htr_transcribe_pages,
+    sanitize_htr_content_line,
     transcript_for_metadata_extract,
 )
 
@@ -111,6 +116,47 @@ def test_build_htr_content_append_drops_ocr():
     assert out.startswith(HTR_CONTENT_MARKER)
     assert "Tesseract" not in out
     assert "Schüler: Max" in out
+
+
+def test_sanitize_htr_content_line_drops_form_labels():
+    assert sanitize_htr_content_line("Arbeitshaltung: Thomas arbeitet gut.") is None
+    assert sanitize_htr_content_line("Leistungen: ganz gut") is None
+    assert sanitize_htr_content_line("für Thomas Sandulli Schuljahr 1/21") is None
+    assert sanitize_htr_content_line("1361") is None
+    out = sanitize_htr_content_line(
+        "darin, obwohl er es meistens selbst Leistungen: ganz gut könnte!"
+    )
+    assert out == "darin, obwohl er es meistens selbst"
+    assert sanitize_htr_content_line("In letzter Zeit zeigt Thomas öfters Unlust.") is not None
+
+
+def test_clean_htr_page_body():
+    raw = [
+        "In letzter Zeit zeigt Thomas öfters Unlust.",
+        "für Thomas Sa",
+        "Arbeitshaltung: Schon bald nach den Herbstferien…",
+        "Thomas liest langsam.",
+        "1361",
+    ]
+    out = clean_htr_page_body(raw)
+    assert "In letzter Zeit" in "\n".join(out)
+    assert not any("Arbeitshaltung" in x for x in out)
+    assert not any(x == "1361" for x in out)
+
+
+def test_dedupe_repeated_text_block():
+    block = "A" * 60 + " Thomas arbeitet gut im Unterricht und hört zu."
+    doubled = block + " " + block
+    assert len(dedupe_repeated_text_block(doubled)) < len(doubled)
+
+
+def test_enrich_schulbericht_metadata_from_transcript():
+    sb = {"schueler_vorname": "Thomas"}
+    t = "für Thomas Sandulli\nSchuljahr 1/21\nLehrperson: C. Diefenbach"
+    out = enrich_schulbericht_metadata_from_transcript(sb, t)
+    assert out["schueler_nachname"] == "Sandulli"
+    assert out["semester_oder_zeitraum"] == "1/21"
+    assert "Diefenbach" in out["lehrperson"]
 
 
 def test_format_htr_note_summary_compact():
