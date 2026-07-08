@@ -2,8 +2,10 @@
 
 | Dokument | Zielgruppe |
 |---|---|
-| [Benutzerhandbuch_paper_manager.md](Benutzerhandbuch_paper_manager.md) | Bedienung paper.manager (Review, Brillenpass, QR-Split) |
-| [DEVELOPER.md](DEVELOPER.md) | Architektur, APIs, Parser erweitern, Deploy |
+| [Benutzerhandbuch_paper_manager.md](Benutzerhandbuch_paper_manager.md) | Bedienung paper.manager (Review, HTR, Brillenpass, QR-Split) |
+| [Bedienungsanleitung_paper_manager.doc](Bedienungsanleitung_paper_manager.doc) | Gleicher Inhalt als Word/HTML für Ausdruck |
+| [Bedienungsanleitung_paper_manager.docx](Bedienungsanleitung_paper_manager.docx) | Word-Export (via `scripts/generate_bedienungsanleitung.ps1`) |
+| [DEVELOPER.md](DEVELOPER.md) | Architektur, APIs (inkl. HTR), Parser erweitern, Deploy |
 | [BRILLENPASS_HANDOFF.md](BRILLENPASS_HANDOFF.md) | Brillenpass-Stand / offene Punkte (Handoff) |
 | [../INSTALL.md](../INSTALL.md) | Installation CT 121 / Docker |
 | [../README.de.md](../README.de.md) | Projektüberblick |

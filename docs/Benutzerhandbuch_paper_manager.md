@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 2.47 | Juli 2026** (Pipeline `12.44`, Backend `2.35`)
+**Version 3.09 | März 2026** (Pipeline `12.72`, Backend `2.56`)
 
 > Entwickler-Details: [`DEVELOPER.md`](DEVELOPER.md) · Legacy-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
 
@@ -12,14 +12,17 @@ paper.manager ist die Review- und Verwaltungsoberfläche für die automatische D
 
 > 💡 **Tipp:** Bezahlte Rechnungen mit `bez. 6.2.26` oben rechts markieren — das System setzt automatisch `Status=Bezahlt` und `Bezahlt am=06.02.2026`.
 
-Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständiger Systemübersicht.
+Klick auf **«paper.manager»** in der **Sidebar** (Logo links) öffnet die Landing Page — nicht im Paperless-Dashboard eingebettet.
 
 ### Zugangswege
 
 | Zugang | URL | Auth |
 |---|---|---|
-| Via Domain (empfohlen) | https://paperless.example.com/corr-manager/ | Authentik SSO |
-| Via interne IP | `http://<IP-des-Servers>:8100` | Paperless-Login auf **derselben IP** (`:8000`) — Session-Cookie wird host-aware geprüft |
+| Via Domain (empfohlen) | `https://paperless.santinel.li/corr-manager/` | Authentik + Paperless-Session (gleiche Domain) |
+| Paperless-Dashboard | Kein eingebauter Link — **neuer Tab:** `/corr-manager/` | Wie Domain-Zeile |
+| Via interne IP | `http://192.168.131.31:8100` | Paperless-Login auf **derselben IP** (`:8000`) |
+
+> **Pfad:** `/corr-manager/` mit **Bindestrich** — nicht `corr.manager` (Punkt).
 
 > **Auth (ab BE 2.35):** API-Calls prüfen die Paperless-Session gegen die **gleiche Basis-URL wie der Browser-Zugriff** — per IP also `http://<IP>:8000`, per Domain die externe URL. Zuvor konnte `PAPERLESS_URL` (Domain) und IP-Zugriff kollidieren → `401 Nicht authentifiziert` trotz Login.
 
@@ -32,7 +35,7 @@ Klick auf **«paper.manager»** im Logo öffnet die Landing Page mit vollständi
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v2.47 | be v2.35 | pipe v12.44
+UI v3.09 | be v2.56 | pipe v12.72
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
@@ -50,6 +53,7 @@ Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochz
 | 👪 Familie | `#family` | Haushalt, Personen, Referenzen (Kennzeichen), Beziehungen |
 | ✂ Legacy QR-Split | `#legacy-split` | Mehrseiten-Scans nachträglich an QR splitten → `consume/` |
 | 👓 Brillenpass | `#brillenpass` | Optiker-Dokumente parsen, Review, versionierter Pass pro Person |
+| ✍ Handschrift | `#handschrift` | HTR nachträglich starten, Profil wählen, Pipeline-Erklärung |
 
 Alle Tabs haben ein **Suchfeld** für live Filterung (wo vorhanden).
 
@@ -66,7 +70,9 @@ Status wird serverseitig gespeichert — bleibt nach Refresh erhalten.
 
 ---
 
-## 3. Handschrift-Erkennung
+## 3. Handschrift
+
+### 3.1 Kurznotiz «bezahlt» (Vision Stufe 1)
 
 **Stufe 1 — Vision:** `qwen2.5vl:7b` analysiert das Dokument als Bild, sucht Handschrift oben rechts.
 **Stufe 2 — Regex:** `parse_handschrift_bezahlt()` extrahiert das Datum.
@@ -87,6 +93,46 @@ Status wird serverseitig gespeichert — bleibt nach Refresh erhalten.
 - **Status** → `Bezahlt`
 - **Bezahlt am** → Datum aus Handschrift (für Zahllauf-Abgleich im E-Banking)
 - **Gescannt am** → immer = heutiges Datum (bei jedem Dokument)
+
+### 3.2 Mehrstufige HTR (Handschrift-Transkription)
+
+Für längere Handschrift (Schulberichte, Arztberichte) läuft nach der Baseline-Vision optional eine **HTR-Pipeline**:
+
+```
+Vision (Baseline) → Profil wählen → HTR zeilengetreu → (Schulbericht:) Extract → Content + Notiz
+```
+
+| Profil (`htr_profiles.json`) | Verhalten |
+|---|---|
+| `default` | Zeilengetreue Transkription, Trim-Crop |
+| `schulbericht` | HTR aller Seiten → strukturierte Felder (Name, Klasse, …) |
+| `schulbericht_crop_strong` | Wie Schulbericht, stärkeres horizontales Cropping |
+
+**Konfiguration pro Dokumenttyp** (Tab Dokumenttypen → Edit → **Handschrift (HTR)**):
+
+| Wert | Bedeutung |
+|---|---|
+| `auto` | Heuristik (Schulbericht-Erkennung, Handschrift-Signale) |
+| `default` | Immer zeilengetreue HTR |
+| `schulbericht` | Immer Schulbericht-Pipeline |
+| `off` | Kein HTR |
+
+Optional pro **Korrespondent** Override pro Dokumenttyp (`htr_profiles_by_document_type` in `correspondents.json`).
+
+**Content (Strategie D, ab pipe 12.72):** Bei Schulbericht-HTR ersetzt der Block `--- Handschrift (HTR) ---` den OCR-Text. Aufbau:
+
+1. Metadaten aus **Seite 1** (Schüler, Klasse, Zeitraum, Lehrperson)
+2. Darunter Transkript mit `--- Seite N ---` pro PDF-Seite
+
+**Notiz am Dokument:** Kompakte Zusammenfassung inkl. Arbeitshaltung/Leistungen — kein Volltext-Dump.
+
+**Unsichere Handschrift ohne festes Profil:** Tag `pending_htr_decision` — manuell im Tab **✍ Handschrift** nachverarbeiten.
+
+**Nachträglich:** Tab **✍ Handschrift** → Paperless-Dok-ID → optional Profil → **▶ HTR starten** (1–3 Min/Seite, Status-Polling).
+
+**Tab ✍ — wann öffnen?** Dokument vor HTR-Deploy gescannt; Tag `pending_htr_decision`; Schulbericht mit anderem Profil testen (`schulbericht` vs. `schulbericht_crop_strong`).
+
+CLI auf CT121: `python3 htr_runner.py <DOK-ID> [--profile schulbericht]`
 
 ---
 
@@ -167,11 +213,11 @@ Dokumente mit einem der pending-Tags landen automatisch in der Review-Warteschla
 
 | Feld | Beschreibung |
 |---|---|
-| Titel | Vom LLM generierter Vorschlag |
-| Korrespondent | Erkannter Absender — Dropdown nur **freigegebene** Korrespondenten (Map + Paperless-ID, ohne pending-NEU) |
+| Titel | Vom LLM vorgeschlagen — **bei Freigeben editierbar und speicherbar** |
+| Korrespondent | Erkannter Absender — Dropdown nur **freigegebene** Korrespondenten |
 | Ordner | Zugewiesener Speicherpfad |
 | Dokumenttyp | Erkannter Dokumenttyp |
-| Datum | Erkanntes Belegdatum |
+| Belegdatum | Ausstellungsdatum (`tt.mm.jjjj`) — wird als Paperless-Feld `created` gespeichert |
 | Confidence | Farbig: grün ≥90 %, gelb 70 %–89 %, rot <70 % |
 | Review-Grund | Warum das Dokument in die Queue kam |
 | LLM-Begründung | Erklärung des LLM zur Einschätzung |
@@ -191,9 +237,11 @@ Unter den KI-Feldern:
 
 ### Aktionen
 
-- **✓ Freigeben** — pending-Tags entfernen, Dokument freigeben
-- **✎ Neu klassifizieren** — gewählte Korrekturen (Ordner, Korrespondent, Typ, Tags) anwenden und Manifest + Korrespondenten-Modell trainieren
+- **✓ Freigeben** — pending-Tags entfernen; **Titel**, **Belegdatum**, Tags und Kundenfelder werden gespeichert
+- **✎ Neu klassifizieren** — **Korrespondent**, **Ordner**, **Dokumenttyp** und Tags anwenden; Manifest + Korrespondenten-Modell trainieren
 - **✗ Ignorieren** — aus Queue entfernen ohne Änderungen
+
+> Datumsformat in der UI: **Schweizer Schreibweise** `tt.mm.jjjj` (nicht US-Format).
 
 ---
 
@@ -207,6 +255,10 @@ Im Edit-Dialog jedes Dokumenttyps: Tabelle **Extrahieren / Im Review / Pflicht**
 - **Pflicht** — muss gesetzt sein vor Freigabe (Review-Hinweis)
 
 Pipeline-Felder **Verarbeitung** und **Person** werden unabhängig vom Feldprofil gesetzt (siehe Abschnitt 12).
+
+### Handschrift (HTR)
+
+Dropdown **Handschrift (HTR):** `auto` | `default` | `schulbericht` | `off` — steuert die mehrstufige Transkriptions-Pipeline (siehe Abschnitt 3.2). In der Typenliste erscheint ein grünes **HTR**-Badge wenn nicht `auto`.
 
 ### Synonyme
 Global einmalig (Unique-Constraint). Enter zum Hinzufügen, × oder Backspace zum Entfernen.
@@ -315,8 +367,24 @@ Pro Korrespondent in **Familie → Beziehungen** (gespeichert in `correspondents
 5. **Korrespondenten Review** → freigeben oder ablehnen
 6. **Dokument-Review** → bestätigen oder korrigieren
 7. **Manifest** → neue pending-Ordner ergänzen
+8. **Brillenpass / Handschrift** → falls Badges offen
 
-7. **Manifest** → neue pending-Ordner ergänzen
+---
+
+## 12. Dokumente in Paperless finden
+
+| Suchanfrage | Filter |
+|---|---|
+| Offene Rechnungen | Custom Field `Status` = `Offen` |
+| Bezahlte Rechnungen | Custom Field `Status` = `Bezahlt` |
+| Zahllauf vom 06.02.2026 | Custom Field `Bezahlt am` = `2026-02-06` |
+| Heute gescannt | Custom Field `Gescannt am` = heute |
+| Vollautomatisch verarbeitet | Custom Field `Verarbeitung` = `auto STP` |
+| Dokumente für Monika | Custom Field `Person` = `Monika` |
+| Steuerbelege 2025 | Tag = `Steuerrelevant` + Datum 2025 |
+| Absender X | Korrespondent = «X» |
+| Schulberichte mit HTR | Inhalt enthält `--- Handschrift (HTR) ---` |
+| Offene HTR-Entscheidung | Tag `pending_htr_decision` |
 
 ---
 
@@ -446,21 +514,6 @@ CLI-Diagnose: `legacy_qr_split_test.py` — siehe [`LEGACY_IMPORT.md`](LEGACY_IM
 | `legacy-import-batch.sh` | NAS-Bulk ohne OCR/Pipeline (nur Index) |
 
 Details Bulk-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
-
----
-
-## 12. Dokumente in Paperless finden
-
-| Suchanfrage | Filter |
-|---|---|
-| Offene Rechnungen | Custom Field `Status` = `Offen` |
-| Bezahlte Rechnungen | Custom Field `Status` = `Bezahlt` |
-| Zahllauf vom 06.02.2026 | Custom Field `Bezahlt am` = `2026-02-06` |
-| Heute gescannt | Custom Field `Gescannt am` = heute |
-| Vollautomatisch verarbeitet | Custom Field `Verarbeitung` = `auto STP` |
-| Dokumente für Monika | Custom Field `Person` = `Monika` |
-| Steuerbelege 2025 | Tag = `Steuerrelevant` + Datum 2025 |
-| Absender X | Korrespondent = «X» |
 
 ---
 

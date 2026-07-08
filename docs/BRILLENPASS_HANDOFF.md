@@ -2,7 +2,7 @@
 
 Kurzüberblick für Fortsetzung. Repo: `paperless-ngx-classifier`, Deploy CT121 `/opt/paperless-scripts/`, UI `http://192.168.131.31:8100`.
 
-**Stand Git `main` (2026-07-06):** Pipeline **v12.60**, paper.manager **BE 2.51 / UI 2.92**.
+**Stand Git `main` (2026-03):** Pipeline **v12.72**, paper.manager **BE 2.56 / UI 3.09** (HTR-Integration, Strategie D).
 
 ---
 

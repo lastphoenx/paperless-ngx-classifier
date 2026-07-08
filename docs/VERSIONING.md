@@ -44,10 +44,10 @@ grep -m1 POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
 
 Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Refresh (`Ctrl+Shift+R`).
 
-## Aktuell (Stand Juli 2026)
+## Aktuell (Stand März 2026)
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 2.47 | Legacy QR-Split Menü, Brillenpass Vendor/Auto-Parser |
-| BE | 2.35 | Session host-aware, Legacy-Split API |
-| Pipe | 12.44 | Brillenpass Auto-Parser, Format-Erkennung |
+| UI | 3.09 | Tab Handschrift (HTR), Belegdatum editierbar, corr-manager-Pfad |
+| BE | 2.56 | HTR-API (`/api/htr/*`), Session host-aware |
+| Pipe | 12.72 | HTR Profil-Routing, Schulbericht Strategie D |

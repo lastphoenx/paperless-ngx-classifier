@@ -34,6 +34,8 @@ post_consume.py       — Main pipeline (runs after every successful scan)
   ├─ Vision LLM       — Analyses document as image: sender, date, amount,
   │                     licence plate, handwritten notes ("bez. 6.2.26" → paid)
   │                     household context injected: members (never senders) + employers
+  ├─ HTR (optional)   — Multi-stage handwriting transcription (school reports etc.):
+  │                     profile routing → line-by-line transcript → searchable content
   ├─ RAG              — Embeddings (bge-m3) match document to known folders
   ├─ LLM              — Classifies document type, tags, storage path
   ├─ Sanitiser        — Validates against manifest, exclusion keywords;
@@ -263,7 +265,7 @@ See `.env.example` for all variables with descriptions. Versioning rules: `docs/
 
 ## paper.manager UI
 
-Available at `http://SERVER_IP:8100` after installation.
+Available at `http://SERVER_IP:8100` or via reverse proxy e.g. `https://paperless.example.com/corr-manager/`.
 
 | Tab | Purpose |
 |---|---|

@@ -1,6 +1,6 @@
 # paper.manager / paperless-ngx-classifier — Developer Guide
 
-**Stand:** Juli 2026 · UI `2.47` · BE `2.35` · Pipe `12.44`
+**Stand:** März 2026 · UI `3.09` · BE `2.56` · Pipe `12.72`
 
 Benutzer-Doku: [`Benutzerhandbuch_paper_manager.md`](Benutzerhandbuch_paper_manager.md)
 
@@ -39,6 +39,10 @@ paper_manager_ui.html   → SPA ohne Build-Step
 | `brillenpass_parser.py` | Parser-Registry, Auto-Detect, Merge, Dedup-Helfer |
 | `brillenpass_runner.py` | CLI/API: Dokument nachträglich durch Brillenpass-Pipeline |
 | `legacy_split_by_qr.py` | QR-Metadaten-Split (NAS-Legacy), per Seite pdf2image+pyzbar |
+| `handwriting_vision.py` | HTR-Profil-Routing, Pre-Resolution, Content-Strategie D |
+| `htr_runner.py` | Nachträgliche HTR (CLI + async Jobs) |
+| `image_crop.py` | PDF-Render, Trim/Horizontal-Bands für HTR |
+| `schulbericht_vision.py` | Schulbericht HTR + Extract, Zeilen-Merge |
 | `document_date.py` | Belegdatum-Extraktion/Validierung |
 | `training/*.example.json` | Schema-Beispiele (keine Live-Daten im Repo) |
 | `tests/` | pytest (Parser, Fielmann, …) |
@@ -82,6 +86,8 @@ Middleware: `require_paperless_session` in `correspondent_manager_app.py`
 Session wird gegen diese URL **und** Fallback `PAPERLESS_INTERNAL_URL` per `GET /api/profile/` validiert.
 
 **Häufiger Fehler:** Zugriff per `192.168.x.x:8100`, aber `PAPERLESS_URL` zeigt auf Domain → vor 2.35: `401 Nicht authentifiziert` auf API-POSTs (z. B. Legacy QR-Split).
+
+**Produktion:** UI unter `https://paperless.santinel.li/corr-manager/` — nginx strippt Prefix; Frontend setzt `API_BASE = '/corr-manager/api'`.
 
 ---
 
@@ -200,9 +206,64 @@ Ausführlicher Handoff: [BRILLENPASS_HANDOFF.md](BRILLENPASS_HANDOFF.md).
 
 ---
 
-## 6. Legacy QR-Split — Entwickler
+## 6. HTR (Handschrift) — Entwickler
 
-### 6.1 Unterschied zu anderen QR-Mechanismen
+### 6.1 Datenfluss (Consume)
+
+```
+post_consume: Vision (Baseline)
+  → decide_htr_action()          # Pre-Resolution
+  → run_htr_pipeline()           # wenn action=run_now
+  → extract_htr_searchable_text() + build_htr_content_append(drop_ocr=…)
+  → Paperless content + audit_log
+```
+
+| `HtrPreResolution.action` | Verhalten |
+|---|---|
+| `run_now` | HTR sofort (Profil aus Doctype / Korrespondent / Heuristik) |
+| `defer` | Tag `pending_htr_decision`, Eintrag in `pending_htr_decision.jsonl` |
+| `skip` | Kein HTR |
+
+### 6.2 Konfiguration
+
+| Datei | Inhalt |
+|---|---|
+| `training/htr_profiles.json` | Profile: `pipeline`, `crop_mode`, `dpi`, `horizontal_bands` |
+| `training/document_types.json` | `htr_profile` pro Typ: `auto` \| `default` \| `schulbericht` \| `off` |
+| `training/correspondents.json` | Optional `htr_profiles_by_document_type` |
+
+Registry-Defaults in `handwriting_vision.py`; Live-Datei überschreibt.
+
+### 6.3 Schulbericht-Pipeline
+
+`analyze_schulbericht_two_stage()` in `schulbericht_vision.py`:
+
+1. HTR pro Seite (optional horizontal bands via `image_crop.py`)
+2. `clean_htr_lines()` — Junk/Dedup
+3. Extract nur aus **Seite 1** (`transcript_for_metadata_extract`)
+4. Content **Strategie D:** Metadaten-Kopf + `--- Seite N ---` Transkript (`extract_htr_searchable_text`)
+
+### 6.4 API
+
+| Methode | Pfad | Zweck |
+|---|---|---|
+| POST | `/api/htr/trigger/{doc_id}` | Nachträgliche HTR (async), Body: `{profile?}` |
+| GET | `/api/htr/trigger-status/{doc_id}` | `running` / `done` / `error` |
+| GET | `/api/htr/pending` | Offene `pending_htr_decision`-Einträge |
+
+CLI: `python3 htr_runner.py <doc_id> [--profile schulbericht]`
+
+Tests: `tests/test_htr_sanitize.py`
+
+### 6.5 Deploy
+
+`deploy-to-ct121.sh` kopiert `handwriting_vision.py`, `image_crop.py`, `htr_runner.py`, `schulbericht_vision.py`. Legt `htr_profiles.json` aus Example an wenn fehlend.
+
+---
+
+## 7. Legacy QR-Split — Entwickler
+
+### 7.1 Unterschied
 
 | Modul | QR-Typ | Wann |
 |---|---|---|
@@ -212,7 +273,7 @@ Ausführlicher Handoff: [BRILLENPASS_HANDOFF.md](BRILLENPASS_HANDOFF.md).
 
 Port von `tsa_barcode_split_function.sh`: **Ghostscript** (nicht Poppler allein) + pyzbar/zbar + Seiten-Split.
 
-### 6.2 API (async)
+### 7.2 API (async)
 
 `POST /api/legacy-split/trigger/{doc_id}` → sofort `{async: true}`; UI pollt:
 
@@ -233,7 +294,7 @@ Body (JSON):
 - `dry_run: false` → Split lokal, `shutil.move` nach `consume_dir`
 - `sync: true` → blockierend (curl/Debug), kein Polling
 
-### 6.3 Architektur (BE 2.51)
+### 7.3 Architektur (BE 2.51)
 
 ```
 POST trigger → BackgroundTask → _LEGACY_SPLIT_EXECUTOR
@@ -247,7 +308,7 @@ POST trigger → BackgroundTask → _LEGACY_SPLIT_EXECUTOR
 
 `normalize_legacy_qr_regex()` in `legacy_split_by_qr.py` fängt kaputte Werte ab.
 
-### 6.4 Abhängigkeiten & CLI
+### 7.4 Abhängigkeiten & CLI
 
 ```bash
 sudo ./scripts/ensure-legacy-qr-deps.sh   # poppler, ghostscript, zbar, venv
@@ -264,7 +325,7 @@ Env: `PAPERLESS_CONSUME_DIR`, `LEGACY_SPLIT_QR_REGEX`, `LEGACY_SPLIT_TMP`
 
 ---
 
-## 7. Wichtige `.env`-Variablen
+## 8. Wichtige `.env`-Variablen
 
 | Variable | Zweck |
 |---|---|
@@ -283,11 +344,11 @@ Vollständig: `.env.example`
 
 ---
 
-## 8. Tests & lokale Entwicklung
+## 9. Tests & lokale Entwicklung
 
 ```bash
 cd paperless-ngx-classifier
-python -m pytest tests/test_brillenpass_parsers.py tests/test_brillenpass_fielmann.py -q
+python -m pytest tests/test_brillenpass_parsers.py tests/test_htr_sanitize.py -q
 ```
 
 Backend lokal (ohne Paperless):
@@ -302,7 +363,7 @@ UI: `paper_manager_ui.html` wird vom FastAPI-Root ausgeliefert.
 
 ---
 
-## 9. Deploy-Checkliste
+## 10. Deploy-Checkliste
 
 ```bash
 cd /opt/paperless-ngx-classifier && git pull
@@ -312,11 +373,11 @@ grep -m1 UI_VERSION /opt/paperless-scripts/correspondent_manager_app.py
 systemctl restart correspondent-manager   # falls systemd-Unit
 ```
 
-Sidebar: `UI v2.47 | be v2.35 | pipe v12.44`
+Sidebar: `UI v3.09 | be v2.56 | pipe v12.72`
 
 ---
 
-## 10. Private Doku (Git `/doku`)
+## 11. Private Doku (Git `/doku`)
 
 Spiegel für CT-121-Betrieb:
 
