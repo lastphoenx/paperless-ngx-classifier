@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.70"  # 12.70: HTR-Transkript in durchsuchbaren Document-Content
+POST_CONSUME_VERSION = "12.71"  # 12.71: HTR-Ausgabe bereinigt (kein Rohtranskript-Dump)
 import re
 import sys
 import json
