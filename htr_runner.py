@@ -124,6 +124,7 @@ def reprocess_htr_document(
         decide_htr_action,
         extract_htr_searchable_text,
         format_htr_note_summary,
+        is_schulbericht_htr_meta,
         normalize_document_type_key,
         run_htr_pipeline,
     )
@@ -192,7 +193,11 @@ def reprocess_htr_document(
     htr_text = extract_htr_searchable_text(htr_meta)
     content_updated = False
     if htr_text:
-        new_content = build_htr_content_append(ocr_text, htr_text)
+        new_content = build_htr_content_append(
+            ocr_text,
+            htr_text,
+            drop_ocr=is_schulbericht_htr_meta(htr_meta),
+        )
         content_updated = pc.paperless_patch(document_id, {"content": new_content})
         if content_updated:
             log.info("HTR-Text in Dokument-Content geschrieben (%d Zeichen)", len(htr_text))
