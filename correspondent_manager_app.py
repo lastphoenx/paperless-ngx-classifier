@@ -3431,6 +3431,44 @@ def _merge_custom_fields(doc_id: int, updates: list[dict]) -> list[dict]:
     return [{"field": fid, "value": val} for fid, val in merged.items()]
 
 
+def _apply_doc_review_classification_fields(patch: dict, body: dict) -> None:
+    """Ordner, Korrespondent und Dokumenttyp aus Review-Formular in PATCH übernehmen.
+
+    Keys müssen im Body vorhanden sein (auch null), damit «kein Typ» / «kein Korrespondent»
+    explizit gesetzt werden kann.
+    """
+    if "storage_path_id" in body:
+        sp = body.get("storage_path_id")
+        patch["storage_path"] = int(sp) if sp else None
+    if "correspondent_id" in body:
+        cid = body.get("correspondent_id")
+        patch["correspondent"] = int(cid) if cid else None
+    if "document_type_id" in body:
+        dt = body.get("document_type_id")
+        patch["document_type"] = int(dt) if dt else None
+
+
+def _maybe_learn_from_doc_review(
+    entry: dict,
+    body: dict,
+    doc_id: int,
+) -> None:
+    """Manifest-Lernkreislauf wenn Ordner oder Tags gegenüber Queue-Eintrag geändert."""
+    new_ordner = (body.get("storage_path_name") or "").strip()
+    if not new_ordner:
+        return
+    original_ordner = (entry.get("pfad") or entry.get("ordner") or "").strip()
+    new_tags = body.get("tag_names") or []
+    original_tags = entry.get("tags") or []
+    _learn_from_reclassification(
+        doc_id=doc_id,
+        new_ordner=new_ordner,
+        new_tags=new_tags,
+        original_ordner=original_ordner,
+        original_tags=original_tags,
+    )
+
+
 def _validate_pflicht_custom_fields(feldprofil: dict, custom_fields: list[dict]) -> None:
     """Pflichtfelder aus feldprofil prüfen — HTTP 400 bei fehlenden Werten."""
     if not feldprofil:
@@ -3452,9 +3490,9 @@ def _validate_pflicht_custom_fields(feldprofil: dict, custom_fields: list[dict])
 def api_document_review_action(index: int, body: dict = Body(...)):
     """
     Aktionen auf Document Review Queue:
-      action=approve  → pending_review Tag entfernen, Permissions sicherstellen
+      action=approve  → Formularfelder nach Paperless, pending-Tags entfernen
       action=reject   → Eintrag als rejected markieren (Dokument bleibt)
-      action=reclassify → ordner/tags im Body → Paperless PATCH + Queue-Eintrag erledigt
+      action=reclassify → Alias für approve (Abwärtskompatibilität)
     """
     entries = load_document_review_queue()
     pending = [(i, e) for i, e in enumerate(entries) if e.get("status") == "pending"]
@@ -3477,16 +3515,9 @@ def api_document_review_action(index: int, body: dict = Body(...)):
             patch: dict = {}
             patch.update(_default_permissions())
 
-            if action == "reclassify":
-                # Manuelle Neuklassifizierung: Korrekturfelder aus Body
-                if body.get("storage_path_id"):
-                    patch["storage_path"] = body["storage_path_id"]
-                if body.get("correspondent_id"):
-                    patch["correspondent"] = body["correspondent_id"]
-                if body.get("document_type_id"):
-                    patch["document_type"] = body["document_type_id"]
+            _apply_doc_review_classification_fields(patch, body)
 
-            # Tags: bei Freigeben und Reklassifizieren (Auswahl ersetzt, pending wird unten entfernt)
+            # Tags: Auswahl ersetzt bestehende Tags (pending wird unten entfernt)
             if "tag_ids" in body:
                 patch["tags"] = list(dict.fromkeys(body["tag_ids"]))
 
@@ -3525,15 +3556,7 @@ def api_document_review_action(index: int, body: dict = Body(...)):
 
             pl_patch(f"/documents/{doc_id}/", patch)
 
-            # Lernkreislauf: Bei reclassify → Manifest-Feedback
-            if action == "reclassify" and body.get("storage_path_name"):
-                _learn_from_reclassification(
-                    doc_id=doc_id,
-                    new_ordner=body.get("storage_path_name"),
-                    new_tags=body.get("tag_names", []),
-                    original_ordner=entry.get("ordner", ""),
-                    original_tags=entry.get("tags", []),
-                )
+            _maybe_learn_from_doc_review(entry, body, doc_id)
 
             entries[orig_idx]["status"] = "approved"
             entries[orig_idx]["reviewed_at"] = now

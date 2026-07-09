@@ -4250,15 +4250,13 @@ async function selectDocReview(i) {
             <label>Tags (Mehrfachauswahl)</label>
             <select id="dr-tags" multiple>${tagOptions}</select>
             <span style="display:block;font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4">
-              <strong>Titel</strong>, <strong>Belegdatum</strong>, Tags und Kundenfelder bei <strong>Freigeben</strong> und <strong>Neu klassifizieren</strong>.
+              <strong>Freigeben</strong> übernimmt alle Felder (Ordner, Korrespondent, Typ, Titel, Belegdatum, Tags, Kundenfelder).
               Strg+Klick = mehrere Tags. Tag-Auswahl ersetzt alle Tags.
-              Ordner/Korrespondent/Typ nur bei «Neu klassifizieren».
             </span>
           </div>
         </div>
         <div class="btn-row" style="margin-top:8px">
           <button class="btn btn-success" onclick="submitDocReview(${i},'approve')">✓ Freigeben</button>
-          <button class="btn btn-primary"  onclick="submitDocReview(${i},'reclassify')">✎ Neu klassifizieren</button>
           <button class="btn btn-danger"   onclick="submitDocReview(${i},'reject')">✗ Ignorieren</button>
         </div>
       </div>
@@ -4289,12 +4287,10 @@ async function submitDocReview(index, action) {
     body.created = corr.created;
   }
 
-  if (action === 'reclassify') {
-    body.storage_path_id   = corr.storage_path_id;
-    body.storage_path_name = corr.storage_path_name;
-    body.correspondent_id  = corr.correspondent_id;
-    body.document_type_id  = corr.document_type_id;
-  }
+  body.storage_path_id   = corr.storage_path_id;
+  body.storage_path_name = corr.storage_path_name;
+  body.correspondent_id  = corr.correspondent_id;
+  body.document_type_id  = corr.document_type_id;
 
   try {
     const r = await fetch(`${API_BASE}/document-review/${index}`, {
