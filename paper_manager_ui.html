@@ -540,10 +540,31 @@
       <h2 style="margin:0">Korrespondenten</h2>
       <button class="btn btn-primary" onclick="openCorrCreate()">+ Manuell anlegen</button>
     </div>
-    <div style="margin-bottom:12px">
+    <div style="margin-bottom:12px;display:flex;flex-direction:column;gap:8px">
       <input type="text" id="corr-search" placeholder="🔍 Name, Variante, Ordner suchen…"
         style="width:100%;box-sizing:border-box"
         oninput="filterCorrespondents(this.value)">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <span style="color:var(--muted);font-size:11px">Filter:</span>
+        <button type="button" class="btn btn-ghost" id="corr-filter-all" style="padding:3px 10px;font-size:11px"
+          onclick="setCorrFilterMode('all')">Alle</button>
+        <button type="button" class="btn btn-ghost" id="corr-filter-platzhalter" style="padding:3px 10px;font-size:11px"
+          onclick="setCorrFilterMode('platzhalter')">Nur Platzhalter</button>
+        <button type="button" class="btn btn-ghost" id="corr-filter-real" style="padding:3px 10px;font-size:11px"
+          onclick="setCorrFilterMode('real')">Ohne Platzhalter</button>
+        <span style="flex:1"></span>
+        <button type="button" class="btn btn-ghost" id="corr-batch-toggle" style="padding:3px 10px;font-size:11px"
+          onclick="toggleCorrBatchMode()">☑ Batch</button>
+      </div>
+      <div id="corr-batch-bar" style="display:none;padding:8px 12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.35);border-radius:6px;align-items:center;gap:8px;flex-wrap:wrap">
+        <span id="corr-batch-count" style="font-size:12px;color:var(--warn)">0 ausgewählt</span>
+        <button type="button" class="btn btn-primary" style="padding:3px 10px;font-size:11px"
+          onclick="applyCorrBatchPlatzhalter(true)">Als Platzhalter markieren</button>
+        <button type="button" class="btn btn-ghost" style="padding:3px 10px;font-size:11px"
+          onclick="applyCorrBatchPlatzhalter(false)">Platzhalter entfernen</button>
+        <button type="button" class="btn btn-ghost" style="padding:3px 10px;font-size:11px"
+          onclick="toggleCorrBatchMode(false)">Abbrechen</button>
+      </div>
     </div>
     <div id="corr-create-panel" style="display:none;margin-bottom:16px"></div>
     <div id="corr-list"></div>
@@ -961,7 +982,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.09';
+const UI_VERSION = '3.10';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -1351,7 +1372,15 @@ function _pendingEntryLabel(e) {
   return `${name} (${docs} Dok.)`;
 }
 
-/** Freigegebene Korrespondenten — Treffer zum Pending-Namen zuerst, sonst A–Z. */
+/** Dropdown-Label: Platzhalter mit ⬚-Präfix, optional Kürzel in Klammern. */
+function formatCorrOptionLabel(e) {
+  if (!e) return '';
+  const pfx = e.platzhalter ? '⬚ ' : '';
+  const k = e.kuerzel ? ` (${e.kuerzel})` : '';
+  return `${pfx}${e.name}${k}`;
+}
+
+/** Freigegebene Korrespondenten — echte zuerst, Treffer zum Pending-Namen oben, Platzhalter unten. */
 function sortedApprovedCorrespondents(pendingNameHint) {
   const approved = (allCorrEntries || []).filter(e => e._paperless?.id);
   const hint = (pendingNameHint || '').trim().toLowerCase();
@@ -1369,6 +1398,9 @@ function sortedApprovedCorrespondents(pendingNameHint) {
     return 1;
   };
   return approved.slice().sort((a, b) => {
+    const pa = a.platzhalter ? 1 : 0;
+    const pb = b.platzhalter ? 1 : 0;
+    if (pa !== pb) return pa - pb;
     const sa = score(a), sb = score(b);
     if (sa !== sb) return sa - sb;
     return (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
@@ -1409,7 +1441,7 @@ function renderAssignExistingPicker(index) {
   const approved = sortedApprovedCorrespondents(hint);
   if (!approved.length) return '';
   const opts = approved.map(e =>
-    `<option value="${e.name}">${e.name}${e.kuerzel ? ' (' + e.kuerzel + ')' : ''}</option>`
+    `<option value="${e.name}">${formatCorrOptionLabel(e)}</option>`
   ).join('');
   return `
     <div class="field-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
@@ -1730,9 +1762,11 @@ function buildMergeCorrOptions(entry) {
   for (const e of (allCorrEntries || [])) add(e.name);
   for (const c of (plCorrespondents || [])) add(c.name);
   if (!names.length) return '<option value="">— kein Korrespondent in Map —</option>';
-  return names.map(n =>
-    `<option value="${n.replace(/"/g, '&quot;')}" ${n === mergeZiel ? 'selected' : ''}>${n}</option>`
-  ).join('');
+  const byName = Object.fromEntries((allCorrEntries || []).map(e => [e.name, e]));
+  return names.map(n => {
+    const label = formatCorrOptionLabel(byName[n] || { name: n });
+    return `<option value="${n.replace(/"/g, '&quot;')}" ${n === mergeZiel ? 'selected' : ''}>${label}</option>`;
+  }).join('');
 }
 
 function renderPanelMerge(entry, i, docContent, docIds) {
@@ -2022,6 +2056,9 @@ async function submitReview(index, action) {
 // ──────────────────────────────────────────────
 let _corrAllEntries = [];
 let _corrCreateOpen = false;
+let _corrFilterMode = 'all';
+let _corrBatchMode = false;
+const _corrBatchSelected = new Set();
 
 async function openCorrCreate() {
   _corrCreateOpen = true;
@@ -2058,6 +2095,17 @@ async function openCorrCreate() {
             oninput="this.dataset.userEdited='true';checkKuerzelField(this,'cf-kuerzel-status','cf-name')">
           <span id="cf-kuerzel-status" style="font-size:11px"></span>
         </div>
+      </div>
+      <div class="field-group">
+        <label style="display:flex;align-items:flex-start;gap:8px;font-weight:400;color:var(--text);cursor:pointer">
+          <input type="checkbox" id="cf-platzhalter" style="margin-top:2px">
+          <span>
+            <strong style="color:var(--text)">Platzhalter</strong>
+            <span style="display:block;color:var(--muted);font-size:10px;font-weight:400;margin-top:2px">
+              Kein echter Absender — z.&nbsp;B. Privat, Gesundheit, Medien. Wird nicht automatisch zugeordnet.
+            </span>
+          </span>
+        </label>
       </div>
       <div class="field-group">
         <label>Standard-Dokumenttyp</label>
@@ -2185,6 +2233,7 @@ async function submitCorrCreate() {
   if (errEl) errEl.style.display = 'none';
   const name = document.getElementById('cf-name')?.value?.trim();
   const kuerzel = (document.getElementById('cf-kuerzel')?.value || '').trim().toUpperCase();
+  const platzhalter = document.getElementById('cf-platzhalter')?.checked || false;
   const match_strings = getTagsFromContainer('tags-cf-match');
   const varianten = getTagsFromContainer('tags-cf-varianten');
   const typische_ordner = getTagsFromContainer('tags-cf-ordner');
@@ -2208,7 +2257,7 @@ async function submitCorrCreate() {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       name,
-      match: match_strings.length ? match_strings : [name.toLowerCase()],
+      match: (match_strings.length ? match_strings : (platzhalter ? [] : [name.toLowerCase()])),
       varianten, typische_ordner, identifikatoren,
     })
   }).then(r=>r.json()).catch(()=>null);
@@ -2221,8 +2270,8 @@ async function submitCorrCreate() {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
-      name, kuerzel, varianten,
-      match: match_strings.length ? match_strings : [name.toLowerCase()],
+      name, kuerzel, platzhalter, varianten,
+      match: match_strings.length ? match_strings : (platzhalter ? [] : [name.toLowerCase()]),
       typische_ordner, notiz, default_dokumenttyp, identifikatoren,
     }),
   });
@@ -2264,7 +2313,89 @@ async function loadCorrMap() {
     (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' })
   );
   _corrAllEntries = allCorrEntries;
-  renderCorrMap(_corrAllEntries);
+  updateCorrFilterButtons();
+  filterCorrespondents(document.getElementById('corr-search')?.value || '');
+}
+
+function updateCorrFilterButtons() {
+  const modes = ['all', 'platzhalter', 'real'];
+  modes.forEach(m => {
+    const btn = document.getElementById(`corr-filter-${m === 'all' ? 'all' : m}`);
+    if (!btn) return;
+    const active = _corrFilterMode === m;
+    btn.style.borderColor = active ? 'var(--accent)' : '';
+    btn.style.color = active ? 'var(--accent)' : '';
+  });
+  const batchBtn = document.getElementById('corr-batch-toggle');
+  if (batchBtn) {
+    batchBtn.style.borderColor = _corrBatchMode ? 'var(--warn)' : '';
+    batchBtn.style.color = _corrBatchMode ? 'var(--warn)' : '';
+  }
+}
+
+function setCorrFilterMode(mode) {
+  _corrFilterMode = mode;
+  updateCorrFilterButtons();
+  filterCorrespondents(document.getElementById('corr-search')?.value || '');
+}
+
+function toggleCorrBatchMode(force) {
+  _corrBatchMode = typeof force === 'boolean' ? force : !_corrBatchMode;
+  if (!_corrBatchMode) _corrBatchSelected.clear();
+  const bar = document.getElementById('corr-batch-bar');
+  if (bar) bar.style.display = _corrBatchMode ? 'flex' : 'none';
+  updateCorrFilterButtons();
+  updateCorrBatchCount();
+  filterCorrespondents(document.getElementById('corr-search')?.value || '');
+}
+
+function toggleCorrBatchSelect(name, checked) {
+  if (checked) _corrBatchSelected.add(name);
+  else _corrBatchSelected.delete(name);
+  updateCorrBatchCount();
+}
+
+function updateCorrBatchCount() {
+  const el = document.getElementById('corr-batch-count');
+  if (el) el.textContent = `${_corrBatchSelected.size} ausgewählt`;
+}
+
+async function applyCorrBatchPlatzhalter(platzhalter) {
+  const names = Array.from(_corrBatchSelected);
+  if (!names.length) { showToast('Keine Korrespondenten ausgewählt', 'error'); return; }
+  const r = await fetch(`${API_BASE}/correspondents/batch-platzhalter`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ names, platzhalter }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) {
+    showToast(`${d.count} Korrespondent(en) ${platzhalter ? 'als Platzhalter markiert' : 'aktualisiert'}`, 'success');
+    toggleCorrBatchMode(false);
+    await loadCorrMap();
+  } else {
+    showToast(typeof d.detail === 'string' ? d.detail : 'Batch fehlgeschlagen', 'error');
+  }
+}
+
+function getFilteredCorrespondents(q) {
+  let list = _corrAllEntries || [];
+  if (_corrFilterMode === 'platzhalter') list = list.filter(e => e.platzhalter);
+  else if (_corrFilterMode === 'real') list = list.filter(e => !e.platzhalter);
+  const lq = (q || '').trim().toLowerCase();
+  if (!lq) return list;
+  return list.filter(e =>
+    e.name.toLowerCase().includes(lq) ||
+    (e.kuerzel||'').toLowerCase().includes(lq) ||
+    (e.varianten||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.match||[]).some(m => m.toLowerCase().includes(lq)) ||
+    (e.typische_ordner||[]).some(o => o.toLowerCase().includes(lq)) ||
+    (e.notiz||'').toLowerCase().includes(lq) ||
+    (e.identifikatoren?.uid||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.identifikatoren?.iban||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.identifikatoren?.email||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.identifikatoren?.telefon||[]).some(v => v.toLowerCase().includes(lq))
+  );
 }
 
 function countBadge(n) {
@@ -2283,7 +2414,9 @@ function renderCorrMap(eintraege) {
     <div class="card" id="corr-card-${idx}">
       <div class="card-header">
         <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          ${_corrBatchMode ? `<input type="checkbox" ${_corrBatchSelected.has(e.name)?'checked':''} onchange="toggleCorrBatchSelect('${e.name.replace(/'/g, "\\'")}', this.checked)" title="Für Batch auswählen">` : ''}
           <span class="card-title">${e.name}${e._paperless?.id != null ? countBadge(e.document_count) : ''}</span>
+          ${e.platzhalter ? `<span style="background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.45);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;letter-spacing:.3px;white-space:nowrap" title="Kein echter Absender">Platzhalter</span>` : ''}
           ${e.kuerzel ? `<span style="background:rgba(16,185,129,.2);color:#10b981;border:1px solid rgba(16,185,129,.4);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;letter-spacing:.5px;white-space:nowrap">${e.kuerzel}</span>` : '<span style="background:var(--surface);color:var(--muted);border:1px dashed var(--border);border-radius:4px;padding:1px 7px;font-size:10px;white-space:nowrap" title="Kürzel fehlt — im Edit setzen">kein Kürzel</span>'}
         </div>
         <div style="display:flex;gap:8px;align-items:center">
@@ -2357,20 +2490,7 @@ function renderCorrMap(eintraege) {
 }
 
 function filterCorrespondents(q) {
-  if (!q.trim()) { renderCorrMap(_corrAllEntries); return; }
-  const lq = q.toLowerCase();
-  renderCorrMap(_corrAllEntries.filter(e =>
-    e.name.toLowerCase().includes(lq) ||
-    (e.kuerzel||'').toLowerCase().includes(lq) ||
-    (e.varianten||[]).some(v => v.toLowerCase().includes(lq)) ||
-    (e.match||[]).some(m => m.toLowerCase().includes(lq)) ||
-    (e.typische_ordner||[]).some(o => o.toLowerCase().includes(lq)) ||
-    (e.notiz||'').toLowerCase().includes(lq) ||
-    (e.identifikatoren?.uid||[]).some(v => v.toLowerCase().includes(lq)) ||
-    (e.identifikatoren?.iban||[]).some(v => v.toLowerCase().includes(lq)) ||
-    (e.identifikatoren?.email||[]).some(v => v.toLowerCase().includes(lq)) ||
-    (e.identifikatoren?.telefon||[]).some(v => v.toLowerCase().includes(lq))
-  ));
+  renderCorrMap(getFilteredCorrespondents(q));
 }
 
 function toggleCorrEdit(idx, entry) {
@@ -2398,6 +2518,17 @@ function toggleCorrEdit(idx, entry) {
             placeholder="z.B. UBS">
           <span id="ce-kuerzel-status-${idx}" style="font-size:11px"></span>
         </div>
+      </div>
+      <div class="field-group">
+        <label style="display:flex;align-items:flex-start;gap:8px;font-weight:400;color:var(--text);cursor:pointer">
+          <input type="checkbox" id="ce-platzhalter-${idx}" ${entry.platzhalter?'checked':''} style="margin-top:2px">
+          <span>
+            <strong style="color:var(--text)">Platzhalter</strong>
+            <span style="display:block;color:var(--muted);font-size:10px;font-weight:400;margin-top:2px">
+              Kein echter Absender — wird in Dropdowns mit ⬚ markiert und nicht automatisch zugeordnet.
+            </span>
+          </span>
+        </label>
       </div>
       <div class="field-group">
         <label>Standard-Dokumenttyp</label>
@@ -2857,6 +2988,7 @@ async function saveCorrEdit(idx, nameParam) {
   }
   const body = {
     kuerzel:                kuerzelVal,
+    platzhalter:            document.getElementById(`ce-platzhalter-${idx}`)?.checked || false,
     default_dokumenttyp:    dtName,
     varianten:              getTagsFromContainer(`ce-var-${idx}`),
     match:                  getTagsFromContainer(`ce-match-${idx}`),
@@ -4144,8 +4276,13 @@ async function selectDocReview(i) {
   const spOptions = allStoragePaths.map(sp =>
     `<option value="${sp.id}" ${sp.name===entry.pfad?'selected':''}>${sp.name}</option>`).join('');
   const corrOptions = `<option value="">— kein Korrespondent —</option>` +
-    allDocCorrespondents.map(c =>
-      `<option value="${c.id}" ${c.id===doc?.correspondent?'selected':''}>${c.name}${c.kuerzel ? ' ('+c.kuerzel+')' : ''}</option>`).join('');
+    [...allDocCorrespondents].sort((a, b) => {
+      const pa = a.platzhalter ? 1 : 0;
+      const pb = b.platzhalter ? 1 : 0;
+      if (pa !== pb) return pa - pb;
+      return (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
+    }).map(c =>
+      `<option value="${c.id}" ${c.id===doc?.correspondent?'selected':''}>${formatCorrOptionLabel(c)}</option>`).join('');
   const tagOptions = allTags.map(t =>
     `<option value="${t.id}" ${currentTagIds.includes(t.id)?'selected':''}>${t.name}</option>`).join('');
 

@@ -48,6 +48,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.09 | Tab Handschrift (HTR), Belegdatum editierbar, corr-manager-Pfad |
-| BE | 2.56 | HTR-API (`/api/htr/*`), Session host-aware |
-| Pipe | 12.72 | HTR Profil-Routing, Schulbericht Strategie D |
+| UI | 3.10 | Korrespondenten Platzhalter-Flag, Filter, Batch, Dropdown-Präfix |
+| BE | 2.57 | platzhalter-Feld, Batch-API `/api/correspondents/batch-platzhalter` |
+| Pipe | 12.73 | Platzhalter von Auto-Match/Fuzzy/Identifikatoren ausgeschlossen |
