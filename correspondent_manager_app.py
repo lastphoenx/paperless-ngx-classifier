@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.56"  # 2.56: HTR pending API, Korrespondenten HTR-Overrides
-UI_VERSION = "3.09"
+__version__ = "2.57"  # 2.57: Korrespondenten platzhalter-Flag + Batch-API
+UI_VERSION = "3.10"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
@@ -1481,6 +1481,7 @@ def _register_new_correspondent(
     extr_muster: dict | None = None,
     erwartungen: dict | None = None,
     identifikatoren: dict | None = None,
+    platzhalter: bool = False,
 ) -> int:
     """Korrespondent in Paperless + correspondents.json anlegen. Gibt Paperless-ID zurück."""
     name = (name or "").strip()
@@ -1530,6 +1531,7 @@ def _register_new_correspondent(
         "extraktion_muster": extr_muster or {},
         "erwartungen": erwartungen or {},
         "identifikatoren": _normalize_identifikatoren(identifikatoren),
+        "platzhalter": bool(platzhalter),
         "_paperless": {
             "id": paperless_id,
             "is_insensitive": True,
@@ -1998,6 +2000,7 @@ def _approved_correspondents_for_docs() -> list[dict]:
             "id": pl_id,
             "name": e["name"],
             "kuerzel": e.get("kuerzel", ""),
+            "platzhalter": bool(e.get("platzhalter")),
         })
     if dirty:
         save_corr_map(corr_map)
@@ -2810,8 +2813,9 @@ def api_create_correspondent(body: dict = Body(...)):
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(400, "name erforderlich")
+    platzhalter = bool(body.get("platzhalter"))
     match_list = body.get("match") or body.get("match_strings") or []
-    if not match_list:
+    if not match_list and not platzhalter:
         match_list = [name.lower()]
     paperless_id = _register_new_correspondent(
         name=name,
@@ -2825,6 +2829,7 @@ def api_create_correspondent(body: dict = Body(...)):
         extr_muster=body.get("extraktion_muster"),
         erwartungen=body.get("erwartungen"),
         identifikatoren=body.get("identifikatoren"),
+        platzhalter=platzhalter,
     )
     log.info("Manuell angelegt: '%s' (Paperless #%s)", name, paperless_id)
     return {
@@ -3105,10 +3110,12 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
                   "typische_ordner", "notiz", "extraktion_muster", "erwartungen",
                   "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
                   "nicht_verwechseln_mit", "beziehungen", "kuerzel", "identifikatoren", "brillenpass",
-                  "htr_profile_mode", "htr_profiles_by_document_type"]:
+                  "htr_profile_mode", "htr_profiles_by_document_type", "platzhalter"]:
         if field in body:
             val = body[field]
-            if field == "kuerzel":
+            if field == "platzhalter":
+                val = bool(body[field])
+            elif field == "kuerzel":
                 val = (body[field] or "").strip().upper()
             elif field == "nicht_verwechseln_mit":
                 val = _normalize_string_list(body[field])
@@ -3136,6 +3143,7 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     entry.setdefault("identifikatoren", {"uid": [], "iban": [], "email": [], "telefon": []})
     entry.setdefault("htr_profile_mode", "use_document_type")
     entry.setdefault("htr_profiles_by_document_type", {})
+    entry.setdefault("platzhalter", False)
 
     # default_dokumenttyp_id synchronisieren falls nur Name geändert
     if "default_dokumenttyp" in body and "default_dokumenttyp_id" not in body:
@@ -3860,12 +3868,14 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     allowed = [
         "varianten", "match", "default_dokumenttyp", "typische_ordner", "notiz",
         "fix_tags", "verbotene_doctypen", "verbotene_ordner", "verbotene_tags",
-        "nicht_verwechseln_mit", "beziehungen", "kuerzel",
+        "nicht_verwechseln_mit", "beziehungen", "kuerzel", "platzhalter",
     ]
     for field in allowed:
         if field in body:
             val = body[field]
-            if field == "kuerzel":
+            if field == "platzhalter":
+                val = bool(body[field])
+            elif field == "kuerzel":
                 val = (body[field] or "").strip().upper()
             elif field == "nicht_verwechseln_mit":
                 val = _normalize_string_list(body[field])
@@ -3882,10 +3892,43 @@ def api_patch_correspondent(entry_name: str, body: dict = Body(...)):
     entry.setdefault("nicht_verwechseln_mit", [])
     entry.setdefault("beziehungen", [])
     entry.setdefault("kuerzel", "")
+    entry.setdefault("platzhalter", False)
 
     save_corr_map(corr_map)
     return {"status": "updated", "name": entry_name}
 
+
+@app.post("/api/correspondents/batch-platzhalter")
+def api_batch_platzhalter(body: dict = Body(...)):
+    """Mehrere Korrespondenten als Platzhalter markieren oder Markierung entfernen."""
+    names = body.get("names") or []
+    if not names or not isinstance(names, list):
+        raise HTTPException(400, "names (Liste) erforderlich")
+    platzhalter = bool(body.get("platzhalter", True))
+    corr_map = load_corr_map()
+    updated: list[str] = []
+    missing: list[str] = []
+    for raw in names:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        entry = next((e for e in corr_map.get("eintraege", [])
+                      if e.get("name", "").lower() == name.lower()), None)
+        if not entry:
+            missing.append(name)
+            continue
+        entry["platzhalter"] = platzhalter
+        updated.append(entry["name"])
+    if not updated:
+        raise HTTPException(404, "Keine der angegebenen Namen gefunden")
+    save_corr_map(corr_map)
+    return {
+        "status": "updated",
+        "platzhalter": platzhalter,
+        "updated": updated,
+        "missing": missing,
+        "count": len(updated),
+    }
 
 
 @app.get("/api/manifest", response_class=JSONResponse)

@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.72"  # 12.72: Schulbericht Content-Strategie D (Metadaten S.1 + Seitentranskript)
+POST_CONSUME_VERSION = "12.73"  # 12.73: Platzhalter-Korrespondenten von Auto-Match ausgeschlossen
 import re
 import sys
 import json
@@ -367,6 +367,11 @@ def _corr_kandidaten_strings(entry: dict) -> list[str]:
     )
 
 
+def _is_corr_platzhalter(entry: dict) -> bool:
+    """Platzhalter-Korrespondenten (kein echter Absender) nicht automatisch zuordnen."""
+    return bool(entry.get("platzhalter"))
+
+
 def _resolve_corr_entry(corr_map: dict, absender: str) -> dict | None:
     """Korrespondent zu Absender/LLM-Name (Stufe 1 + resolve_correspondent).
 
@@ -381,12 +386,16 @@ def _resolve_corr_entry(corr_map: dict, absender: str) -> dict | None:
     abs_norm = _normalize_corr(absender)
 
     for entry in corr_map.get("eintraege", []):
+        if _is_corr_platzhalter(entry):
+            continue
         for m in entry.get("match", []):
             if _normalize_corr(m) == abs_norm:
                 return entry
 
     best_entry, best_len = None, 0
     for entry in corr_map.get("eintraege", []):
+        if _is_corr_platzhalter(entry):
+            continue
         for k in _corr_kandidaten_strings(entry):
             if not k or len(k) < 3:
                 continue
@@ -397,6 +406,8 @@ def _resolve_corr_entry(corr_map: dict, absender: str) -> dict | None:
         return best_entry
 
     for entry in corr_map.get("eintraege", []):
+        if _is_corr_platzhalter(entry):
+            continue
         for k in _corr_kandidaten_strings(entry):
             if not k or len(k) < 3:
                 continue
@@ -606,6 +617,8 @@ def _match_correspondent_by_identifikatoren(
     tel_hits: list[dict] = []
 
     for entry in corr_map.get("eintraege", []):
+        if _is_corr_platzhalter(entry):
+            continue
         ident = entry.get("identifikatoren") or {}
         for uid in ident.get("uid", []) or []:
             if _norm_corr_uid(uid) in doc_uids:
@@ -3501,6 +3514,8 @@ def _find_fuzzy_match(corr_map: dict, raw_name: str) -> tuple[Optional[dict], in
     best_score = 0
 
     for entry in corr_map.get("eintraege", []):
+        if _is_corr_platzhalter(entry):
+            continue
         if _is_merge_forbidden(corr_map, raw_name, entry):
             log.info("Fuzzy: Merge verboten: '%s' ↛ '%s'",
                      raw_name, entry.get("name", "?"))
