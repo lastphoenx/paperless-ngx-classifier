@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.74"  # 12.74: IBAN-Extraktion mit Modulo-97-Validierung (keine OCR-Falschtreffer)
+POST_CONSUME_VERSION = "12.75"  # 12.75: Fix IndentationError _corr_document_search_text (12.74 Regression)
 import re
 import sys
 import json
@@ -499,6 +499,9 @@ _CORR_UID_RE = re.compile(
     re.IGNORECASE,
 )
 from iban_utils import extract_ibans_from_text, fix_iban_ocr_compact, format_iban_display, validate_iban
+
+
+def _corr_document_search_text(
     ocr_text: str,
     qr_meta: dict | None = None,
     vision_meta: dict | None = None,
