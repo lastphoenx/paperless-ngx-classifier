@@ -56,6 +56,55 @@
   .badge-pending  { background: rgba(245,158,11,.15); color: var(--warn); }
   .badge-approved { background: rgba(34,197,94,.15);  color: var(--success); }
   .badge-rejected { background: rgba(239,68,68,.15);  color: var(--danger); }
+  .badge-kuerzel {
+    display: inline-block; flex-shrink: 0;
+    background: rgba(16,185,129,.2); color: #10b981;
+    border: 1px solid rgba(16,185,129,.4); border-radius: 4px;
+    padding: 1px 7px; font-size: 10px; font-weight: 700; letter-spacing: .5px;
+  }
+  .badge-platzhalter {
+    display: inline-block; flex-shrink: 0;
+    background: rgba(245,158,11,.2); color: #fbbf24;
+    border: 1px solid rgba(245,158,11,.45); border-radius: 4px;
+    padding: 1px 7px; font-size: 10px; font-weight: 700; letter-spacing: .3px;
+  }
+  .corr-picker { position: relative; width: 100%; }
+  .corr-picker-trigger {
+    width: 100%; text-align: left; cursor: pointer;
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 8px 10px;
+    font-family: var(--font); font-size: 13px; transition: border-color .15s;
+    display: flex; align-items: center; gap: 8px; min-height: 38px;
+  }
+  .corr-picker-trigger:hover, .corr-picker.open .corr-picker-trigger {
+    border-color: var(--accent);
+  }
+  .corr-picker-trigger .corr-name {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .corr-picker-trigger .corr-badges, .corr-picker-item .corr-badges {
+    display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+  }
+  .corr-picker-caret { color: var(--muted); font-size: 10px; flex-shrink: 0; margin-left: 2px; }
+  .corr-picker-menu {
+    display: none; position: absolute; z-index: 80; top: calc(100% + 4px); left: 0; right: 0;
+    max-height: min(320px, 50vh); overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: 0 10px 28px rgba(0,0,0,.45);
+  }
+  .corr-picker.open .corr-picker-menu { display: block; }
+  .corr-picker-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    cursor: pointer; border-bottom: 1px solid rgba(42,45,58,.6);
+  }
+  .corr-picker-item:last-child { border-bottom: none; }
+  .corr-picker-item:hover, .corr-picker-item.selected {
+    background: rgba(79,156,249,.1);
+  }
+  .corr-picker-item .corr-name {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .corr-picker-item.placeholder-row { opacity: .92; }
 
   /* Pending list */
   .pending-item { border: 1px solid var(--border); border-radius: var(--radius);
@@ -982,7 +1031,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.10';
+const UI_VERSION = '3.11';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -1372,12 +1421,112 @@ function _pendingEntryLabel(e) {
   return `${name} (${docs} Dok.)`;
 }
 
-/** Dropdown-Label: Platzhalter mit ⬚-Präfix, optional Kürzel in Klammern. */
+/** HTML escapen für Picker-Labels. */
+function _escHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function corrPickerBadgesHtml(e) {
+  if (!e) return '';
+  const parts = [];
+  if (e.platzhalter) parts.push('<span class="badge-platzhalter">Platzhalter</span>');
+  if (e.kuerzel) parts.push(`<span class="badge-kuerzel">${_escHtml(e.kuerzel)}</span>`);
+  return parts.length ? `<span class="corr-badges">${parts.join('')}</span>` : '';
+}
+
+function sortCorrespondentsForPicker(list) {
+  return [...(list || [])].sort((a, b) => {
+    const pa = a.platzhalter ? 1 : 0;
+    const pb = b.platzhalter ? 1 : 0;
+    if (pa !== pb) return pa - pb;
+    return (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
+  });
+}
+
+function _corrPickerValueOf(entry, valueKey) {
+  return valueKey === 'name' ? (entry?.name ?? '') : String(entry?.id ?? '');
+}
+
+function _corrPickerFindEntry(items, value, valueKey) {
+  if (value == null || value === '') return null;
+  const v = String(value);
+  return (items || []).find(e => _corrPickerValueOf(e, valueKey) === v) || null;
+}
+
+function corrPickerTriggerHtml(entry, emptyLabel) {
+  if (!entry) return `<span class="corr-name" style="color:var(--muted)">${_escHtml(emptyLabel)}</span>`;
+  return `<span class="corr-name">${_escHtml(entry.name)}</span>${corrPickerBadgesHtml(entry)}`;
+}
+
+function renderCorrPicker({ pickerId, hiddenId, items, selectedValue, valueKey = 'id', emptyLabel = '— kein Korrespondent —' }) {
+  const sorted = sortCorrespondentsForPicker(items);
+  const sel = selectedValue != null && selectedValue !== '' ? String(selectedValue) : '';
+  const selected = _corrPickerFindEntry(sorted, sel, valueKey);
+  const menu = [
+    `<div class="corr-picker-item${sel ? '' : ' selected'}" data-value="" onclick="selectCorrPicker('${pickerId}','')">
+      <span class="corr-name" style="color:var(--muted)">${_escHtml(emptyLabel)}</span>
+    </div>`,
+    ...sorted.map(e => {
+      const rawVal = _corrPickerValueOf(e, valueKey);
+      const valEsc = _escHtml(rawVal);
+      const cls = ['corr-picker-item', e.platzhalter ? 'placeholder-row' : '', sel === String(rawVal) ? 'selected' : ''].filter(Boolean).join(' ');
+      return `<div class="${cls}" data-value="${valEsc}" onclick="selectCorrPicker('${pickerId}','${String(rawVal).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')">
+        <span class="corr-name">${_escHtml(e.name)}</span>${corrPickerBadgesHtml(e)}
+      </div>`;
+    }),
+  ].join('');
+  return `<div class="corr-picker" id="${pickerId}" data-value-key="${valueKey}" data-empty-label="${_escHtml(emptyLabel)}">
+    <button type="button" class="corr-picker-trigger" onclick="toggleCorrPicker('${pickerId}', event)">
+      ${corrPickerTriggerHtml(selected, emptyLabel)}
+      <span class="corr-picker-caret">▾</span>
+    </button>
+    <div class="corr-picker-menu">${menu}</div>
+    <input type="hidden" id="${hiddenId}" value="${_escHtml(sel)}">
+  </div>`;
+}
+
+function toggleCorrPicker(pickerId, event) {
+  event?.stopPropagation();
+  const picker = document.getElementById(pickerId);
+  if (!picker) return;
+  const open = picker.classList.contains('open');
+  document.querySelectorAll('.corr-picker.open').forEach(p => p.classList.remove('open'));
+  if (!open) picker.classList.add('open');
+}
+
+function selectCorrPicker(pickerId, value) {
+  const picker = document.getElementById(pickerId);
+  if (!picker) return;
+  const valueKey = picker.dataset.valueKey || 'id';
+  const emptyLabel = picker.dataset.emptyLabel || '— kein Korrespondent —';
+  const hidden = picker.querySelector('input[type="hidden"]');
+  const trigger = picker.querySelector('.corr-picker-trigger');
+  const items = valueKey === 'name'
+    ? sortCorrespondentsForPicker(allCorrEntries || [])
+    : sortCorrespondentsForPicker(allDocCorrespondents || []);
+  const entry = _corrPickerFindEntry(items, value, valueKey);
+  if (hidden) hidden.value = value == null ? '' : String(value);
+  if (trigger) {
+    trigger.innerHTML = `${corrPickerTriggerHtml(entry, emptyLabel)}<span class="corr-picker-caret">▾</span>`;
+  }
+  picker.querySelectorAll('.corr-picker-item').forEach(el => {
+    el.classList.toggle('selected', (el.dataset.value || '') === String(value ?? ''));
+  });
+  picker.classList.remove('open');
+}
+
+document.addEventListener('click', () => {
+  document.querySelectorAll('.corr-picker.open').forEach(p => p.classList.remove('open'));
+});
+
+/** Fallback-Text für native &lt;select&gt; (Merge etc.). */
 function formatCorrOptionLabel(e) {
   if (!e) return '';
-  const pfx = e.platzhalter ? '⬚ ' : '';
-  const k = e.kuerzel ? ` (${e.kuerzel})` : '';
-  return `${pfx}${e.name}${k}`;
+  let label = e.name || '';
+  if (e.platzhalter) label = `· ${label}`;
+  if (e.kuerzel) label += ` — ${e.kuerzel}`;
+  return label;
 }
 
 /** Freigegebene Korrespondenten — echte zuerst, Treffer zum Pending-Namen oben, Platzhalter unten. */
@@ -1440,9 +1589,6 @@ function renderAssignExistingPicker(index) {
     : (entry?.vorgeschlagener_eintrag?.name || '');
   const approved = sortedApprovedCorrespondents(hint);
   if (!approved.length) return '';
-  const opts = approved.map(e =>
-    `<option value="${e.name}">${formatCorrOptionLabel(e)}</option>`
-  ).join('');
   return `
     <div class="field-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
       <label>Bestehendem Korrespondenten zuweisen
@@ -1451,17 +1597,23 @@ function renderAssignExistingPicker(index) {
         </span>
       </label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <select id="f-assign-existing" style="flex:1;min-width:200px">
-          <option value="">— Korrespondent wählen —</option>
-          ${opts}
-        </select>
+        <div style="flex:1;min-width:200px">
+        ${renderCorrPicker({
+          pickerId: `assign-corr-picker-${index}`,
+          hiddenId: `f-assign-existing-${index}`,
+          items: approved,
+          selectedValue: '',
+          valueKey: 'name',
+          emptyLabel: '— Korrespondent wählen —',
+        })}
+        </div>
         <button class="btn btn-primary" onclick="submitAssignExisting(${index})">→ Zuweisen</button>
       </div>
     </div>`;
 }
 
 async function submitAssignExisting(index) {
-  const name = document.getElementById('f-assign-existing')?.value;
+  const name = document.getElementById(`f-assign-existing-${index}`)?.value;
   if (!name) { showToast('Bitte Korrespondent wählen', 'warn'); return; }
   const entry = pendingEntries[index];
   const docs = (entry.source_document_ids || []).join(', ');
@@ -2416,8 +2568,8 @@ function renderCorrMap(eintraege) {
         <div style="display:flex;align-items:center;gap:8px;min-width:0">
           ${_corrBatchMode ? `<input type="checkbox" ${_corrBatchSelected.has(e.name)?'checked':''} onchange="toggleCorrBatchSelect('${e.name.replace(/'/g, "\\'")}', this.checked)" title="Für Batch auswählen">` : ''}
           <span class="card-title">${e.name}${e._paperless?.id != null ? countBadge(e.document_count) : ''}</span>
-          ${e.platzhalter ? `<span style="background:rgba(245,158,11,.2);color:#fbbf24;border:1px solid rgba(245,158,11,.45);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;letter-spacing:.3px;white-space:nowrap" title="Kein echter Absender">Platzhalter</span>` : ''}
-          ${e.kuerzel ? `<span style="background:rgba(16,185,129,.2);color:#10b981;border:1px solid rgba(16,185,129,.4);border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;letter-spacing:.5px;white-space:nowrap">${e.kuerzel}</span>` : '<span style="background:var(--surface);color:var(--muted);border:1px dashed var(--border);border-radius:4px;padding:1px 7px;font-size:10px;white-space:nowrap" title="Kürzel fehlt — im Edit setzen">kein Kürzel</span>'}
+          ${e.platzhalter ? `<span class="badge-platzhalter">Platzhalter</span>` : ''}
+          ${e.kuerzel ? `<span class="badge-kuerzel">${e.kuerzel}</span>` : '<span style="background:var(--surface);color:var(--muted);border:1px dashed var(--border);border-radius:4px;padding:1px 7px;font-size:10px;white-space:nowrap" title="Kürzel fehlt — im Edit setzen">kein Kürzel</span>'}
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <span class="badge badge-${e._paperless?.id ? 'approved' : 'pending'}">
@@ -2525,7 +2677,7 @@ function toggleCorrEdit(idx, entry) {
           <span>
             <strong style="color:var(--text)">Platzhalter</strong>
             <span style="display:block;color:var(--muted);font-size:10px;font-weight:400;margin-top:2px">
-              Kein echter Absender — wird in Dropdowns mit ⬚ markiert und nicht automatisch zugeordnet.
+              Kein echter Absender — wird in Dropdowns mit Badge „Platzhalter“ markiert und nicht automatisch zugeordnet.
             </span>
           </span>
         </label>
@@ -4275,14 +4427,14 @@ async function selectDocReview(i) {
   // Select Options — Vorauswahl basierend auf aktuellem Dokument-Zustand
   const spOptions = allStoragePaths.map(sp =>
     `<option value="${sp.id}" ${sp.name===entry.pfad?'selected':''}>${sp.name}</option>`).join('');
-  const corrOptions = `<option value="">— kein Korrespondent —</option>` +
-    [...allDocCorrespondents].sort((a, b) => {
-      const pa = a.platzhalter ? 1 : 0;
-      const pb = b.platzhalter ? 1 : 0;
-      if (pa !== pb) return pa - pb;
-      return (a.name || '').localeCompare(b.name || '', 'de', { sensitivity: 'base' });
-    }).map(c =>
-      `<option value="${c.id}" ${c.id===doc?.correspondent?'selected':''}>${formatCorrOptionLabel(c)}</option>`).join('');
+  const corrPickerHtml = renderCorrPicker({
+    pickerId: 'dr-corr-picker',
+    hiddenId: 'dr-corr',
+    items: allDocCorrespondents,
+    selectedValue: doc?.correspondent ?? '',
+    valueKey: 'id',
+    emptyLabel: '— kein Korrespondent —',
+  });
   const tagOptions = allTags.map(t =>
     `<option value="${t.id}" ${currentTagIds.includes(t.id)?'selected':''}>${t.name}</option>`).join('');
 
@@ -4377,7 +4529,7 @@ async function selectDocReview(i) {
           </div>
           <div class="field-group" style="margin:0">
             <label>Korrespondent</label>
-            <select id="dr-corr">${corrOptions}</select>
+            ${corrPickerHtml}
           </div>
           <div class="field-group" style="margin:0">
             <label>Dokumenttyp</label>
