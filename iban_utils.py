@@ -21,8 +21,9 @@ IBAN_LENGTHS: dict[str, int] = {
     "VG": 24, "XK": 20,
 }
 
+# Keine Capture-Groups — finditer liefert stabile Volltreffer
 _SPACED_IBAN_RE = re.compile(
-    r"\b([A-Z]{2}\d{2}(?:[\s\-]?[0-9A-Z]{4}){1,7}[\s\-]?[0-9A-Z]{0,4})\b",
+    r"\b[A-Z]{2}\d{2}(?:[\s\-]?[0-9A-Z]{4}){1,7}[\s\-]?[0-9A-Z]{0,4}\b",
     re.IGNORECASE,
 )
 _ANCHOR_RE = re.compile(r"[A-Z]{2}\d{2}")
@@ -34,16 +35,15 @@ def normalize_iban(raw: str) -> str:
 
 
 def fix_iban_ocr_compact(compact: str) -> str:
-    """Häufiger OCR-Fehler: CHO… → CH0…"""
-    c = compact.upper()
-    if c.startswith("CHO") and len(c) >= 4:
-        return "CH0" + c[3:]
-    return c
+    """Häufiger OCR-Fehler: CHO… → CH0… (compact muss bereits normalisiert sein)."""
+    if compact.startswith("CHO") and len(compact) >= 4:
+        return "CH0" + compact[3:]
+    return compact
 
 
-def is_valid_iban(compact: str) -> bool:
-    """Prüfziffer Modulo 97 + exakte Länderlänge."""
-    iban = normalize_iban(compact)
+def is_valid_iban_compact(compact: str) -> bool:
+    """Modulo 97 + Länge — compact muss bereits normalisiert sein."""
+    iban = compact
     if len(iban) < 15:
         return False
     country = iban[:2]
@@ -63,23 +63,27 @@ def is_valid_iban(compact: str) -> bool:
         return False
 
 
+def is_valid_iban(raw: str) -> bool:
+    """Prüfziffer Modulo 97 + exakte Länderlänge (beliebiges Eingabeformat)."""
+    return is_valid_iban_compact(normalize_iban(raw))
+
+
 def validate_iban(raw: str) -> str | None:
     """Normalisiert und gibt kompakte IBAN zurück, oder None wenn ungültig."""
     compact = normalize_iban(raw)
-    if is_valid_iban(compact):
+    if is_valid_iban_compact(compact):
         return compact
     fixed = fix_iban_ocr_compact(compact)
-    if fixed != compact and is_valid_iban(fixed):
+    if fixed != compact and is_valid_iban_compact(fixed):
         return fixed
     return None
 
 
 def format_iban_display(compact: str) -> str:
-    """CH/LI/DE-typische Gruppierung zu Anzeige (4er-Blöcke)."""
-    iban = normalize_iban(compact)
-    if len(iban) < 15:
-        return iban
-    parts = [iban[i : i + 4] for i in range(0, len(iban), 4)]
+    """Gruppiert eine bereits validierte kompakte IBAN (4er-Blöcke)."""
+    if not compact:
+        return ""
+    parts = [compact[i : i + 4] for i in range(0, len(compact), 4)]
     return " ".join(parts)
 
 
@@ -117,8 +121,8 @@ def extract_ibans_from_text(text: str, *, max_results: int = 3) -> list[str]:
             seen.add(valid)
             found.append(format_iban_display(valid))
 
-    for m in _SPACED_IBAN_RE.findall(text or ""):
-        _add_raw(m)
+    for m in _SPACED_IBAN_RE.finditer(text or ""):
+        _add_raw(m.group(0))
 
     for candidate in _candidates_from_compact(text or ""):
         _add_raw(candidate)

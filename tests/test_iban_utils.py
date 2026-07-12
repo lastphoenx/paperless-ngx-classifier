@@ -1,6 +1,6 @@
 import unittest
 
-from iban_utils import extract_ibans_from_text, is_valid_iban, normalize_iban, validate_iban
+from iban_utils import extract_ibans_from_text, format_iban_display, is_valid_iban, normalize_iban, validate_iban
 
 
 class TestIbanUtils(unittest.TestCase):
@@ -19,6 +19,14 @@ class TestIbanUtils(unittest.TestCase):
 
     def test_wrong_length(self):
         self.assertFalse(is_valid_iban("CH930076201162385295"))
+
+    def test_format_iban_display_empty(self):
+        self.assertEqual(format_iban_display(""), "")
+
+    def test_none_does_not_become_none_string(self):
+        # normalize_iban(None) → "", nicht "NONE" (Kritikpunkt 1 war teils falsch)
+        self.assertEqual(normalize_iban(None), "")
+        self.assertEqual(format_iban_display(""), "")
 
     def test_impfpass_ocr_garbage_rejected(self):
         text = """
