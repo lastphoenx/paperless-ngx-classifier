@@ -79,6 +79,7 @@ Write-Host "Skripte:" -ForegroundColor Yellow
     "correspondent_manager_app.py",
     "paper_manager_ui.html",
     "post_consume.py",
+    "iban_utils.py",
     "pre_consume.sh",
     "pre_consume_qr.py",
     "requirements-corr-manager.txt"
@@ -126,6 +127,7 @@ Write-Host "Doku:" -ForegroundColor Yellow
     @{ Src = "docs\Bedienungsanleitung_paper_manager.doc"; Dst = "Bedienungsanleitung_paper_manager.doc" },
     @{ Src = "docs\Bedienungsanleitung_paper_manager.docx"; Dst = "Bedienungsanleitung_paper_manager.docx" },
     @{ Src = "docs\DEVELOPER.md"; Dst = "DEVELOPER.md" },
+    @{ Src = "docs\BRILLENPASS_HANDOFF.md"; Dst = "BRILLENPASS_HANDOFF.md" },
     @{ Src = "docs\VERSIONING.md"; Dst = "VERSIONING.md" },
     @{ Src = "docs\LEGACY_MIGRATION_PLAN.md"; Dst = "LEGACY_MIGRATION_PLAN.md" },
     @{ Src = "docs\LEGACY_IMPORT.md";         Dst = "LEGACY_IMPORT.md" },

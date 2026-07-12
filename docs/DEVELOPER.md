@@ -1,6 +1,6 @@
 # paper.manager / paperless-ngx-classifier — Developer Guide
 
-**Stand:** März 2026 · UI `3.09` · BE `2.56` · Pipe `12.72`
+**Stand:** März 2026 · UI `3.11` · BE `2.58` · Pipe `12.74`
 
 Benutzer-Doku: [`Benutzerhandbuch_paper_manager.md`](Benutzerhandbuch_paper_manager.md)
 
@@ -44,6 +44,7 @@ paper_manager_ui.html   → SPA ohne Build-Step
 | `image_crop.py` | PDF-Render, Trim/Horizontal-Bands für HTR |
 | `schulbericht_vision.py` | Schulbericht HTR + Extract, Zeilen-Merge |
 | `document_date.py` | Belegdatum-Extraktion/Validierung |
+| `iban_utils.py` | IBAN-Extraktion (OCR-Text), Modulo-97-Validierung, Formatierung |
 | `training/*.example.json` | Schema-Beispiele (keine Live-Daten im Repo) |
 | `tests/` | pytest (Parser, Fielmann, …) |
 
@@ -261,9 +262,54 @@ Tests: `tests/test_htr_sanitize.py`
 
 ---
 
-## 7. Legacy QR-Split — Entwickler
+## 7. Korrespondenten & Identifikatoren
 
-### 7.1 Unterschied
+### 7.1 Platzhalter (`platzhalter: true`)
+
+Synthetische Korrespondenten ohne echten Absender (z. B. `Gesundheit`, `Medien`, `Privat`). User legt sie selbst an.
+
+| Schicht | Verhalten |
+|---|---|
+| `correspondents.json` | Feld `platzhalter: bool` (Default `false`) |
+| UI | Checkbox beim Edit, Badge in Liste/Picker, Filter, Batch (`POST /api/correspondents/batch-platzhalter`) |
+| `post_consume.py` | `_is_corr_platzhalter()` — überspringt Eintrag bei `_resolve_corr_entry`, Fuzzy, Identifikator-Match |
+
+Platzhalter erscheinen im Dokument-Review-Picker, werden aber **nie** automatisch zugeordnet.
+
+### 7.2 Korrespondenten-Picker (UI 3.11)
+
+Ersetzt natives `<select>` in Dokument-Review und Pending-Zuweisung. Zeigt `badge-kuerzel` und `badge-platzhalter` als echte HTML-Badges (durchsuchbar).
+
+### 7.3 Identifikatoren & IBAN (`iban_utils.py`)
+
+```json
+"identifikatoren": {
+  "uid": ["CHE-123.456.789"],
+  "iban": ["CH93 0076 2011 6238 5295 7"],
+  "email": [],
+  "telefon": []
+}
+```
+
+| Funktion | Ort | Zweck |
+|---|---|---|
+| `extract_ibans_from_text()` | `iban_utils.py` → `post_consume.py` | Kandidaten per Regex, nur gültige IBANs (Modulo 97, Länderlänge) |
+| `validate_iban()` / `is_valid_iban_compact()` | `iban_utils.py` | Backend + Pipeline |
+| `_normalize_identifikatoren()` | `correspondent_manager_app.py` | Speichern; IBAN-Fehler → HTTP 400 |
+
+Tests: `tests/test_iban_utils.py`
+
+### 7.4 API (Auszug)
+
+| Methode | Pfad | Zweck |
+|---|---|---|
+| POST | `/api/correspondents/batch-platzhalter` | Body: `{ "names": ["Gesundheit", …], "platzhalter": true }` |
+
+---
+
+## 8. Legacy QR-Split — Entwickler
+
+### 8.1 Unterschied
 
 | Modul | QR-Typ | Wann |
 |---|---|---|
@@ -273,7 +319,7 @@ Tests: `tests/test_htr_sanitize.py`
 
 Port von `tsa_barcode_split_function.sh`: **Ghostscript** (nicht Poppler allein) + pyzbar/zbar + Seiten-Split.
 
-### 7.2 API (async)
+### 8.2 API (async)
 
 `POST /api/legacy-split/trigger/{doc_id}` → sofort `{async: true}`; UI pollt:
 
@@ -294,7 +340,7 @@ Body (JSON):
 - `dry_run: false` → Split lokal, `shutil.move` nach `consume_dir`
 - `sync: true` → blockierend (curl/Debug), kein Polling
 
-### 7.3 Architektur (BE 2.51)
+### 8.3 Architektur (BE 2.51)
 
 ```
 POST trigger → BackgroundTask → _LEGACY_SPLIT_EXECUTOR
@@ -308,7 +354,7 @@ POST trigger → BackgroundTask → _LEGACY_SPLIT_EXECUTOR
 
 `normalize_legacy_qr_regex()` in `legacy_split_by_qr.py` fängt kaputte Werte ab.
 
-### 7.4 Abhängigkeiten & CLI
+### 8.4 Abhängigkeiten & CLI
 
 ```bash
 sudo ./scripts/ensure-legacy-qr-deps.sh   # poppler, ghostscript, zbar, venv
@@ -325,7 +371,7 @@ Env: `PAPERLESS_CONSUME_DIR`, `LEGACY_SPLIT_QR_REGEX`, `LEGACY_SPLIT_TMP`
 
 ---
 
-## 8. Wichtige `.env`-Variablen
+## 9. Wichtige `.env`-Variablen
 
 | Variable | Zweck |
 |---|---|
@@ -344,7 +390,7 @@ Vollständig: `.env.example`
 
 ---
 
-## 9. Tests & lokale Entwicklung
+## 10. Tests & lokale Entwicklung
 
 ```bash
 cd paperless-ngx-classifier
@@ -363,7 +409,7 @@ UI: `paper_manager_ui.html` wird vom FastAPI-Root ausgeliefert.
 
 ---
 
-## 10. Deploy-Checkliste
+## 11. Deploy-Checkliste
 
 ```bash
 cd /opt/paperless-ngx-classifier && git pull
@@ -377,7 +423,7 @@ Sidebar: `UI v3.09 | be v2.56 | pipe v12.72`
 
 ---
 
-## 11. Private Doku (Git `/doku`)
+## 12. Private Doku (Git `/doku`)
 
 Spiegel für CT-121-Betrieb:
 

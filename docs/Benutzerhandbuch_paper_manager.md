@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 3.09 | März 2026** (Pipeline `12.72`, Backend `2.56`)
+**Version 3.11 | März 2026** (Pipeline `12.74`, Backend `2.58`)
 
 > Entwickler-Details: [`DEVELOPER.md`](DEVELOPER.md) · Legacy-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
 
@@ -35,7 +35,7 @@ Klick auf **«paper.manager»** in der **Sidebar** (Logo links) öffnet die Land
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v3.09 | be v2.56 | pipe v12.72
+UI v3.11 | be v2.58 | pipe v12.74
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
@@ -163,7 +163,33 @@ Unbekannte Absender → Warteschlange (roter Badge).
 
 ## 5. Korrespondenten verwalten
 
-Edit-Button beim Eintrag. Felder: Standard-Dokumenttyp, Varianten, Match-Strings, Typische Ordner, Notiz.
+Edit-Button beim Eintrag. Felder: Standard-Dokumenttyp, Varianten, Match-Strings, Typische Ordner, Notiz, **Identifikatoren** (UID, IBAN, E-Mail, Telefon), **Kürzel**, **Platzhalter**.
+
+### Platzhalter-Korrespondenten
+
+Für Dokumente **ohne echten Absender** (Impfpass, Privatnotizen, anonyme Belege) legst du selbst generische Korrespondenten an und markierst sie als Platzhalter:
+
+| Beispiel | Zweck |
+|---|---|
+| `Gesundheit` | Impfpass, Arztbriefe ohne klaren Absender |
+| `Medien` | Zeitungsausschnitte, Broschüren |
+| `Privat` | Handschrift, Notizen ohne Absender |
+
+| UI | Verhalten |
+|---|---|
+| Checkbox **Platzhalter** (Edit) | Kennzeichnet den Eintrag; Badge **Platzhalter** in Liste und Picker |
+| Filter oben | **Alle** / **Nur Platzhalter** / **Ohne Platzhalter** |
+| Batch-Modus | Mehrere Einträge wählen → **Als Platzhalter markieren** / **Markierung entfernen** |
+
+**Pipeline:** Platzhalter werden **nicht** automatisch per OCR, Fuzzy-Match oder Identifikator zugeordnet. Du wählst sie manuell im Dokument-Review (z. B. Impfpass → `Gesundheit` statt fälschlich erkanntem Kantonsnamen).
+
+> Platzhalter brauchen keinen Match-String — optional nur Kürzel und Standard-Dokumenttyp.
+
+### Identifikatoren (UID, IBAN, …)
+
+Unter **Erweitert** pro Korrespondent: UID, IBAN, E-Mail, Telefon. Die Pipeline nutzt sie für deterministische Zuordnung (z. B. QR-Rechnung, OCR).
+
+**IBAN:** Beim Speichern prüft das Backend Modulo-97 und Länderlänge. Ungültige IBANs werden abgelehnt. In der Pipeline werden nur echte IBANs aus dem Text extrahiert (keine OCR-Falschtreffer wie «CHRISTO…» oder «CHE…» ohne Prüfziffer).
 
 ### Brillenpass am Korrespondenten (Optiker)
 
@@ -214,7 +240,7 @@ Dokumente mit einem der pending-Tags landen automatisch in der Review-Warteschla
 | Feld | Beschreibung |
 |---|---|
 | Titel | Vom LLM vorgeschlagen — **bei Freigeben editierbar und speicherbar** |
-| Korrespondent | Erkannter Absender — Dropdown nur **freigegebene** Korrespondenten |
+| Korrespondent | Erkannter Absender — **Picker** (Suchfeld) nur **freigegebene** Korrespondenten; Kürzel- und Platzhalter-Badges sichtbar |
 | Ordner | Zugewiesener Speicherpfad |
 | Dokumenttyp | Erkannter Dokumenttyp |
 | Belegdatum | Ausstellungsdatum (`tt.mm.jjjj`) — wird als Paperless-Feld `created` gespeichert |
@@ -231,7 +257,7 @@ Unter den KI-Feldern:
 | Feld | Funktion |
 |---|---|
 | Ordner | Anderen Speicherpfad wählen |
-| Korrespondent | Anderen Absender wählen |
+| Korrespondent | Anderen Absender wählen (Picker mit Badges; Platzhalter z. B. für Impfpass ohne Absender) |
 | Dokumenttyp | Anderen Typ wählen (NEU) |
 | Tags | Tags wählen — bei **Neu klassifizieren** werden bestehende Tags **ersetzt** (nicht angehängt) |
 
