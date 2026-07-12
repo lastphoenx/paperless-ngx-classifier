@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.73"  # 12.73: Platzhalter-Korrespondenten von Auto-Match ausgeschlossen
+POST_CONSUME_VERSION = "12.74"  # 12.74: IBAN-Extraktion mit Modulo-97-Validierung (keine OCR-Falschtreffer)
 import re
 import sys
 import json
@@ -498,14 +498,7 @@ _CORR_UID_RE = re.compile(
     r"CHE[-\s.]?\d{3}[-\s.]?\d{3}[-\s.]?\d{3}(?:\s*MWST)?",
     re.IGNORECASE,
 )
-_CORR_IBAN_RE = re.compile(
-    r"\bCH[0-9A-Z]{2}\s?(?:[0-9A-Z]{4}\s?){4}[0-9A-Z]{0,2}\b",
-    re.IGNORECASE,
-)
-_CORR_IBAN_COMPACT_RE = re.compile(r"CH[0-9A-Z]{19}", re.IGNORECASE)
-
-
-def _corr_document_search_text(
+from iban_utils import extract_ibans_from_text, fix_iban_ocr_compact, format_iban_display, validate_iban
     ocr_text: str,
     qr_meta: dict | None = None,
     vision_meta: dict | None = None,
@@ -535,15 +528,10 @@ def _extract_corr_uids_from_text(text: str) -> set[str]:
 
 def _extract_corr_ibans_from_text(text: str) -> set[str]:
     found: set[str] = set()
-    compact = re.sub(r"\s+", "", text or "").upper()
-    for m in _CORR_IBAN_RE.findall(text or ""):
-        n = _norm_corr_iban(m)
-        if len(n) >= 21:
-            found.add(n)
-    for m in _CORR_IBAN_COMPACT_RE.findall(compact):
-        n = _norm_corr_iban(m)
-        if len(n) >= 21:
-            found.add(n)
+    for display in extract_ibans_from_text(text, max_results=10):
+        valid = validate_iban(display)
+        if valid:
+            found.add(valid)
     return found
 
 
@@ -665,16 +653,11 @@ def _match_correspondent_by_identifikatoren(
 
 
 def _format_iban_display(compact: str) -> str:
-    if len(compact) < 21:
-        return compact
-    return f"{compact[:4]} {compact[4:8]} {compact[8:12]} {compact[12:16]} {compact[16:21]}"
+    return format_iban_display(compact)
 
 
 def _fix_iban_ocr_compact(compact: str) -> str:
-    c = compact.upper()
-    if c.startswith("CHO") and len(c) >= 4:
-        c = "CH0" + c[3:]
-    return c
+    return fix_iban_ocr_compact(compact)
 
 
 def _extract_identifikatoren_vorschlag(
@@ -698,23 +681,16 @@ def _extract_identifikatoren_vorschlag(
             uid_out.append(s)
 
     if qr_meta and qr_meta.get("iban"):
-        ib = _fix_iban_ocr_compact(_norm_corr_iban(qr_meta["iban"]))
-        if len(ib) >= 21 and ib not in iban_seen:
-            iban_seen.add(ib)
-            iban_out.append(_format_iban_display(ib))
+        valid = validate_iban(qr_meta["iban"])
+        if valid and valid not in iban_seen:
+            iban_seen.add(valid)
+            iban_out.append(_format_iban_display(valid))
 
-    for m in _CORR_IBAN_RE.findall(text):
-        ib = _fix_iban_ocr_compact(_norm_corr_iban(m))
-        if len(ib) >= 21 and ib not in iban_seen:
-            iban_seen.add(ib)
-            iban_out.append(_format_iban_display(ib))
-
-    compact_text = re.sub(r"\s+", "", text).upper()
-    for m in _CORR_IBAN_COMPACT_RE.findall(compact_text):
-        ib = _fix_iban_ocr_compact(_norm_corr_iban(m))
-        if len(ib) >= 21 and ib not in iban_seen:
-            iban_seen.add(ib)
-            iban_out.append(_format_iban_display(ib))
+    for display in extract_ibans_from_text(text, max_results=3):
+        valid = validate_iban(display)
+        if valid and valid not in iban_seen:
+            iban_seen.add(valid)
+            iban_out.append(display)
 
     for em in _extract_corr_emails_from_text(text):
         n = _norm_corr_email(em)
