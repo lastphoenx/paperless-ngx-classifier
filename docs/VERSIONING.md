@@ -48,6 +48,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.11 | Korrespondenten-Picker mit echten Badges (statt native Select) |
-| BE | 2.58 | IBAN-Validierung (Modulo 97) bei Identifikatoren |
-| Pipe | 12.74 | IBAN-Extraktion: keine OCR-Falschtreffer (CHRISTO…, CHE…) |
+| UI | 3.12 | Menü «Pipeline» — post_consume nachträglich für bestehende Dokumente |
+| BE | 2.59 | API `/api/pipeline/trigger` + `/trigger-status` |
+| Pipe | 12.75 | Fix IndentationError _corr_document_search_text (12.74 Regression) |

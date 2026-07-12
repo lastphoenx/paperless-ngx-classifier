@@ -79,6 +79,7 @@ Write-Host "Skripte:" -ForegroundColor Yellow
     "correspondent_manager_app.py",
     "paper_manager_ui.html",
     "post_consume.py",
+    "post_consume_runner.py",
     "iban_utils.py",
     "pre_consume.sh",
     "pre_consume_qr.py",

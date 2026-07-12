@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.58"  # 2.58: IBAN-Validierung bei Korrespondenten-Identifikatoren
-UI_VERSION = "3.11"
+__version__ = "2.59"  # 2.59: API Pipeline-Reprocess (post_consume nachträglich)
+UI_VERSION = "3.12"
 
 import requests
 from iban_utils import validate_iban
@@ -2549,6 +2549,52 @@ def api_htr_trigger_status(doc_id: int):
         "status": "unknown",
         "document_id": doc_id,
         "message": "Kein aktueller Lauf — Log oder Paperless-Notiz prüfen",
+    }
+
+
+@app.post("/api/pipeline/trigger/{doc_id}")
+def api_pipeline_trigger(
+    doc_id: int,
+    background_tasks: BackgroundTasks,
+):
+    """Bestehendes Dokument nachträglich durch volle post_consume-Pipeline (async)."""
+    from post_consume_runner import pipeline_job_run, pipeline_job_set, preflight_pipeline_document
+
+    try:
+        pre = preflight_pipeline_document(doc_id)
+    except Exception as e:
+        log.exception("Pipeline preflight #%s", doc_id)
+        raise HTTPException(500, f"Pipeline-Vorprüfung fehlgeschlagen: {e}") from e
+
+    if not pre.get("ok"):
+        raise HTTPException(400, pre.get("error", "Pipeline-Trigger fehlgeschlagen"))
+
+    title = (pre.get("title") or f"Dok #{doc_id}")[:80]
+    start_msg = f"Pipeline für «{title}» — Vision + LLM, mehrere Minuten…"
+    pipeline_job_set(doc_id, status="running", message=start_msg)
+    background_tasks.add_task(pipeline_job_run, doc_id)
+
+    return {
+        "ok": True,
+        "async": True,
+        "document_id": doc_id,
+        "title": pre.get("title"),
+        "message": start_msg,
+    }
+
+
+@app.get("/api/pipeline/trigger-status/{doc_id}")
+def api_pipeline_trigger_status(doc_id: int):
+    """Status eines laufenden/kürzlich beendeten Pipeline-Reprocess."""
+    from post_consume_runner import pipeline_job_get
+
+    job = pipeline_job_get(doc_id)
+    if job:
+        return job
+    return {
+        "status": "unknown",
+        "document_id": doc_id,
+        "message": "Kein aktueller Lauf — post_consume_v12.log prüfen",
     }
 
 

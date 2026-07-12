@@ -382,6 +382,9 @@
   <div class="nav-item" onclick="showView('handschrift')" id="nav-handschrift">
     <span>✍</span> Handschrift
   </div>
+  <div class="nav-item" onclick="showView('pipeline')" id="nav-pipeline">
+    <span>↻</span> Pipeline
+  </div>
   <div style="flex:1"></div>
   <a id="nav-paperless-link" href="#" target="_blank" rel="noopener"
     style="display:flex;align-items:center;gap:8px;padding:10px 16px;margin:4px 8px 8px;border-radius:6px;background:rgba(79,156,249,.1);border:1px solid rgba(79,156,249,.25);color:var(--accent);text-decoration:none;font-size:12px;font-weight:600;transition:background .15s"
@@ -962,6 +965,42 @@
     </div>
   </div>
 
+  <div id="view-pipeline" style="display:none">
+    <div class="view-header">
+      <h2>Pipeline nachholen</h2>
+      <p style="color:var(--muted);font-size:13px;margin-top:4px">
+        Volle <code>post_consume</code>-Klassifizierung für ein <strong>bereits archiviertes</strong> Paperless-Dokument —
+        z.&nbsp;B. wenn der Consume wegen Pipeline-Fehler abgebrochen ist und nichts im Dokument-Review landet.
+      </p>
+    </div>
+    <div class="card" style="padding:16px 18px;margin-bottom:16px">
+      <div class="card-title" style="font-size:13px;margin-bottom:8px">Wann nutzen?</div>
+      <p style="color:var(--muted);font-size:12px;line-height:1.6;margin:0">
+        Paperless zeigt unter <em>Datei-Aufgaben → Fehlgeschlagen</em> einen post-consume-Fehler,
+        das Dokument existiert aber bereits (mit Roh-Titel/Datum). Hier die Paperless-<strong>Dokument-ID</strong> eingeben —
+        Vision, LLM, Tags und Ordner werden nachgezogen. Kein Löschen, kein Rescan nötig.
+      </p>
+    </div>
+    <div class="card" style="padding:14px 16px">
+      <div class="card-title" style="font-size:13px;margin-bottom:8px">Nachträglich verarbeiten</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        Dauer typisch 1–5&nbsp;Min pro Dokument. Läuft auf dem Server (nicht im Browser).
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="number" id="pipe-trigger-id" placeholder="Paperless Dok-ID" min="1"
+          style="max-width:160px;font-size:13px">
+        <button class="btn btn-primary" onclick="triggerPipeline()">▶ Pipeline starten</button>
+        <a id="pipe-doc-link" href="#" target="_blank" rel="noopener"
+          style="font-size:12px;color:var(--accent);display:none">Dokument in Paperless ↗</a>
+      </div>
+      <div id="pipe-trigger-status" style="font-size:12px;margin-top:10px;color:var(--muted);white-space:pre-wrap"></div>
+      <p style="color:var(--muted);font-size:11px;margin-top:12px;margin-bottom:0">
+        Log: <code>/opt/paperless-scripts/logs/post_consume_v12.log</code> ·
+        Fehlgeschlagene <em>Datei-Aufgaben</em> in Paperless danach manuell verwerfen.
+      </p>
+    </div>
+  </div>
+
   <div id="view-legacy-split" style="display:none">
     <div class="view-header">
       <h2>Legacy QR-Split</h2>
@@ -1031,7 +1070,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.11';
+const UI_VERSION = '3.12';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -1095,7 +1134,7 @@ function updatePendingModeUI(mode) {
 }
 
 // ── URL-Hash Navigation ──────────────────────────────────────────
-const VALID_VIEWS = ['home','pending','correspondents','docreview','doctypes','tags','manifest','family','legacy-split','brillenpass','handschrift'];
+const VALID_VIEWS = ['home','pending','correspondents','docreview','doctypes','tags','manifest','family','legacy-split','brillenpass','handschrift','pipeline'];
 let _skipHashSync = false;
 
 function getViewFromHash() {
@@ -1305,6 +1344,16 @@ function showView(name) {
   }
   if (name === 'brillenpass') loadBrillenpassView();
   if (name === 'handschrift') loadHandschriftView();
+  if (name === 'pipeline') {
+    const inp = document.getElementById('pipe-trigger-id');
+    if (inp && !inp.value) {
+      try {
+        const last = localStorage.getItem('pipe-last-id');
+        if (last) inp.value = last;
+      } catch (e) {}
+    }
+    _updatePipelineDocLink();
+  }
   if (name === 'legacy-split') {
     const inp = document.getElementById('lsplit-id');
     if (inp && !inp.value) {
@@ -6234,6 +6283,93 @@ async function triggerHtr() {
   } catch (e) {
     if (status) status.textContent = String(e.message || e);
     showToast('HTR: ' + (e.message || e), 'error');
+  }
+}
+
+function _updatePipelineDocLink() {
+  const id = parseInt(document.getElementById('pipe-trigger-id')?.value || '', 10);
+  const link = document.getElementById('pipe-doc-link');
+  if (!link) return;
+  if (id > 0) {
+    link.href = paperlessDocUrl(id);
+    link.style.display = 'inline';
+    link.textContent = `Dokument #${id} in Paperless ↗`;
+  } else {
+    link.style.display = 'none';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const pipeInp = document.getElementById('pipe-trigger-id');
+  if (pipeInp) {
+    pipeInp.addEventListener('input', _updatePipelineDocLink);
+    pipeInp.addEventListener('change', _updatePipelineDocLink);
+  }
+});
+
+async function _pollPipelineTrigger(docId, statusEl) {
+  for (let n = 0; n < 120; n++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const j = await _fetchJson(`${API_BASE}/pipeline/trigger-status/${docId}`);
+      if (j.status === 'running') {
+        if (statusEl) statusEl.textContent = j.message || `Pipeline läuft… (${n * 5}s)`;
+        continue;
+      }
+      if (j.status === 'done') {
+        const msg = j.message || 'Pipeline abgeschlossen';
+        if (statusEl) statusEl.textContent = msg;
+        showToast(msg, 'success');
+        try {
+          const dr = await _fetchJson(`${API_BASE}/document-review`);
+          const badge = document.getElementById('docreview-count');
+          if (badge) badge.textContent = dr.count || 0;
+        } catch (e) {}
+        return;
+      }
+      if (j.status === 'error') {
+        const msg = j.error || j.message || 'Pipeline fehlgeschlagen';
+        if (statusEl) statusEl.textContent = msg;
+        showToast('Pipeline: ' + msg, 'error');
+        return;
+      }
+    } catch (e) { /* transient */ }
+  }
+  if (statusEl) statusEl.textContent = 'Nach ~10 Min kein Ergebnis — post_consume_v12.log prüfen';
+  showToast('Pipeline: Timeout — Log auf CT121 prüfen', 'error');
+}
+
+async function triggerPipeline() {
+  const id = parseInt(document.getElementById('pipe-trigger-id')?.value || '', 10);
+  const status = document.getElementById('pipe-trigger-status');
+  if (!id) {
+    showToast('Dokument-ID eingeben', 'error');
+    return;
+  }
+  try { localStorage.setItem('pipe-last-id', String(id)); } catch (e) {}
+  _updatePipelineDocLink();
+  if (status) status.textContent = 'Starte Pipeline…';
+  try {
+    const d = await _fetchJson(`${API_BASE}/pipeline/trigger/${id}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    if (d.async) {
+      if (status) status.textContent = d.message || 'Pipeline läuft…';
+      _pollPipelineTrigger(id, status);
+      return;
+    }
+    showToast(d.message || 'Pipeline gestartet', 'success');
+    if (status) status.textContent = d.message || 'OK';
+    try {
+      const dr = await _fetchJson(`${API_BASE}/document-review`);
+      const badge = document.getElementById('docreview-count');
+      if (badge) badge.textContent = dr.count || 0;
+    } catch (e) {}
+  } catch (e) {
+    if (status) status.textContent = String(e.message || e);
+    showToast('Pipeline: ' + (e.message || e), 'error');
   }
 }
 

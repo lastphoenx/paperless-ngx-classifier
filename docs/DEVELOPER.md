@@ -1,6 +1,6 @@
 # paper.manager / paperless-ngx-classifier — Developer Guide
 
-**Stand:** März 2026 · UI `3.11` · BE `2.58` · Pipe `12.74`
+**Stand:** März 2026 · UI `3.12` · BE `2.59` · Pipe `12.75`
 
 Benutzer-Doku: [`Benutzerhandbuch_paper_manager.md`](Benutzerhandbuch_paper_manager.md)
 
@@ -44,6 +44,7 @@ paper_manager_ui.html   → SPA ohne Build-Step
 | `image_crop.py` | PDF-Render, Trim/Horizontal-Bands für HTR |
 | `schulbericht_vision.py` | Schulbericht HTR + Extract, Zeilen-Merge |
 | `document_date.py` | Belegdatum-Extraktion/Validierung |
+| `post_consume_runner.py` | Nachträgliche volle Pipeline (UI «Pipeline nachholen») |
 | `iban_utils.py` | IBAN-Extraktion (OCR-Text), Modulo-97-Validierung, Formatierung |
 | `training/*.example.json` | Schema-Beispiele (keine Live-Daten im Repo) |
 | `tests/` | pytest (Parser, Fielmann, …) |
@@ -304,6 +305,10 @@ Tests: `tests/test_iban_utils.py`
 | Methode | Pfad | Zweck |
 |---|---|---|
 | POST | `/api/correspondents/batch-platzhalter` | Body: `{ "names": ["Gesundheit", …], "platzhalter": true }` |
+| POST | `/api/pipeline/trigger/{doc_id}` | Volle `post_consume`-Pipeline nachträglich (async, Subprozess) |
+| GET | `/api/pipeline/trigger-status/{doc_id}` | Job-Status für UI-Polling |
+
+Implementierung: `post_consume_runner.py` (Subprozess — `main()` nutzt `sys.exit`).
 
 ---
 
