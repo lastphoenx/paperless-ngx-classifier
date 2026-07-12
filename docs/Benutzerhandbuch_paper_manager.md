@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 3.11 | März 2026** (Pipeline `12.74`, Backend `2.58`)
+**Version 3.12 | März 2026** (Pipeline `12.75`, Backend `2.59`)
 
 > Entwickler-Details: [`DEVELOPER.md`](DEVELOPER.md) · Legacy-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
 
@@ -35,7 +35,7 @@ Klick auf **«paper.manager»** in der **Sidebar** (Logo links) öffnet die Land
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v3.11 | be v2.58 | pipe v12.74
+UI v3.12 | be v2.59 | pipe v12.75
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
@@ -54,6 +54,7 @@ Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochz
 | ✂ Legacy QR-Split | `#legacy-split` | Mehrseiten-Scans nachträglich an QR splitten → `consume/` |
 | 👓 Brillenpass | `#brillenpass` | Optiker-Dokumente parsen, Review, versionierter Pass pro Person |
 | ✍ Handschrift | `#handschrift` | HTR nachträglich starten, Profil wählen, Pipeline-Erklärung |
+| ↻ Pipeline | `#pipeline` | Volle `post_consume`-Klassifizierung für bestehende Dokumente nachholen |
 
 Alle Tabs haben ein **Suchfeld** für live Filterung (wo vorhanden).
 
@@ -530,6 +531,21 @@ LEGACY_SPLIT_QR_REGEX='^[0-9]{6}_[^\s]+$'
 Einmalig Abhängigkeiten: `sudo ./scripts/ensure-legacy-qr-deps.sh` (ghostscript, zbar, venv).
 
 CLI-Diagnose: `legacy_qr_split_test.py` — siehe [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md#qr-split-nachträglich).
+
+---
+
+## 15. Pipeline nachholen
+
+Wenn Paperless unter **Datei-Aufgaben → Fehlgeschlagen** einen `post_consume`-Fehler zeigt, das Dokument aber **bereits archiviert** ist (Roh-Titel, kein Dokument-Review): Menü **↻ Pipeline**.
+
+1. Paperless-**Dokument-ID** eingeben (z. B. `3606`)
+2. **▶ Pipeline starten** — läuft im Hintergrund (Vision + LLM, typisch 1–5 Min)
+3. Statuszeile pollt automatisch; bei Erfolg erscheinen Tags/Ordner oder Eintrag im Dokument-Review
+4. Fehlgeschlagene **Datei-Aufgabe** in Paperless manuell **verwerfen** (Dokument bleibt)
+
+Log: `/opt/paperless-scripts/logs/post_consume_v12.log`
+
+> Kein Löschen, kein Rescan — dasselbe Dokument wird neu klassifiziert.
 
 ### Abgrenzung
 
