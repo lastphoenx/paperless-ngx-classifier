@@ -146,12 +146,14 @@ Per document type, a **field profile** (`feldprofil`) controls which custom fiel
 ### paper.manager UI
 A single-page browser UI (no framework, no build step) for:
 - **Correspondent review** — approve, reject, or merge unknown senders; **Kürzel** when approving new correspondents; reject escalates affected documents to document review
-- **Document review** — 30/70 layout with large preview, AI fields, tag multiselect (reclassify **replaces** tags, does not merge), correspondent dropdown lists only approved entries (excludes pending-NEW)
+- **Document review** — 30/70 layout with large preview, AI fields, tag multiselect (reclassify **replaces** tags, does not merge), **correspondent picker** (approved entries only; Kürzel and Platzhalter badges)
 - **Document types** — manage synonyms and exclusion keywords
 - **Tags** — manage exclusion keywords per tag
 - **Storage paths** — configure folders with allowed tags and document types
 - **Family config** — persons, vehicles, relationships (employer, bank, health insurer, doctor), household name (no hardcoding in code)
 - **Kürzel (abbreviation)** — 2–6 character unique shortcode per correspondent (e.g. `UBS`, `ZV`); shown as badge, searchable, live uniqueness check
+- **Placeholder correspondents** — for documents without a real sender (e.g. health records, private notes); filter, batch marking; pipeline never auto-assigns them
+- **IBAN validation** — Modulo-97 check on identifikatoren (backend + pipeline); OCR false positives filtered during extraction
 - **Paperless link** — direct «Paperless-NGX öffnen ↗» button in sidebar and on Home tab; URL read from `PAPERLESS_URL` in `.env`
 - **Version display** — shows active versions of all components in the sidebar
 

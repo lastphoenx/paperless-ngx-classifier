@@ -152,7 +152,7 @@ Pro Dokumenttyp kann ein **Feldprofil** festlegen, welche Custom Fields extrahie
 
 Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Korrespondenten-Review** — unbekannte Absender bestätigen, ablehnen oder zusammenführen; **Kürzel** bereits beim Freigeben neuer Korrespondenten; Ablehnen leitet betroffene Dokumente in die Document-Review
-- **Dokument-Review** — 30/70-Layout mit grosser Vorschau, KI-Felder, **editierbarer Titel** und **Belegdatum** (`tt.mm.jjjj` → Paperless `created`), Tags als Multiselect (bei «Neu klassifizieren» werden Tags **ersetzt**, nicht gemerged), Korrespondenten-Dropdown nur freigegebene Einträge (ohne pending-NEU)
+- **Dokument-Review** — 30/70-Layout mit grosser Vorschau, KI-Felder, **editierbarer Titel** und **Belegdatum** (`tt.mm.jjjj` → Paperless `created`), Tags als Multiselect (bei «Neu klassifizieren» werden Tags **ersetzt**, nicht gemerged), **Korrespondenten-Picker** (nur freigegebene Einträge; Kürzel- und Platzhalter-Badges)
 - **Dokumenttypen** — Synonyme, Ausschluss-Keywords und **Handschrift (HTR)**-Profil pro Typ
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
 - **Speicherpfade** — Ordner mit erlaubten Tags und Dokumenttypen konfigurieren
@@ -165,6 +165,8 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 
 **Legacy QR-Split:** Tab **✂ Legacy QR-Split** oder `POST /api/legacy-split/trigger/{doc_id}` — Details [`docs/LEGACY_IMPORT.md`](docs/LEGACY_IMPORT.md#qr-split-nachträglich).
 - **Kürzel** — 2–6 Zeichen langes Kürzel pro Korrespondent (z. B. `UBS`, `ZV`); als Badge angezeigt, durchsuchbar, Live-Eindeutigkeitsprüfung
+- **Platzhalter-Korrespondenten** — für Dokumente ohne echten Absender (`Gesundheit`, `Medien`, `Privat`); Filter, Batch-Markierung; Pipeline ordnet sie nicht automatisch zu
+- **IBAN-Validierung** — Identifikatoren mit Modulo-97-Prüfung (Backend + Pipeline); keine OCR-Falschtreffer bei IBAN-Extraktion
 - **Paperless-Link** — direkter «Paperless-NGX öffnen ↗»-Button in der Seitenleiste und auf dem Home-Tab; URL aus `PAPERLESS_URL` in `.env`
 - **Versionsanzeige** — zeigt aktive Versionen aller Komponenten in der Seitenleiste
 
