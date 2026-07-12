@@ -687,9 +687,9 @@ def _extract_identifikatoren_vorschlag(
             iban_out.append(_format_iban_display(valid))
 
     for display in extract_ibans_from_text(text, max_results=3):
-        valid = validate_iban(display)
-        if valid and valid not in iban_seen:
-            iban_seen.add(valid)
+        compact = _norm_corr_iban(display)
+        if compact and compact not in iban_seen:
+            iban_seen.add(compact)
             iban_out.append(display)
 
     for em in _extract_corr_emails_from_text(text):
