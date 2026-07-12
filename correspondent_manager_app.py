@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.57"  # 2.57: Korrespondenten platzhalter-Flag + Batch-API
-UI_VERSION = "3.10"
+UI_VERSION = "3.11"
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
