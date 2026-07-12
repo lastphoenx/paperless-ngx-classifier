@@ -32,10 +32,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.57"  # 2.57: Korrespondenten platzhalter-Flag + Batch-API
+__version__ = "2.58"  # 2.58: IBAN-Validierung bei Korrespondenten-Identifikatoren
 UI_VERSION = "3.11"
 
 import requests
+from iban_utils import validate_iban
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -558,6 +559,8 @@ def _validate_correspondent_entry(
                 norm = _norm_corr_uid(item)
             elif label == "iban":
                 norm = _norm_corr_iban(item)
+                if not validate_iban(norm):
+                    errors.append(f"Ungültige IBAN (Prüfziffer/Länge): '{item}'")
             elif label == "email":
                 norm = _norm_corr_email(item)
             else:

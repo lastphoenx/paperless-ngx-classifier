@@ -31,6 +31,7 @@ FILES=(
   correspondent_manager_app.py
   paper_manager_ui.html
   post_consume.py
+  iban_utils.py
   document_date.py
   schulbericht_vision.py
   handwriting_vision.py
