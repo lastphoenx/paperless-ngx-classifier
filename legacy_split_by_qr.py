@@ -23,6 +23,33 @@ log = logging.getLogger("legacy_split_by_qr")
 DEFAULT_QR_REGEX = r"^[0-9]{6}_[^\s]+$"
 
 
+_MAX_USER_REGEX_LEN = 200
+# Nested quantifiers / repeated wildcards — häufige ReDoS-Muster
+_UNSAFE_REGEX_RE = re.compile(
+    r"\([^)]*[+*][^)]*\)[+*{?]|([+*?]){2,}|\(\?[^)]*[+*]{2,}"
+)
+
+
+class UnsafeRegexError(ValueError):
+    """Regex abgelehnt (Syntax, Länge oder ReDoS-Risiko)."""
+
+
+def validate_user_regex(regex: str, *, context: str = "regex") -> str:
+    """User-/API-Regex prüfen bevor compile/finditer (Legacy-Split, Extraktions-Muster)."""
+    s = (regex or "").strip()
+    if not s:
+        raise UnsafeRegexError(f"{context}: leer")
+    if len(s) > _MAX_USER_REGEX_LEN:
+        raise UnsafeRegexError(f"{context}: max {_MAX_USER_REGEX_LEN} Zeichen")
+    if _UNSAFE_REGEX_RE.search(s):
+        raise UnsafeRegexError(f"{context}: riskante Quantifier-Konstrukte")
+    try:
+        re.compile(s)
+    except re.error as e:
+        raise UnsafeRegexError(f"{context}: ungültig ({e})") from e
+    return s
+
+
 def normalize_legacy_qr_regex(regex: str | None) -> str:
     """
     .env ohne Quotes frisst \\s → «[^s]» und $ → «\\$» — dann 0 Treffer, Scan ewig.
@@ -39,6 +66,11 @@ def normalize_legacy_qr_regex(regex: str | None) -> str:
         return DEFAULT_QR_REGEX
     if s.endswith(r"\$"):
         s = s[:-2] + "$"
+    try:
+        validate_user_regex(s, context="LEGACY_SPLIT_QR_REGEX")
+    except UnsafeRegexError as e:
+        log.warning("%s — nutze Default", e)
+        return DEFAULT_QR_REGEX
     return s
 
 

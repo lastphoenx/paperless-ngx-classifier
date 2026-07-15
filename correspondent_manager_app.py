@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.59"  # 2.59: API Pipeline-Reprocess (post_consume nachträglich)
+__version__ = "2.60"  # 2.60: Proxy-Auth, Legacy-Split/consume_dir, Regex-Validierung
 UI_VERSION = "3.12"
 
 import requests
@@ -92,7 +92,12 @@ BRILLENPASS_DEDUP_DAYS     = int(os.environ.get("BRILLENPASS_DEDUP_DAYS", "21"))
 PAPERLESS_CONSUME_DIR      = os.environ.get("PAPERLESS_CONSUME_DIR", "/mnt/paperless-data/consume")
 PAPERLESS_MEDIA_ROOT       = os.environ.get("PAPERLESS_MEDIA_ROOT", "/mnt/paperless-media")
 LEGACY_SPLIT_TMP           = Path(os.environ.get("LEGACY_SPLIT_TMP", "/tmp/legacy-qr-split"))
-from legacy_split_by_qr import DEFAULT_QR_REGEX as _LEGACY_QR_DEFAULT, normalize_legacy_qr_regex
+from legacy_split_by_qr import (
+    DEFAULT_QR_REGEX as _LEGACY_QR_DEFAULT,
+    UnsafeRegexError,
+    normalize_legacy_qr_regex,
+    validate_user_regex,
+)
 LEGACY_SPLIT_QR_REGEX      = normalize_legacy_qr_regex(
     os.environ.get("LEGACY_SPLIT_QR_REGEX", _LEGACY_QR_DEFAULT),
 )
@@ -247,6 +252,32 @@ def _parse_geburtsdatum(geb: str) -> tuple[int, int, int] | None:
     return None
 
 
+def _resolved_consume_dir(requested: str | None = None) -> Path:
+    """Nur der konfigurierte Paperless-Consume-Pfad — kein Client-Override."""
+    canonical = Path(PAPERLESS_CONSUME_DIR).resolve()
+    if requested and str(Path(requested).resolve()) != str(canonical):
+        raise HTTPException(400, f"consume_dir nicht erlaubt — nur {canonical}")
+    if not canonical.exists():
+        raise HTTPException(400, f"Consume-Ordner nicht gefunden: {canonical}")
+    return canonical
+
+
+def _validate_extraktion_regexes(extraktion_muster: dict | None) -> None:
+    """Regex in extraktion_muster vor Speichern prüfen."""
+    if not extraktion_muster:
+        return
+    for feld, muster in extraktion_muster.items():
+        if not isinstance(muster, dict):
+            continue
+        regex = (muster.get("regex") or "").strip()
+        if not regex:
+            continue
+        try:
+            validate_user_regex(regex, context=f"extraktion_muster.{feld}")
+        except UnsafeRegexError as e:
+            raise HTTPException(400, str(e)) from e
+
+
 def _normalize_geburtsdatum(geb: str) -> str:
     parsed = _parse_geburtsdatum(geb)
     if not parsed:
@@ -271,11 +302,7 @@ async def require_paperless_session(request: Request, call_next):
     if path == "/health" or path in ("/", ""):
         return await call_next(request)
 
-    # Proxy-Endpoints: kein Auth nötig — Backend holt Daten selbst mit Token
-    if path.startswith("/api/proxy/"):
-        return await call_next(request)
-
-    # API-Calls: Token oder Session prüfen
+    # API-Calls (inkl. /api/proxy/*): Token oder Session prüfen
     if path.startswith("/api/"):
         if _INTERNAL_TOKEN:
             token = (
@@ -1562,6 +1589,7 @@ def approve_neu(entry: dict, decision: ReviewDecision) -> str:
     ordner          = decision.typische_ordner or entry["vorgeschlagener_eintrag"].get("typische_ordner", [])
     notiz           = decision.notiz or entry["vorgeschlagener_eintrag"].get("notiz", "")
     extr_muster     = decision.extraktion_muster or entry["vorgeschlagener_eintrag"].get("extraktion_muster", {})
+    _validate_extraktion_regexes(extr_muster)
     erwartungen     = decision.erwartungen or entry["vorgeschlagener_eintrag"].get("erwartungen", {})
     kuerzel         = (decision.kuerzel or entry["vorgeschlagener_eintrag"].get("kuerzel") or "").strip().upper()
 
@@ -2762,8 +2790,14 @@ async def api_legacy_split_trigger(
     """Paperless-Dokument per QR splitten — async (UI pollt Status, kein nginx-Timeout)."""
     dry_run = bool(body.get("dry_run", False))
     sync = bool(body.get("sync", False))
-    regex = normalize_legacy_qr_regex((body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip())
-    consume_dir = str(body.get("consume_dir") or PAPERLESS_CONSUME_DIR)
+    raw_regex = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
+    try:
+        regex = normalize_legacy_qr_regex(validate_user_regex(raw_regex, context="legacy-split"))
+    except UnsafeRegexError as e:
+        raise HTTPException(400, str(e)) from e
+    if body.get("consume_dir") and str(body.get("consume_dir")) != PAPERLESS_CONSUME_DIR:
+        raise HTTPException(400, "consume_dir kann nicht überschrieben werden")
+    consume_dir = str(_resolved_consume_dir())
     job_key = _lsplit_job_key(doc_id, dry_run)
 
     if sync:
@@ -2866,6 +2900,7 @@ def api_create_correspondent(body: dict = Body(...)):
     match_list = body.get("match") or body.get("match_strings") or []
     if not match_list and not platzhalter:
         match_list = [name.lower()]
+    _validate_extraktion_regexes(body.get("extraktion_muster"))
     paperless_id = _register_new_correspondent(
         name=name,
         kuerzel=(body.get("kuerzel") or "").strip().upper(),
@@ -3153,6 +3188,9 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     new_kuerzel = (body.get("kuerzel") or "").strip().upper()
     if new_kuerzel and not _check_kuerzel_unique(new_kuerzel, exclude_name=name, corr_map=corr_map):
         raise HTTPException(409, f"Kürzel '{new_kuerzel}' wird bereits von einem anderen Korrespondenten verwendet")
+
+    if "extraktion_muster" in body:
+        _validate_extraktion_regexes(body.get("extraktion_muster"))
 
     # Nur erlaubte Felder updaten
     for field in ["varianten", "match", "default_dokumenttyp", "default_dokumenttyp_id",
@@ -4269,6 +4307,12 @@ def api_regex_assistent(body: dict = Body(...)):
         json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
         if json_match:
             parsed = json.loads(json_match.group())
+            llm_regex = (parsed.get("regex") or "").strip()
+            if llm_regex:
+                try:
+                    validate_user_regex(llm_regex, context="regex-assistent")
+                except UnsafeRegexError as e:
+                    raise HTTPException(400, f"Ollama-Regex abgelehnt: {e}") from e
             return {"status": "ok", "model_used": ollama_model, **parsed}
         return {"status": "ok", "model_used": ollama_model, "regex": raw.strip(),
                 "erklaerung": "", "test_matches": [], "test_no_matches": []}

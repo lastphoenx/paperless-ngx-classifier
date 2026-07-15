@@ -73,7 +73,7 @@ Middleware: `require_paperless_session` in `correspondent_manager_app.py`
 
 | Pfad | Verhalten |
 |---|---|
-| `/api/proxy/*` | Kein Auth (Backend nutzt `PAPERLESS_TOKEN`) |
+| `/api/proxy/*` | Wie `/api/*`: `PAPER_MANAGER_TOKEN` **oder** gültige Paperless-`sessionid` |
 | `/api/*` | `PAPER_MANAGER_TOKEN` (Header) **oder** gültige Paperless-`sessionid` |
 | Sonst (HTML) | Session OK → ausliefern; sonst Redirect zu Paperless-Login |
 
@@ -411,6 +411,28 @@ uvicorn correspondent_manager_app:app --host 0.0.0.0 --port 8100
 ```
 
 UI: `paper_manager_ui.html` wird vom FastAPI-Root ausgeliefert.
+
+---
+
+## 10.1 Dependency-Audit (CVE)
+
+Auf CT 121 (venv unter `/opt/paperless-scripts/venv`):
+
+```bash
+cd /opt/paperless-ngx-classifier
+chmod +x scripts/dependency-audit.sh
+./scripts/dependency-audit.sh
+# oder explizit: ./scripts/dependency-audit.sh /opt/paperless-scripts/venv
+```
+
+Manuell ohne Skript:
+
+```bash
+/opt/paperless-scripts/venv/bin/python3 -m pip install pip-audit
+/opt/paperless-scripts/venv/bin/pip-audit -r requirements-corr-manager.txt
+```
+
+Empfehlung: monatlich + vor Paperless/corr.manager-Deploy. Advisories: [GitHub Dependabot](https://github.com/advisories), [OWASP Dependency-Track](https://owasp.org/www-project-dependency-track/).
 
 ---
 
