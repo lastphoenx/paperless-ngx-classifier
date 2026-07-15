@@ -1022,6 +1022,7 @@
       </div>
       <div id="lsplit-plan" style="display:none;margin-top:12px;font-size:12px"></div>
       <div id="lsplit-status" style="font-size:12px;margin-top:10px;color:var(--muted);white-space:pre-wrap"></div>
+      <p id="lsplit-diag-hint" style="color:var(--muted);font-size:11px;margin-top:12px;line-height:1.55;border-top:1px solid var(--border);padding-top:10px"></p>
     </div>
   </div>
 
@@ -1039,6 +1040,12 @@
 const API_BASE = window.location.pathname.startsWith('/corr-manager') 
   ? '/corr-manager/api' 
   : '/api';
+
+/** CT121-Log nur letzte Minuten — nicht ganzer journalctl-Dump seit Monaten. */
+const CM_JOURNAL_CMD = 'journalctl -u correspondent-manager --since "15 min ago" --no-pager';
+function cmLegacySplitCli(docId) {
+  return `/opt/paperless-scripts/venv/bin/python3 /opt/paperless-scripts/legacy_qr_split_test.py /tmp/legacy-qr-split/${docId}/source.pdf --verbose-pages`;
+}
 
 /** Paperless-Basis-URL — IP-Zugriff → :8000, Domain → gleicher Host (wie Login-Redirect). */
 function effectivePaperlessBase() {
@@ -1356,6 +1363,14 @@ function showView(name) {
   }
   if (name === 'legacy-split') {
     const inp = document.getElementById('lsplit-id');
+    const hint = document.getElementById('lsplit-diag-hint');
+    if (hint) {
+      hint.innerHTML =
+        'Große Scans können mehrere Minuten dauern. Bei Timeout auf CT&nbsp;121:<br>' +
+        `<code style="font-size:10px;word-break:break-all">${CM_JOURNAL_CMD}</code><br>` +
+        'Oder PDF direkt testen (nach erstem Lauf):<br>' +
+        `<code style="font-size:10px;word-break:break-all">${cmLegacySplitCli(inp?.value || '&lt;Dok-ID&gt;')}</code>`;
+    }
     if (inp && !inp.value) {
       try {
         const last = localStorage.getItem('lsplit-last-id');
@@ -6175,7 +6190,7 @@ async function _pollBrillenpassTrigger(docId, statusEl) {
     } catch (e) { /* transient */ }
   }
   if (statusEl) statusEl.textContent = 'Nach 2,5 Min kein Ergebnis — Log auf CT121 prüfen';
-  showToast('Brillenpass: Timeout — journalctl -u correspondent-manager', 'error');
+  showToast('Brillenpass: Timeout — ' + CM_JOURNAL_CMD, 'error');
 }
 
 async function triggerBrillenpass() {
@@ -6233,7 +6248,7 @@ async function _pollHtrTrigger(docId, statusEl) {
     } catch (e) { /* transient */ }
   }
   if (statusEl) statusEl.textContent = 'Nach ~7 Min kein Ergebnis — Log auf CT121 prüfen';
-  showToast('HTR: Timeout — journalctl -u correspondent-manager', 'error');
+  showToast('HTR: Timeout — ' + CM_JOURNAL_CMD, 'error');
 }
 
 async function loadHandschriftView() {
@@ -6440,7 +6455,8 @@ function _lsplitApplyResult(d, dryRun, status) {
 }
 
 async function _pollLegacySplit(docId, dryRun, statusEl) {
-  for (let n = 0; n < 90; n++) {
+  const maxPolls = 450;  // 450 × 1.5s ≈ 11 Min (Backend LEGACY_SCAN_WORKER_TIMEOUT default 600s)
+  for (let n = 0; n < maxPolls; n++) {
     await new Promise(r => setTimeout(r, 1500));
     const j = await _fetchJson(
       `${API_BASE}/legacy-split/trigger-status/${docId}?dry_run=${dryRun ? 'true' : 'false'}`,
@@ -6453,7 +6469,11 @@ async function _pollLegacySplit(docId, dryRun, statusEl) {
     if (j.status === 'error') throw new Error(j.error || j.message || 'Fehler');
     if (j.status === 'unknown' && n > 2) throw new Error(j.message || 'Job verloren');
   }
-  throw new Error('Timeout nach 2 Min — journalctl -u correspondent-manager');
+  throw new Error(
+    `Timeout nach ~${Math.round(maxPolls * 1.5 / 60)} Min — Scan läuft evtl. noch.\n`
+    + `${CM_JOURNAL_CMD}\n`
+    + `CLI: ${cmLegacySplitCli(docId)}`
+  );
 }
 
 async function triggerLegacySplit(dryRun) {
