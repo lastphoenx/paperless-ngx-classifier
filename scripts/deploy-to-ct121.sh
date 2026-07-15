@@ -45,6 +45,8 @@ FILES=(
   brillenpass_runner.py
   legacy_split_by_qr.py
   legacy_qr_scan_worker.py
+  phone_utils.py
+  swift_utils.py
   steuerjahr.py
   pre_consume.sh
   pre_consume_qr.py

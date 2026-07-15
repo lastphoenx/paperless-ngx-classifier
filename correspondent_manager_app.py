@@ -32,11 +32,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.61"  # 2.61: Legacy-Split regex_preset space|underscore
-UI_VERSION = "3.14"
+__version__ = "2.62"  # 2.62: Legacy-Split delete_source, SWIFT/Telefon, switchMergeToNeu
+UI_VERSION = "3.15"
 
 import requests
 from iban_utils import validate_iban
+from phone_utils import norm_phone_for_match as _norm_corr_telefon
+from swift_utils import normalize_swift as _norm_corr_swift
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -366,7 +368,7 @@ class ReviewDecision(BaseModel):
     reviewed_by:             Optional[str]       = "admin"
     extraktion_muster:       Optional[dict]      = None   # {feldname: ExtraktionsMuster}
     erwartungen:             Optional[dict]      = None   # {hat_qr_rechnung: bool, ...}
-    identifikatoren:         Optional[dict]      = None   # {uid:[], iban:[], email:[], telefon:[]}
+    identifikatoren:         Optional[dict]      = None   # {uid, iban, swift, email, telefon}
 
 
 # ══════════════════════════════════════════════
@@ -451,6 +453,7 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
     all_uids:     dict = {}
     all_ibans:    dict = {}
     all_emails:   dict = {}
+    all_swifts:   dict = {}
     all_telefone: dict = {}
     for e in corr_map.get("eintraege", []):
         if e["name"] == (exclude_name or ""):
@@ -473,6 +476,10 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
             n = _norm_corr_email(em)
             if n:
                 all_emails[n] = e["name"]
+        for sw in ident.get("swift", []) or []:
+            n = _norm_corr_swift(sw)
+            if n:
+                all_swifts[n] = e["name"]
         for tel in ident.get("telefon", []) or []:
             n = _norm_corr_telefon(tel)
             if n:
@@ -484,6 +491,7 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
         "uids":      all_uids,
         "ibans":     all_ibans,
         "emails":    all_emails,
+        "swifts":    all_swifts,
         "telefone":  all_telefone,
     }
 
@@ -575,13 +583,20 @@ def _validate_correspondent_entry(
         n = _norm_corr_email(em)
         if n in idx["emails"]:
             errors.append(f"E-Mail '{em}' bereits bei '{idx['emails'][n]}'")
+    for sw in ident.get("swift", []):
+        n = _norm_corr_swift(sw)
+        if not n:
+            errors.append(f"Ungültiger SWIFT/BIC: '{sw}'")
+        elif n in idx["swifts"]:
+            warnings.append(f"SWIFT '{sw}' bereits bei '{idx['swifts'][n]}'")
     for tel in ident.get("telefon", []):
         n = _norm_corr_telefon(tel)
         if n in idx["telefone"]:
             warnings.append(f"Telefon '{tel}' bereits bei '{idx['telefone'][n]}'")
 
     for label, lst in [("uid", ident.get("uid", [])), ("iban", ident.get("iban", [])),
-                        ("email", ident.get("email", [])), ("telefon", ident.get("telefon", []))]:
+                        ("swift", ident.get("swift", [])), ("email", ident.get("email", [])),
+                        ("telefon", ident.get("telefon", []))]:
         seen_id: set[str] = set()
         for item in lst:
             if label == "uid":
@@ -590,6 +605,10 @@ def _validate_correspondent_entry(
                 norm = _norm_corr_iban(item)
                 if not validate_iban(norm):
                     errors.append(f"Ungültige IBAN (Prüfziffer/Länge): '{item}'")
+            elif label == "swift":
+                norm = _norm_corr_swift(item)
+                if not norm:
+                    errors.append(f"Ungültiger SWIFT/BIC: '{item}'")
             elif label == "email":
                 norm = _norm_corr_email(item)
             else:
@@ -636,30 +655,20 @@ def _norm_corr_iban(raw: str) -> str:
     return re.sub(r"\s+", "", str(raw).upper())
 
 
-def _norm_corr_telefon(raw: str) -> str:
-    digits = re.sub(r"\D", "", str(raw))
-    if digits.startswith("00"):
-        digits = digits[2:]
-    if digits.startswith("41") and len(digits) >= 11:
-        return digits
-    if digits.startswith("0") and len(digits) >= 10:
-        return "41" + digits[1:]
-    return digits
-
-
 def _norm_corr_email(raw: str) -> str:
     return str(raw or "").strip().lower()
 
 
 def _normalize_identifikatoren(raw) -> dict:
-    """UID/IBAN/E-Mail/Telefon-Listen normalisieren (Anzeigeformat behalten)."""
+    """UID/IBAN/SWIFT/E-Mail/Telefon-Listen normalisieren (Anzeigeformat behalten)."""
     if not raw or not isinstance(raw, dict):
-        return {"uid": [], "iban": [], "email": [], "telefon": []}
+        return {"uid": [], "iban": [], "swift": [], "email": [], "telefon": []}
     uid_seen: set[str] = set()
     iban_seen: set[str] = set()
+    swift_seen: set[str] = set()
     email_seen: set[str] = set()
     tel_seen: set[str] = set()
-    uids, ibans, emails, tels = [], [], [], []
+    uids, ibans, swifts, emails, tels = [], [], [], [], []
     for item in raw.get("uid") or []:
         s = str(item).strip()
         n = _norm_corr_uid(s)
@@ -672,6 +681,12 @@ def _normalize_identifikatoren(raw) -> dict:
         if s and n and n not in iban_seen:
             iban_seen.add(n)
             ibans.append(s)
+    for item in raw.get("swift") or []:
+        s = str(item).strip().upper()
+        n = _norm_corr_swift(s)
+        if s and n and n not in swift_seen:
+            swift_seen.add(n)
+            swifts.append(n)
     for item in raw.get("email") or []:
         s = str(item).strip().lower()
         n = _norm_corr_email(s)
@@ -684,7 +699,7 @@ def _normalize_identifikatoren(raw) -> dict:
         if s and n and n not in tel_seen:
             tel_seen.add(n)
             tels.append(s)
-    return {"uid": uids, "iban": ibans, "email": emails, "telefon": tels}
+    return {"uid": uids, "iban": ibans, "swift": swifts, "email": emails, "telefon": tels}
 
 
 def _normalize_brillenpass(raw) -> dict:
@@ -897,6 +912,55 @@ def _legacy_split_cleanup(work_dir: Path | None) -> None:
             log.warning("Legacy-Split cleanup %s: %s", work_dir, e)
 
 
+def _legacy_split_publish_parts(parts: list[dict], consume: Path) -> list[dict]:
+    """
+    Split-Teile atomisch in consume/ veröffentlichen (.part → .pdf).
+    Verhindert, dass Paperless halbfertige Dateien sieht oder Moves kollidieren.
+    """
+    consume.mkdir(parents=True, exist_ok=True)
+    published: list[dict] = []
+    for p in parts:
+        src = Path(p["path"])
+        if not src.is_file():
+            raise FileNotFoundError(f"Split-Teil fehlt vor Publish: {src}")
+        size = src.stat().st_size
+        if size < 128:
+            raise ValueError(f"Split-Teil zu klein ({size} B): {p.get('filename')}")
+
+        dest = consume / p["filename"]
+        tmp = consume / f"{p['filename']}.part"
+        if tmp.exists():
+            tmp.unlink()
+        if dest.exists():
+            log.warning("Legacy-Split: überschreibe bestehende Datei in consume/: %s", dest.name)
+            dest.unlink()
+
+        shutil.move(str(src), str(tmp))
+        try:
+            if tmp.stat().st_size < 128:
+                raise ValueError(f"Split-Teil nach Move leer: {p.get('filename')}")
+            tmp.rename(dest)
+        except Exception:
+            if tmp.exists() and not dest.exists():
+                tmp.rename(dest)
+            raise
+
+        published.append({**p, "path": str(dest)})
+        log.info("Legacy-Split publish: %s (%d bytes)", dest.name, dest.stat().st_size)
+    return published
+
+
+def _legacy_split_delete_source_document(doc_id: int) -> tuple[bool, str]:
+    """Quell-Dokument in Paperless löschen — nur nach erfolgreichem Split."""
+    try:
+        pl_delete(f"/documents/{doc_id}/")
+        log.info("Legacy-Split: Quelldokument #%s gelöscht", doc_id)
+        return True, f"Quelldokument #{doc_id} gelöscht"
+    except Exception as e:
+        log.warning("Legacy-Split: Quelldokument #%s löschen fehlgeschlagen: %s", doc_id, e)
+        return False, f"Quelldokument #{doc_id} konnte nicht gelöscht werden: {e}"
+
+
 def _legacy_split_resolve_document(
     doc_id: int,
     regex: str,
@@ -1049,6 +1113,8 @@ def _run_legacy_split_job(
     dry_run: bool,
     consume_dir: str,
     job_key: str,
+    *,
+    delete_source: bool = False,
 ) -> None:
     from legacy_split_by_qr import has_real_qr_splits, split_pdf_at_markers
 
@@ -1107,16 +1173,34 @@ def _run_legacy_split_job(
             _lsplit_job_set(job_key, status="error", error="Keine Split-Teile erzeugt")
             return
 
-        _lsplit_job_set(job_key, status="running", message=f"{len(parts)} Teile nach consume/ verschieben…")
-        for p in parts:
-            src = Path(p["path"])
-            dest = consume / p["filename"]
-            shutil.move(str(src), str(dest))
-            p["path"] = str(dest)
+        _lsplit_job_set(job_key, status="running", message=f"{len(parts)} Teile nach consume/ schreiben…")
+        try:
+            published = _legacy_split_publish_parts(parts, consume)
+        except Exception as e:
+            _lsplit_job_set(
+                job_key,
+                status="error",
+                error=f"Consume-Publish fehlgeschlagen: {e}",
+                scan_seconds=scan_seconds,
+            )
+            return
+
+        source_deleted = False
+        source_delete_note = ""
+        if delete_source:
+            _lsplit_job_set(job_key, status="running", message=f"Quelldokument #{doc_id} löschen…")
+            source_deleted, source_delete_note = _legacy_split_delete_source_document(doc_id)
 
         detail = "; ".join(
-            f"{p['barcode']} S.{p['from_page']}–{p['to_page']}" for p in parts
+            f"{p['barcode']} S.{p['from_page']}–{p['to_page']}" for p in published
         )
+        msg = (
+            f"{len(published)} Teil(e) nach {consume} geschrieben "
+            f"({best['label']}, {scan_seconds}s) — Pipeline startet ({detail})"
+        )
+        if delete_source:
+            msg += f"\n{source_delete_note}"
+
         _lsplit_job_set(
             job_key,
             status="done",
@@ -1126,11 +1210,10 @@ def _run_legacy_split_job(
             source=best["label"],
             scan_seconds=scan_seconds,
             scan_meta=best.get("scan_meta") or {},
-            parts=parts,
-            message=(
-                f"{len(parts)} Teil(e) nach {consume} geschrieben "
-                f"({best['label']}, {scan_seconds}s) — Pipeline startet ({detail})"
-            ),
+            parts=published,
+            delete_source=delete_source,
+            source_deleted=source_deleted,
+            message=msg,
         )
     except Exception as e:
         log.exception("Legacy-Split Job #%s", doc_id)
@@ -1150,12 +1233,20 @@ async def _run_legacy_split_bg(
     dry_run: bool,
     consume_dir: str,
     job_key: str,
+    *,
+    delete_source: bool = False,
 ) -> None:
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         _LEGACY_SPLIT_EXECUTOR,
         functools.partial(
-            _run_legacy_split_job, doc_id, regex, dry_run, consume_dir, job_key,
+            _run_legacy_split_job,
+            doc_id,
+            regex,
+            dry_run,
+            consume_dir,
+            job_key,
+            delete_source=delete_source,
         ),
     )
 
@@ -2819,6 +2910,7 @@ async def api_legacy_split_trigger(
     """Paperless-Dokument per QR splitten — async (UI pollt Status, kein nginx-Timeout)."""
     dry_run = bool(body.get("dry_run", False))
     sync = bool(body.get("sync", False))
+    delete_source = bool(body.get("delete_source", False))
     regex = _resolve_legacy_split_regex(body)
     if body.get("consume_dir") and str(body.get("consume_dir")) != PAPERLESS_CONSUME_DIR:
         raise HTTPException(400, "consume_dir kann nicht überschrieben werden")
@@ -2830,7 +2922,15 @@ async def api_legacy_split_trigger(
         t_scan = time.monotonic()
         await loop.run_in_executor(
             _LEGACY_SPLIT_EXECUTOR,
-            functools.partial(_run_legacy_split_job, doc_id, regex, dry_run, consume_dir, job_key),
+            functools.partial(
+                _run_legacy_split_job,
+                doc_id,
+                regex,
+                dry_run,
+                consume_dir,
+                job_key,
+                delete_source=delete_source,
+            ),
         )
         job = _lsplit_job_get(job_key)
         if job.get("status") == "error":
@@ -2858,7 +2958,13 @@ async def api_legacy_split_trigger(
         dry_run=dry_run,
     )
     background_tasks.add_task(
-        _run_legacy_split_bg, doc_id, regex, dry_run, consume_dir, job_key,
+        _run_legacy_split_bg,
+        doc_id,
+        regex,
+        dry_run,
+        consume_dir,
+        job_key,
+        delete_source,
     )
     return {
         "async": True,
@@ -3252,7 +3358,7 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     entry.setdefault("nicht_verwechseln_mit", [])
     entry.setdefault("beziehungen", [])
     entry.setdefault("kuerzel", "")
-    entry.setdefault("identifikatoren", {"uid": [], "iban": [], "email": [], "telefon": []})
+    entry.setdefault("identifikatoren", {"uid": [], "iban": [], "swift": [], "email": [], "telefon": []})
     entry.setdefault("htr_profile_mode", "use_document_type")
     entry.setdefault("htr_profiles_by_document_type", {})
     entry.setdefault("platzhalter", False)

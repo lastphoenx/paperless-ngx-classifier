@@ -1024,6 +1024,14 @@
           Alt NAS: <code>060101 Gesundheit Thomas</code> — 6 Ziffern + Leerzeichen
         </label>
       </fieldset>
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin:0 0 12px;cursor:pointer">
+        <input type="checkbox" id="lsplit-delete-source" style="margin-top:2px">
+        <span>Quelldokument in Paperless <strong>löschen</strong> nach erfolgreichem Split
+          <span style="display:block;color:var(--muted);font-size:10px;font-weight:400;margin-top:2px">
+            Erst wenn alle Teile in consume/ geschrieben sind — Original bleibt sonst erhalten.
+          </span>
+        </span>
+      </label>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input type="number" id="lsplit-id" placeholder="Paperless Dok-ID" min="1"
           style="max-width:160px;font-size:13px">
@@ -1059,6 +1067,21 @@ function cmLegacySplitCli(docId, preset) {
   return `/opt/paperless-scripts/venv/bin/python3 /opt/paperless-scripts/legacy_qr_split_test.py /tmp/legacy-qr-split/${docId}/source.pdf --verbose-pages${presetArg}`;
 }
 
+function _lsplitDeleteSource() {
+  const el = document.getElementById('lsplit-delete-source');
+  return !!el?.checked;
+}
+
+function _lsplitApplyDeleteSourcePref() {
+  const el = document.getElementById('lsplit-delete-source');
+  if (!el) return;
+  let saved = false;
+  try { saved = localStorage.getItem('lsplit-delete-source') === '1'; } catch (e) {}
+  el.checked = saved;
+  el.onchange = () => {
+    try { localStorage.setItem('lsplit-delete-source', el.checked ? '1' : '0'); } catch (e) {}
+  };
+}
 function _lsplitRegexPreset() {
   const el = document.querySelector('input[name="lsplit-regex-preset"]:checked');
   return el?.value || 'underscore';
@@ -1116,7 +1139,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.14';
+const UI_VERSION = '3.15';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -1405,6 +1428,7 @@ function showView(name) {
     let savedPreset = 'underscore';
     try { savedPreset = localStorage.getItem('lsplit-regex-preset') || 'underscore'; } catch (e) {}
     _lsplitApplyRegexPreset(savedPreset);
+    _lsplitApplyDeleteSourcePref();
     document.querySelectorAll('input[name="lsplit-regex-preset"]').forEach(r => {
       r.onchange = () => {
         try { localStorage.setItem('lsplit-regex-preset', _lsplitRegexPreset()); } catch (e) {}
@@ -1817,7 +1841,7 @@ function renderPanelNeu(entry, i, docContent, docIds) {
   const e = entry.vorgeschlagener_eintrag || {};
   const varianten = e.varianten || [];
   const match     = e.match || [];
-  const idents    = e.identifikatoren || {uid: [], iban: [], email: [], telefon: []};
+  const idents    = e.identifikatoren || {uid: [], iban: [], swift: [], email: [], telefon: []};
   const kuerzelVorschlag = e.kuerzel || suggestKuerzel(e.name || entry.llm_raw || '');
   const korrTypen = allKorrTypen.length ? allKorrTypen : ['Behörde','Bank','Versicherung','Arzt','Arbeitgeber','Kundenservice','Verein','Online-Shop','Händler','Handwerk','Telekommunikation','Energie','Transport','Sonstiges'];
   return `
@@ -1893,6 +1917,13 @@ function renderPanelNeu(entry, i, docContent, docIds) {
         <div class="tags-input" id="tags-review-iban" data-tags='${JSON.stringify(idents.iban||[])}'>
           ${(idents.iban||[]).map(v => tagChip(v, 'tags-review-iban', '#10b981', 'rgba(16,185,129,.15)')).join('')}
           <input type="text" placeholder="CH09 0023 …" onkeydown="addTag(event,'tags-review-iban')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>SWIFT / BIC</label>
+        <div class="tags-input" id="tags-review-swift" data-tags='${JSON.stringify(idents.swift||[])}'>
+          ${(idents.swift||[]).map(v => tagChip(v, 'tags-review-swift', '#fbbf24', 'rgba(251,191,36,.15)')).join('')}
+          <input type="text" placeholder="BKBBCHBB" onkeydown="addTag(event,'tags-review-swift')">
         </div>
       </div>
       <div class="field-group">
@@ -2070,23 +2101,13 @@ function renderPanelMerge(entry, i, docContent, docIds) {
 // TAGS INPUT LOGIC
 // ──────────────────────────────────────────────
 function switchMergeToNeu(i) {
-  // Merge-Eintrag temporär als "neu" behandeln — zeigt das Neu-Formular
   const entry = pendingEntries[i];
   if (!entry) return;
-  // entry.aktion auf "neu" setzen damit renderPanelNeu verwendet wird
-  const fakeEntry = Object.assign({}, entry, {
-    aktion: 'neu',
-    vorgeschlagener_eintrag: Object.assign({},
-      entry.vorgeschlagener_eintrag || {},
-      { name: entry.vorgeschlagener_eintrag?.name || entry.ziel_name || '' }
-    )
-  });
-  const wrapper = document.getElementById('review-panel-wrapper');
-  const docContent = entry._docContent || '';
-  const docIds     = entry._docIds     || [];
-  wrapper.innerHTML = renderPanelNeu(fakeEntry, i, docContent, docIds);
-  // Varianten-Vorschläge laden
-  setTimeout(() => loadVariantenSuggestions(fakeEntry.vorgeschlagener_eintrag?.name || ''), 100);
+  entry.aktion = 'neu';
+  if (!entry.vorgeschlagener_eintrag) entry.vorgeschlagener_eintrag = {};
+  entry.vorgeschlagener_eintrag.name =
+    entry.vorgeschlagener_eintrag.name || entry.llm_raw || entry.merge_ziel_name || '';
+  selectEntry(i);
 }
 function tagChip(value, containerId, color, bg) {
   const style = (color || bg)
@@ -2230,6 +2251,7 @@ async function submitReview(index, action) {
       payload.identifikatoren = {
         uid:     getTagsFromContainer('tags-review-uid'),
         iban:    getTagsFromContainer('tags-review-iban'),
+        swift:   getTagsFromContainer('tags-review-swift'),
         email:   getTagsFromContainer('tags-review-email'),
         telefon: getTagsFromContainer('tags-review-tel'),
       };
@@ -2399,6 +2421,12 @@ async function openCorrCreate() {
         </div>
       </div>
       <div class="field-group">
+        <label>SWIFT / BIC</label>
+        <div class="tags-input" id="tags-cf-swift" data-tags='[]'>
+          <input type="text" placeholder="BKBBCHBB" onkeydown="addTag(event,'tags-cf-swift')">
+        </div>
+      </div>
+      <div class="field-group">
         <label>E-Mail</label>
         <div class="tags-input" id="tags-cf-email" data-tags='[]'>
           <input type="text" placeholder="kontakt@firma.ch" onkeydown="addTag(event,'tags-cf-email')">
@@ -2499,6 +2527,7 @@ async function submitCorrCreate() {
   const identifikatoren = {
     uid:     getTagsFromContainer('tags-cf-uid'),
     iban:    getTagsFromContainer('tags-cf-iban'),
+    swift:   getTagsFromContainer('tags-cf-swift'),
     email:   getTagsFromContainer('tags-cf-email'),
     telefon: getTagsFromContainer('tags-cf-tel'),
   };
@@ -2724,6 +2753,7 @@ function renderCorrMap(eintraege) {
           const rows = [];
           (id.uid||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(168,85,247,.15);color:#c084fc;margin-right:4px" title="UID">UID ${u}</span>`));
           (id.iban||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(16,185,129,.15);color:#10b981;margin-right:4px" title="IBAN">IBAN ${u}</span>`));
+          (id.swift||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;margin-right:4px" title="SWIFT">SWIFT ${u}</span>`));
           (id.email||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(244,114,182,.15);color:#f472b6;margin-right:4px" title="E-Mail">✉ ${u}</span>`));
           (id.telefon||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(59,130,246,.15);color:#60a5fa;margin-right:4px" title="Telefon">☎ ${u}</span>`));
           return rows.length ? `<div style="margin-bottom:8px"><span style="color:var(--muted);font-size:11px">IDENTIFIKATOREN: </span>${rows.join('')}</div>` : '';
@@ -2811,7 +2841,7 @@ function toggleCorrEdit(idx, entry) {
         </div>
       </div>
       <div class="field-group" style="padding-top:8px;border-top:1px dashed var(--border)">
-        <label style="font-size:11px;color:var(--muted)">IDENTIFIKATOREN — deterministische Zuordnung (UID &gt; IBAN &gt; E-Mail &gt; Telefon)</label>
+        <label style="font-size:11px;color:var(--muted)">IDENTIFIKATOREN — deterministische Zuordnung (UID &gt; IBAN &gt; SWIFT &gt; E-Mail &gt; Telefon)</label>
       </div>
       <div class="field-group">
         <label>UID / MWST-Nr. (CHE-…)</label>
@@ -2825,6 +2855,13 @@ function toggleCorrEdit(idx, entry) {
         <div class="tags-input" id="ce-iban-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).iban||[])}'>
           ${((entry.identifikatoren||{}).iban||[]).map(v => tagChip(v, `ce-iban-${idx}`, '#10b981', 'rgba(16,185,129,.15)')).join('')}
           <input type="text" placeholder="CH09 0023 …" onkeydown="addTag(event,'ce-iban-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>SWIFT / BIC</label>
+        <div class="tags-input" id="ce-swift-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).swift||[])}'>
+          ${((entry.identifikatoren||{}).swift||[]).map(v => tagChip(v, `ce-swift-${idx}`, '#fbbf24', 'rgba(251,191,36,.15)')).join('')}
+          <input type="text" placeholder="BKBBCHBB" onkeydown="addTag(event,'ce-swift-${idx}')">
         </div>
       </div>
       <div class="field-group">
@@ -3233,7 +3270,7 @@ function collectHtrOverrides(idx) {
 }
 
 async function saveCorrEdit(idx, nameParam) {
-  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-email-${idx}`, `ce-tel-${idx}`,
+  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-swift-${idx}`, `ce-email-${idx}`, `ce-tel-${idx}`,
                   `ce-nvm-${idx}`, `ce-ord-${idx}`, `ce-bp-begriffe-${idx}`,
                   `ce-fixtags-${idx}`, `ce-verbdt-${idx}`, `ce-verbord-${idx}`, `ce-verbtag-${idx}`]);
   const name = nameParam || document.getElementById(`corr-edit-${idx}`)?.dataset?.name;
@@ -3259,6 +3296,7 @@ async function saveCorrEdit(idx, nameParam) {
     identifikatoren: {
       uid:     getTagsFromContainer(`ce-uid-${idx}`),
       iban:    getTagsFromContainer(`ce-iban-${idx}`),
+      swift:   getTagsFromContainer(`ce-swift-${idx}`),
       email:   getTagsFromContainer(`ce-email-${idx}`),
       telefon: getTagsFromContainer(`ce-tel-${idx}`),
     },
@@ -6524,10 +6562,14 @@ async function triggerLegacySplit(dryRun) {
   try { localStorage.setItem('lsplit-last-id', String(id)); } catch (e) {}
   try { localStorage.setItem('lsplit-regex-preset', _lsplitRegexPreset()); } catch (e) {}
   if (!dryRun) {
+    const delNote = _lsplitDeleteSource()
+      ? '\n\nDas Quelldokument wird nach erfolgreichem Split in Paperless GELÖSCHT.'
+      : '\n\nDas Quelldokument bleibt in Paperless erhalten.';
     const ok = confirm(
       `Dokument #${id} an QR-Codes splitten?\n\n`
       + 'Teile werden nach consume/ geschrieben und neu importiert.\n'
       + 'Zuerst «Vorschau» empfohlen.'
+      + delNote
     );
     if (!ok) return;
   }
@@ -6544,7 +6586,11 @@ async function triggerLegacySplit(dryRun) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       credentials: 'same-origin',
-      body: JSON.stringify({dry_run: dryRun, regex_preset: _lsplitRegexPreset()}),
+      body: JSON.stringify({
+        dry_run: dryRun,
+        regex_preset: _lsplitRegexPreset(),
+        delete_source: !dryRun && _lsplitDeleteSource(),
+      }),
     });
     let d = start;
     if (start.async) {
