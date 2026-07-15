@@ -7,4 +7,5 @@ python-multipart>=0.0.9
 pdf2image>=1.17.0
 pyzbar>=0.1.9
 Pillow>=10.0.0
+phonenumbers>=8.13.0
 pypdf>=4.0.0

@@ -65,6 +65,13 @@ def test_ch_phone_format_extracted():
     assert pc._norm_corr_telefon(vorschlag["telefon"][0]) == "41313586433"
 
 
+def test_ch_phone_with_trunk_zero_extracted():
+    text = "Tel: +41 (0) 61 971 89 80\n"
+    vorschlag = pc._extract_identifikatoren_vorschlag(text)
+    assert vorschlag["telefon"]
+    assert pc._norm_corr_telefon(vorschlag["telefon"][0]) == "41619718980"
+
+
 def test_an_recipient_filtered_even_without_family(monkeypatch):
     monkeypatch.setattr(pc, "_load_family", lambda: {"personen": []})
     text = (

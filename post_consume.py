@@ -66,6 +66,9 @@ from document_date import (
     extract_document_issue_date,
     validate_issue_date,
 )
+from iban_utils import extract_ibans_from_text, fix_iban_ocr_compact, format_iban_display, validate_iban
+from phone_utils import extract_phones_from_text, norm_phone_for_match
+from swift_utils import extract_swifts_from_text, normalize_swift
 from handwriting_vision import (
     HTR_ACTION_DEFER,
     HTR_ACTION_RUN,
@@ -439,15 +442,12 @@ def _norm_corr_iban(raw: str) -> str:
 
 
 def _norm_corr_telefon(raw: str) -> str:
-    """Schweizer Telefonnummer → Ziffernfolge (41…)."""
-    digits = re.sub(r"\D", "", str(raw))
-    if digits.startswith("00"):
-        digits = digits[2:]
-    if digits.startswith("41") and len(digits) >= 11:
-        return digits
-    if digits.startswith("0") and len(digits) >= 10:
-        return "41" + digits[1:]
-    return digits
+    """Kompatibilitäts-Wrapper — siehe phone_utils.norm_phone_for_match."""
+    return norm_phone_for_match(raw)
+
+
+def _norm_corr_swift(raw: str) -> str:
+    return normalize_swift(raw)
 
 
 def _norm_corr_email(raw: str) -> str:
@@ -491,14 +491,14 @@ _CORR_EMAIL_AN_PLAIN_RE = re.compile(
     r'(?:An|To|Empfänger|Empfaenger)\s*[:\s]*["\']?([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})',
     re.IGNORECASE,
 )
-_CORR_TEL_CH_RE = re.compile(
-    r"(?:\+41|0041)\s*[\-]?\s*(?:\d{2}|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{2}[\s.\-]?\d{2}\b",
-)
 _CORR_UID_RE = re.compile(
     r"CHE[-\s.]?\d{3}[-\s.]?\d{3}[-\s.]?\d{3}(?:\s*MWST)?",
     re.IGNORECASE,
 )
-from iban_utils import extract_ibans_from_text, fix_iban_ocr_compact, format_iban_display, validate_iban
+
+
+def _extract_corr_swifts_from_text(text: str) -> set[str]:
+    return {_norm_corr_swift(s) for s in extract_swifts_from_text(text) if _norm_corr_swift(s)}
 
 
 def _corr_document_search_text(
@@ -593,17 +593,19 @@ def _match_correspondent_by_identifikatoren(
     qr_meta: dict | None = None,
     vision_meta: dict | None = None,
 ) -> tuple[dict | None, str]:
-    """Deterministischer Korrespondent-Match: UID > IBAN > E-Mail > Telefon (nur eindeutig)."""
+    """Deterministischer Korrespondent-Match: UID > IBAN > SWIFT > E-Mail > Telefon (nur eindeutig)."""
     text = _corr_document_search_text(ocr_text, qr_meta, vision_meta)
     if not text.strip():
         return None, ""
     doc_uids = _extract_corr_uids_from_text(text)
     doc_ibans = _extract_corr_ibans_from_text(text)
-    doc_emails = { _norm_corr_email(e) for e in _extract_corr_emails_from_text(text) }
+    doc_swifts = _extract_corr_swifts_from_text(text)
+    doc_emails = {_norm_corr_email(e) for e in _extract_corr_emails_from_text(text)}
     digit_stream = re.sub(r"\D", "", text)
 
     uid_hits: list[dict] = []
     iban_hits: list[dict] = []
+    swift_hits: list[dict] = []
     email_hits: list[dict] = []
     tel_hits: list[dict] = []
 
@@ -618,6 +620,11 @@ def _match_correspondent_by_identifikatoren(
         for iban in ident.get("iban", []) or []:
             if _norm_corr_iban(iban) in doc_ibans:
                 iban_hits.append(entry)
+                break
+        for sw in ident.get("swift", []) or []:
+            n = _norm_corr_swift(sw)
+            if n and n in doc_swifts:
+                swift_hits.append(entry)
                 break
         for em in ident.get("email", []) or []:
             if _norm_corr_email(em) in doc_emails:
@@ -638,6 +645,12 @@ def _match_correspondent_by_identifikatoren(
         return iban_hits[0], "IBAN"
     if len(iban_hits) > 1:
         log.warning("Identifikator IBAN: mehrdeutig (%d Treffer)", len(iban_hits))
+        return None, ""
+
+    if len(swift_hits) == 1:
+        return swift_hits[0], "SWIFT"
+    if len(swift_hits) > 1:
+        log.warning("Identifikator SWIFT: mehrdeutig (%d Treffer)", len(swift_hits))
         return None, ""
 
     if len(email_hits) == 1:
@@ -668,14 +681,16 @@ def _extract_identifikatoren_vorschlag(
     qr_meta: dict | None = None,
     vision_meta: dict | None = None,
 ) -> dict:
-    """UID/IBAN/E-Mail/Telefon aus Dokument für Korrespondenten-Review-Vorschlag."""
+    """UID/IBAN/SWIFT/E-Mail/Telefon aus Dokument für Korrespondenten-Review-Vorschlag."""
     text = _corr_document_search_text(ocr_text, qr_meta, vision_meta)
     uid_out: list[str] = []
     iban_out: list[str] = []
+    swift_out: list[str] = []
     email_out: list[str] = []
     tel_out: list[str] = []
     tel_seen: set[str] = set()
     iban_seen: set[str] = set()
+    swift_seen: set[str] = set()
     email_seen: set[str] = set()
 
     for m in _CORR_UID_RE.findall(text):
@@ -695,25 +710,19 @@ def _extract_identifikatoren_vorschlag(
             iban_seen.add(compact)
             iban_out.append(display)
 
+    for sw in extract_swifts_from_text(text, max_results=2):
+        n = _norm_corr_swift(sw)
+        if n and n not in swift_seen:
+            swift_seen.add(n)
+            swift_out.append(n)
+
     for em in _extract_corr_emails_from_text(text):
         n = _norm_corr_email(em)
         if n and n not in email_seen:
             email_seen.add(n)
             email_out.append(n)
 
-    _tel_label_re = re.compile(
-        r"(?:Telefon|Tel\.?|Fax|Telefax)\s*[:\s]*([+()0-9][\d\s./\-]{7,28})",
-        re.IGNORECASE,
-    )
-    for m in _tel_label_re.findall(text):
-        t = re.sub(r"\s+", " ", m.strip().rstrip(" -"))
-        n = _norm_corr_telefon(t)
-        if n and n not in tel_seen and len(n) >= 9:
-            tel_seen.add(n)
-            tel_out.append(t)
-
-    for m in _CORR_TEL_CH_RE.findall(text):
-        t = re.sub(r"\s+", " ", m.strip())
+    for t in extract_phones_from_text(text, max_results=3):
         n = _norm_corr_telefon(t)
         if n and n not in tel_seen and len(n) >= 9:
             tel_seen.add(n)
@@ -722,6 +731,7 @@ def _extract_identifikatoren_vorschlag(
     return {
         "uid": uid_out[:3],
         "iban": iban_out[:2],
+        "swift": swift_out[:2],
         "email": email_out[:3],
         "telefon": tel_out[:3],
     }
@@ -3364,6 +3374,9 @@ _FUZZY_BLACKLIST_PAIRS = [
     ("css versicherung", "css krankenversicherung"),
     ("helvetia versicherung", "helvetia leben"),
     ("axa versicherung", "axa leben"),
+    ("basler kantonalbank", "blkb"),
+    ("basler kantonalbank", "basellandschaftliche kantonalbank"),
+    ("bkb", "blkb"),
 ]
 
 
@@ -3579,7 +3592,7 @@ def _build_pending_entry(aktion: str, raw_name: str, document_id: int,
                           identifikatoren: dict | None = None) -> dict:
     """Pending-Eintrag im Schema von pending_correspondents.jsonl aufbauen."""
     import time as _time
-    idents = identifikatoren or {"uid": [], "iban": [], "email": [], "telefon": []}
+    idents = identifikatoren or {"uid": [], "iban": [], "swift": [], "email": [], "telefon": []}
     vorschlag = {
         "name": raw_name,
         "varianten": [],
@@ -3684,10 +3697,10 @@ def resolve_correspondent_canonical(
         identifikatoren=_extract_identifikatoren_vorschlag(ocr_text, qr_meta, vision_meta),
     )
     idents = pending_entry.get("vorgeschlagener_eintrag", {}).get("identifikatoren", {})
-    if any(idents.get(k) for k in ("uid", "iban", "email", "telefon")):
+    if any(idents.get(k) for k in ("uid", "iban", "swift", "email", "telefon")):
         log.info(
-            "Identifikatoren-Vorschlag für '%s': uid=%s iban=%s email=%s tel=%s",
-            raw_name, idents.get("uid"), idents.get("iban"),
+            "Identifikatoren-Vorschlag für '%s': uid=%s iban=%s swift=%s email=%s tel=%s",
+            raw_name, idents.get("uid"), idents.get("iban"), idents.get("swift"),
             idents.get("email"), idents.get("telefon"),
         )
     _append_pending_corr(pending_entry)
@@ -4443,7 +4456,7 @@ def main():
     # Identifikator-Match: Korrespondent setzen (UID/IBAN überschreibt LLM)
     if _corr_entry and _ident_grund:
         existing = (decision.get("korrespondent") or "").strip()
-        if _ident_grund in ("UID", "IBAN", "E-Mail") or not existing:
+        if _ident_grund in ("UID", "IBAN", "SWIFT", "E-Mail") or not existing:
             if existing and existing.lower() != _corr_entry["name"].lower():
                 log.info(
                     "Korrespondent überschrieben: LLM '%s' → Identifikator %s '%s'",
@@ -4453,7 +4466,7 @@ def main():
             begr = (decision.get("begruendung") or "").strip()
             id_note = f"Korrespondent via {_ident_grund}: {_corr_entry['name']}"
             decision["begruendung"] = f"{begr}\n{id_note}".strip() if begr else id_note
-            if _ident_grund in ("UID", "IBAN", "E-Mail") and decision.get("confidence") in ("tief", "mittel"):
+            if _ident_grund in ("UID", "IBAN", "SWIFT", "E-Mail") and decision.get("confidence") in ("tief", "mittel"):
                 decision["confidence"] = "hoch"
                 log.info("Confidence → hoch (Identifikator %s)", _ident_grund)
             elif _ident_grund == "Telefon" and decision.get("confidence") == "tief":
