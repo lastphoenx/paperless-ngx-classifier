@@ -58,7 +58,7 @@ def normalize_legacy_qr_regex(regex: str | None) -> str:
     s = (regex or "").strip()
     if not s:
         return DEFAULT_QR_REGEX
-    if "[^s]" in s and "[^\s]" not in s and r"\s" not in s:
+    if "[^s]" in s and r"[^\s]" not in s and r"\s" not in s:
         log.warning(
             "LEGACY_SPLIT_QR_REGEX fehlerhaft (%r) — \\s in .env mit Quotes setzen, nutze Default",
             s,

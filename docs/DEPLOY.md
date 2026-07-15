@@ -68,9 +68,10 @@ Im Browser: paper.manager öffnen, Dokument-Review → Thumbnail/Vorschau muss n
 
 ```bash
 cd /opt/paperless-ngx-classifier
-chmod +x scripts/dependency-audit.sh
 ./scripts/dependency-audit.sh
 ```
+
+(`deploy-to-ct121.sh` setzt `chmod +x` auf `scripts/*.sh`; `dependency-audit.sh` ist im Repo mit +x.)
 
 Installiert `pip-audit` einmalig ins venv unter `/opt/paperless-scripts/venv`.
 
