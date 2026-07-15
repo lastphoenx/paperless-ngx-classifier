@@ -78,6 +78,7 @@ if str(ROOT) not in sys.path:
 
 from legacy_split_by_qr import (  # noqa: E402
     DEFAULT_QR_REGEX,
+    QR_REGEX_PRESETS,
     _FALLBACK_DPIS,
     _RENDER_BACKENDS,
     _decode_page_image,
@@ -86,6 +87,7 @@ from legacy_split_by_qr import (  # noqa: E402
     dump_rendered_page,
     find_split_markers,
     has_real_qr_splits,
+    resolve_legacy_qr_regex,
     split_pdf_at_markers,
 )
 
@@ -206,8 +208,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Legacy QR-Split: lokales PDF testen")
     parser.add_argument("pdf", type=Path, help="Pfad zur PDF-Datei")
     parser.add_argument(
+        "--preset",
+        choices=tuple(QR_REGEX_PRESETS.keys()),
+        default=None,
+        help="QR-Regex-Vorlage: underscore (Standard) oder space (alte NAS-Trennseiten)",
+    )
+    parser.add_argument(
         "--regex",
         default=os.environ.get("LEGACY_SPLIT_QR_REGEX", DEFAULT_QR_REGEX),
+        help="Explizites Regex (wird von --preset überschrieben)",
     )
     parser.add_argument("--log", type=Path, default=None)
     parser.add_argument("--json", type=Path, default=None)
@@ -239,6 +248,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.preset:
+        regex = resolve_legacy_qr_regex(preset=args.preset)
+    else:
+        regex = resolve_legacy_qr_regex(regex=args.regex)
+
     pdf_path = args.pdf.expanduser().resolve()
     if not pdf_path.is_file():
         print(f"Datei nicht gefunden: {pdf_path}", file=sys.stderr)
@@ -254,7 +268,7 @@ def main() -> int:
     log.info("Log-Datei: %s", log_path)
 
     _check_deps(log)
-    log.info("Regex: %s", args.regex)
+    log.info("Regex: %s", regex)
 
     if args.dump_page > 0:
         out_png = pdf_path.parent / f"{pdf_path.stem}_page{args.dump_page}_{args.dump_backend}_{args.dump_dpi}dpi.png"
@@ -282,12 +296,12 @@ def main() -> int:
         return 0
 
     if args.verbose_pages:
-        _verbose_page_scan(pdf_path, args.regex, log)
+        _verbose_page_scan(pdf_path, regex, log)
 
     log.info("=== find_split_markers ===")
     t0 = time.monotonic()
     try:
-        markers, total, qr_debug, scan_meta = find_split_markers(str(pdf_path), regex=args.regex)
+        markers, total, qr_debug, scan_meta = find_split_markers(str(pdf_path), regex=regex)
     except Exception as e:
         log.exception("Scan fehlgeschlagen: %s", e)
         return 1
@@ -309,7 +323,7 @@ def main() -> int:
     result = {
         "pdf": str(pdf_path),
         "pages": total,
-        "regex": args.regex,
+        "regex": regex,
         "scan_meta": scan_meta,
         "markers": [{"barcode": b, "page": p} for b, p in markers],
         "qr_debug": qr_debug,

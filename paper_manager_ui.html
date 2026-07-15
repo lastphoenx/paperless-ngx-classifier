@@ -1010,10 +1010,20 @@
     </div>
     <div class="card" style="padding:16px 18px">
       <p style="color:var(--muted);font-size:12px;margin-bottom:12px;line-height:1.6">
-        Regex <code>^[0-9]{6}_[^\s]+$</code> (z.&nbsp;B. <code>060102_Gesundheit_Monika</code>).
-        QR auf Trennseiten — Rendering via <strong>Ghostscript</strong> (wie früheres NAS-Script).
+        Trennseiten-QR im gewählten Format — Rendering via <strong>Ghostscript</strong> (wie früheres NAS-Script).
         Teile landen in <code>consume/</code> — volle Pipeline wie bei neuem Scan.
       </p>
+      <fieldset id="lsplit-regex-fieldset" style="margin:0 0 12px;border:none;padding:0">
+        <legend style="font-size:12px;color:var(--muted);margin-bottom:6px">QR-Format (Trennseiten)</legend>
+        <label style="display:block;font-size:12px;margin:5px 0;cursor:pointer">
+          <input type="radio" name="lsplit-regex-preset" value="underscore" checked>
+          Neu: <code>060102_Gesundheit_Monika</code> — 6 Ziffern + Unterstrich (weniger Fehl-Treffer)
+        </label>
+        <label style="display:block;font-size:12px;margin:5px 0;cursor:pointer">
+          <input type="radio" name="lsplit-regex-preset" value="space">
+          Alt NAS: <code>060101 Gesundheit Thomas</code> — 6 Ziffern + Leerzeichen
+        </label>
+      </fieldset>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input type="number" id="lsplit-id" placeholder="Paperless Dok-ID" min="1"
           style="max-width:160px;font-size:13px">
@@ -1043,8 +1053,37 @@ const API_BASE = window.location.pathname.startsWith('/corr-manager')
 
 /** CT121-Log nur letzte Minuten — nicht ganzer journalctl-Dump seit Monaten. */
 const CM_JOURNAL_CMD = 'journalctl -u correspondent-manager --since "15 min ago" --no-pager';
-function cmLegacySplitCli(docId) {
-  return `/opt/paperless-scripts/venv/bin/python3 /opt/paperless-scripts/legacy_qr_split_test.py /tmp/legacy-qr-split/${docId}/source.pdf --verbose-pages`;
+function cmLegacySplitCli(docId, preset) {
+  const p = preset || (typeof _lsplitRegexPreset === 'function' ? _lsplitRegexPreset() : 'underscore');
+  const presetArg = p === 'space' ? ' --preset space' : '';
+  return `/opt/paperless-scripts/venv/bin/python3 /opt/paperless-scripts/legacy_qr_split_test.py /tmp/legacy-qr-split/${docId}/source.pdf --verbose-pages${presetArg}`;
+}
+
+function _lsplitRegexPreset() {
+  const el = document.querySelector('input[name="lsplit-regex-preset"]:checked');
+  return el?.value || 'underscore';
+}
+
+function _lsplitApplyRegexPreset(saved) {
+  const v = saved || 'underscore';
+  document.querySelectorAll('input[name="lsplit-regex-preset"]').forEach(r => {
+    r.checked = r.value === v;
+  });
+}
+
+function _lsplitUpdateDiagHint() {
+  const inp = document.getElementById('lsplit-id');
+  const hint = document.getElementById('lsplit-diag-hint');
+  if (!hint) return;
+  const preset = _lsplitRegexPreset();
+  const presetNote = preset === 'space'
+    ? 'Alt-NAS-Regex (6 Ziffern + Leerzeichen).'
+    : 'Standard-Regex (6 Ziffern + Unterstrich).';
+  hint.innerHTML =
+    `${presetNote} Große Scans können mehrere Minuten dauern. Bei Timeout auf CT&nbsp;121:<br>` +
+    `<code style="font-size:10px;word-break:break-all">${CM_JOURNAL_CMD}</code><br>` +
+    'Oder PDF direkt testen (nach erstem Lauf):<br>' +
+    `<code style="font-size:10px;word-break:break-all">${cmLegacySplitCli(inp?.value || '&lt;Dok-ID&gt;', preset)}</code>`;
 }
 
 /** Paperless-Basis-URL — IP-Zugriff → :8000, Domain → gleicher Host (wie Login-Redirect). */
@@ -1077,7 +1116,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.12';
+const UI_VERSION = '3.14';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -1363,14 +1402,16 @@ function showView(name) {
   }
   if (name === 'legacy-split') {
     const inp = document.getElementById('lsplit-id');
-    const hint = document.getElementById('lsplit-diag-hint');
-    if (hint) {
-      hint.innerHTML =
-        'Große Scans können mehrere Minuten dauern. Bei Timeout auf CT&nbsp;121:<br>' +
-        `<code style="font-size:10px;word-break:break-all">${CM_JOURNAL_CMD}</code><br>` +
-        'Oder PDF direkt testen (nach erstem Lauf):<br>' +
-        `<code style="font-size:10px;word-break:break-all">${cmLegacySplitCli(inp?.value || '&lt;Dok-ID&gt;')}</code>`;
-    }
+    let savedPreset = 'underscore';
+    try { savedPreset = localStorage.getItem('lsplit-regex-preset') || 'underscore'; } catch (e) {}
+    _lsplitApplyRegexPreset(savedPreset);
+    document.querySelectorAll('input[name="lsplit-regex-preset"]').forEach(r => {
+      r.onchange = () => {
+        try { localStorage.setItem('lsplit-regex-preset', _lsplitRegexPreset()); } catch (e) {}
+        _lsplitUpdateDiagHint();
+      };
+    });
+    _lsplitUpdateDiagHint();
     if (inp && !inp.value) {
       try {
         const last = localStorage.getItem('lsplit-last-id');
@@ -6481,6 +6522,7 @@ async function triggerLegacySplit(dryRun) {
   const status = document.getElementById('lsplit-status');
   if (!id) { showToast('Dokument-ID eingeben', 'error'); return; }
   try { localStorage.setItem('lsplit-last-id', String(id)); } catch (e) {}
+  try { localStorage.setItem('lsplit-regex-preset', _lsplitRegexPreset()); } catch (e) {}
   if (!dryRun) {
     const ok = confirm(
       `Dokument #${id} an QR-Codes splitten?\n\n`
@@ -6502,7 +6544,7 @@ async function triggerLegacySplit(dryRun) {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       credentials: 'same-origin',
-      body: JSON.stringify({dry_run: dryRun}),
+      body: JSON.stringify({dry_run: dryRun, regex_preset: _lsplitRegexPreset()}),
     });
     let d = start;
     if (start.async) {
