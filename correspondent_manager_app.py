@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.60"  # 2.60: Proxy-Auth, Legacy-Split/consume_dir, Regex-Validierung
-UI_VERSION = "3.13"
+__version__ = "2.61"  # 2.61: Legacy-Split regex_preset space|underscore
+UI_VERSION = "3.14"
 
 import requests
 from iban_utils import validate_iban
@@ -94,8 +94,10 @@ PAPERLESS_MEDIA_ROOT       = os.environ.get("PAPERLESS_MEDIA_ROOT", "/mnt/paperl
 LEGACY_SPLIT_TMP           = Path(os.environ.get("LEGACY_SPLIT_TMP", "/tmp/legacy-qr-split"))
 from legacy_split_by_qr import (
     DEFAULT_QR_REGEX as _LEGACY_QR_DEFAULT,
+    QR_REGEX_PRESETS,
     UnsafeRegexError,
     normalize_legacy_qr_regex,
+    resolve_legacy_qr_regex,
     validate_user_regex,
 )
 LEGACY_SPLIT_QR_REGEX      = normalize_legacy_qr_regex(
@@ -2781,6 +2783,33 @@ def api_brillenpass_review_action(index: int, body: dict = Body(...)):
     }
 
 
+def _resolve_legacy_split_regex(body: dict) -> str:
+    preset = body.get("regex_preset") or body.get("preset")
+    if preset:
+        try:
+            raw = resolve_legacy_qr_regex(preset=str(preset))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    else:
+        raw = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
+    try:
+        return normalize_legacy_qr_regex(validate_user_regex(raw, context="legacy-split"))
+    except UnsafeRegexError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.get("/api/legacy-split/presets", response_class=JSONResponse)
+def api_legacy_split_presets():
+    """QR-Regex-Vorlagen für Legacy-Split (UI-Auswahl)."""
+    return {
+        "default": "underscore",
+        "presets": {
+            key: {"regex": pat, "label": label}
+            for key, (pat, label) in QR_REGEX_PRESETS.items()
+        },
+    }
+
+
 @app.post("/api/legacy-split/trigger/{doc_id}")
 async def api_legacy_split_trigger(
     doc_id: int,
@@ -2790,11 +2819,7 @@ async def api_legacy_split_trigger(
     """Paperless-Dokument per QR splitten — async (UI pollt Status, kein nginx-Timeout)."""
     dry_run = bool(body.get("dry_run", False))
     sync = bool(body.get("sync", False))
-    raw_regex = (body.get("regex") or LEGACY_SPLIT_QR_REGEX).strip()
-    try:
-        regex = normalize_legacy_qr_regex(validate_user_regex(raw_regex, context="legacy-split"))
-    except UnsafeRegexError as e:
-        raise HTTPException(400, str(e)) from e
+    regex = _resolve_legacy_split_regex(body)
     if body.get("consume_dir") and str(body.get("consume_dir")) != PAPERLESS_CONSUME_DIR:
         raise HTTPException(400, "consume_dir kann nicht überschrieben werden")
     consume_dir = str(_resolved_consume_dir())

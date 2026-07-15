@@ -21,6 +21,13 @@ from pathlib import Path
 log = logging.getLogger("legacy_split_by_qr")
 
 DEFAULT_QR_REGEX = r"^[0-9]{6}_[^\s]+$"
+# Ältere NAS-Trennseiten: 6 Ziffern + Leerzeichen (mehr False Positives als Underscore-Variante)
+LEGACY_QR_REGEX_SPACE = r"^[0-9]{6} .+$"
+
+QR_REGEX_PRESETS: dict[str, tuple[str, str]] = {
+    "underscore": (DEFAULT_QR_REGEX, "6 Ziffern + Unterstrich (empfohlen, weniger Fehl-Treffer)"),
+    "space": (LEGACY_QR_REGEX_SPACE, "6 Ziffern + Leerzeichen (alte NAS-Trennseiten)"),
+}
 
 
 _MAX_USER_REGEX_LEN = 200
@@ -72,6 +79,20 @@ def normalize_legacy_qr_regex(regex: str | None) -> str:
         log.warning("%s — nutze Default", e)
         return DEFAULT_QR_REGEX
     return s
+
+
+def resolve_legacy_qr_regex(
+    regex: str | None = None,
+    *,
+    preset: str | None = None,
+) -> str:
+    """Preset «underscore»|«space» oder explizites regex — danach normalize."""
+    if preset is not None and str(preset).strip():
+        key = str(preset).strip().lower()
+        if key not in QR_REGEX_PRESETS:
+            raise ValueError(f"Unbekanntes regex_preset: {preset!r}")
+        return normalize_legacy_qr_regex(QR_REGEX_PRESETS[key][0])
+    return normalize_legacy_qr_regex(regex or DEFAULT_QR_REGEX)
 
 
 DEFAULT_DPI = 150  # Legacy-Trennseiten: QR reicht ab ~150 dpi (Smartphone-Niveau)
@@ -379,9 +400,21 @@ def _match_barcode(text: str, pattern: re.Pattern[str]) -> str | None:
     text = (text or "").strip()
     if pattern.match(text):
         return text
+    first_line = text.split("\n", 1)[0].strip()
+    if first_line and first_line != text and pattern.match(first_line):
+        return first_line
     m = re.search(r"(\d{6}_[^\s]+)", text)
     if m and pattern.match(m.group(1)):
         return m.group(1)
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.search(r"(\d{6} .+)", line)
+        if m:
+            candidate = m.group(1).strip()
+            if pattern.match(candidate):
+                return candidate
     return None
 
 
