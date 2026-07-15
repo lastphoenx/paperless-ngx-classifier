@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.60"  # 2.60: Proxy-Auth, Legacy-Split/consume_dir, Regex-Validierung
-UI_VERSION = "3.12"
+UI_VERSION = "3.13"
 
 import requests
 from iban_utils import validate_iban

@@ -544,7 +544,7 @@ def _scan_pdf_file_isolated(
         cmd,
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=int(os.environ.get("LEGACY_SCAN_WORKER_TIMEOUT", "600")),
         cwd=str(worker.parent),
         env=env,
     )
