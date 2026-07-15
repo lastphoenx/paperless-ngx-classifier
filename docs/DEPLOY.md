@@ -40,6 +40,9 @@ git pull origin main
 
 # Scripts nach /opt/paperless-scripts kopieren + correspondent-manager neu starten
 ./scripts/deploy-to-ct121.sh --no-docker
+
+# Neue Python-Abhängigkeiten (z. B. phonenumbers ab BE 2.62)
+/opt/paperless-scripts/venv/bin/pip install -r requirements-corr-manager.txt
 ```
 
 `--no-docker` = nur corr.manager + Skripte, **ohne** Paperless-Container-Neustart (reicht für BE/UI-Security-Fixes).
@@ -52,12 +55,15 @@ Ohne Flag: zusätzlich `docker compose up -d --force-recreate webserver` (nur n�
 
 ```bash
 grep -m1 '__version__' /opt/paperless-scripts/correspondent_manager_app.py
-# Erwartung: 2.60
+# Erwartung: 2.62
 
 systemctl status correspondent-manager --no-pager
 
 # Proxy ohne Session → 401
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8100/api/proxy/document/1/preview/
+
+# Token gesetzt (Wert nicht ausgeben)
+systemctl show correspondent-manager -p Environment | tr ' ' '\n' | grep -q PAPER_MANAGER_TOKEN && echo "PAPER_MANAGER_TOKEN: gesetzt"
 ```
 
 Im Browser: paper.manager öffnen, Dokument-Review → Thumbnail/Vorschau muss noch laden (mit Login).

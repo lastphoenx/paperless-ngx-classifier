@@ -128,19 +128,21 @@ Neue Scans in `consume/` (ohne `legacy/`) → volle Pipeline unverändert.
 
 Wenn ein **einzelnes Paperless-Dokument** viele Legacy-Einzeldokumente enthält (QR auf jeder Trennseite, z. B. `060102_Gesundheit_Monika`), aber **nicht** beim Bulk-Import gesplittet wurde:
 
-### paper.manager (UI 2.92 / BE 2.51)
+### paper.manager (UI 3.15 / BE 2.62)
 
-Menü **✂ Legacy QR-Split** → Dok-ID → **Vorschau** (async, ~10–15 s) → **Splitten → consume**
+Menü **✂ Legacy QR-Split** → Dok-ID → Regex-Vorlage (Unterstrich / Leerzeichen) → optional **Quelldokument löschen** → **Vorschau** (async, ~10–15 s) → **Splitten → consume**
 
 - Statuszeile pollt den Job (`GET /api/legacy-split/trigger-status/{id}`)
 - Vorschau zeigt Tabelle: Teil / Seiten / Barcode
 - Ausgabe: `ocrscan_{barcode}_{basename}_p{von}_bis_p{bis}.pdf` in `PAPERLESS_CONSUME_DIR`
+- Teile werden atomisch publiziert (`.part` → Rename), um Race mit dem Paperless-Consumer zu vermeiden
 
 ### Ablauf technisch (CT121)
 
 1. PDF von Paperless-API nach `/tmp/legacy-qr-split/{doc_id}/source.pdf` (nicht direkt vom NAS-Mount scannen)
 2. QR-Scan via **Ghostscript @ 150 dpi** in Subprocess `legacy_qr_scan_worker.py` (wie CLI)
-3. Split lokal in `/tmp/.../parts/`, dann `move` nach `consume/`
+3. Split lokal in `/tmp/.../parts/`, atomisch nach `consume/` (`.part` → `.pdf`)
+4. Optional: Quelldokument in Paperless löschen (`delete_source: true`, nur nach erfolgreichem Publish aller Teile)
 
 ### CLI-Test (ohne UI)
 
@@ -157,7 +159,13 @@ Paperless-Dok per API (sync):
 curl -s -X POST "http://127.0.0.1:8100/api/legacy-split/trigger/651" \
   -H "Content-Type: application/json" \
   -H "Cookie: sessionid=..." \
-  -d '{"dry_run": true, "sync": true}' | python3 -m json.tool
+  -d '{"dry_run": true, "sync": true, "regex_preset": "underscore"}' | python3 -m json.tool
+
+# Split mit Quell-Löschung:
+curl -s -X POST "http://127.0.0.1:8100/api/legacy-split/trigger/651" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: sessionid=..." \
+  -d '{"dry_run": false, "sync": true, "regex_preset": "space", "delete_source": true}' | python3 -m json.tool
 ```
 
 ### `.env` (CT121)
@@ -181,6 +189,6 @@ Optional: `LEGACY_SPLIT_TMP=/tmp/legacy-qr-split`
 
 Module: `legacy_split_by_qr.py`, `legacy_qr_scan_worker.py` — Port von `tsa_barcode_split_function.sh` (Ghostscript + zbar).
 
-**Hinweis:** Original-Dokument in Paperless bleibt bestehen. Teile durchlaufen die normale Pipeline — **nicht** Legacy-Index (`consume/legacy/`).
+**Hinweis:** Standardmässig bleibt das Quelldokument in Paperless erhalten. Mit `delete_source: true` (UI-Checkbox) wird es **nach** erfolgreichem Split gelöscht. Teile durchlaufen die normale Pipeline — **nicht** Legacy-Index (`consume/legacy/`).
 
 Benutzer: [`Benutzerhandbuch_paper_manager.md`](Benutzerhandbuch_paper_manager.md#14-legacy-qr-split) · Entwickler: [`DEVELOPER.md`](DEVELOPER.md#6-legacy-qr-split--entwickler)

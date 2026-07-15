@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 3.12 | März 2026** (Pipeline `12.75`, Backend `2.59`)
+**Version 3.15 | Juli 2026** (Pipeline `12.75`, Backend `2.62`)
 
 > Entwickler-Details: [`DEVELOPER.md`](DEVELOPER.md) · Legacy-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
 
@@ -35,7 +35,7 @@ Klick auf **«paper.manager»** in der **Sidebar** (Logo links) öffnet die Land
 
 Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
 ```
-UI v3.12 | be v2.59 | pipe v12.75
+UI v3.15 | be v2.62 | pipe v12.75
 ```
 Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
 
@@ -157,6 +157,7 @@ Unbekannte Absender → Warteschlange (roter Badge).
 - **Freigeben** → Korrespondent in Paperless + correspondents.json, neue Ordner als PENDING im Manifest
 - **Ablehnen** → Eintrag verworfen; betroffene Dokumente erhalten `pending_review` und erscheinen im **Dokument-Review**
 - **⇔ Merge** → nur bei Fuzzy-Match (ähnlicher Name bereits in Map); Duplikate zusammenführen vor Freigabe
+- **Als NEU anlegen statt Merge** → wechselt zu einem neuen Korrespondenten mit vollem Formular (UID, IBAN, SWIFT, E-Mail, Telefon); sinnvoll wenn der Fuzzy-Vorschlag falsch ist (z. B. ähnliche Banknamen)
 
 > ⚠️ Tags werden nicht auf Korrespondenten-Ebene gepflegt.
 
@@ -164,7 +165,7 @@ Unbekannte Absender → Warteschlange (roter Badge).
 
 ## 5. Korrespondenten verwalten
 
-Edit-Button beim Eintrag. Felder: Standard-Dokumenttyp, Varianten, Match-Strings, Typische Ordner, Notiz, **Identifikatoren** (UID, IBAN, E-Mail, Telefon), **Kürzel**, **Platzhalter**.
+Edit-Button beim Eintrag. Felder: Standard-Dokumenttyp, Varianten, Match-Strings, Typische Ordner, Notiz, **Identifikatoren** (UID, IBAN, SWIFT/BIC, E-Mail, Telefon), **Kürzel**, **Platzhalter**.
 
 ### Platzhalter-Korrespondenten
 
@@ -188,9 +189,13 @@ Für Dokumente **ohne echten Absender** (Impfpass, Privatnotizen, anonyme Belege
 
 ### Identifikatoren (UID, IBAN, …)
 
-Unter **Erweitert** pro Korrespondent: UID, IBAN, E-Mail, Telefon. Die Pipeline nutzt sie für deterministische Zuordnung (z. B. QR-Rechnung, OCR).
+Unter **Erweitert** pro Korrespondent: UID, IBAN, SWIFT/BIC, E-Mail, Telefon. Die Pipeline nutzt sie für deterministische Zuordnung (Priorität: UID → IBAN → SWIFT → E-Mail → Telefon).
 
 **IBAN:** Beim Speichern prüft das Backend Modulo-97 und Länderlänge. Ungültige IBANs werden abgelehnt. In der Pipeline werden nur echte IBANs aus dem Text extrahiert (keine OCR-Falschtreffer wie «CHRISTO…» oder «CHE…» ohne Prüfziffer).
+
+**Telefon:** Extraktion über `phonenumbers` (CH/DE/AT/…), inkl. Formate wie `+41 (0) 61 …` und nationale `061 …`.
+
+**SWIFT/BIC:** 8 oder 11 Zeichen, z. B. aus QR-Rechnung oder OCR-Text.
 
 ### Brillenpass am Korrespondenten (Optiker)
 
@@ -513,12 +518,16 @@ Typischer QR-Inhalt: `060102_Gesundheit_Monika` (Regex: `^[0-9]{6}_[^\s]+$`).
 Menü **✂ Legacy QR-Split**:
 
 1. **Paperless Dok-ID** eingeben (z. B. `651`)
-2. **Vorschau** — async (~10–15 s), Tabelle mit Teilen/Seiten/Barcodes (nichts wird geschrieben)
-3. **Splitten → consume** — Bestätigung, Teile nach `PAPERLESS_CONSUME_DIR`, normale Pipeline pro Teil
+2. **Regex-Vorlage** wählen:
+   - **Neu:** `060102_Gesundheit_Monika` — 6 Ziffern + Unterstrich
+   - **Alt NAS:** `060101 Gesundheit Thomas` — 6 Ziffern + Leerzeichen
+3. Optional: **Quelldokument löschen** — Checkbox; Löschung erst nach erfolgreichem Schreiben **aller** Teile nach `consume/` (Standard: Original bleibt erhalten)
+4. **Vorschau** — async (~10–15 s), Tabelle mit Teilen/Seiten/Barcodes (nichts wird geschrieben)
+5. **Splitten → consume** — Bestätigung, Teile nach `PAPERLESS_CONSUME_DIR`, normale Pipeline pro Teil
 
 Statuszeile zeigt Fortschritt (`PDF laden…` → `QR scannen…` → Ergebnis). Bei Hänger: Log `journalctl -u correspondent-manager | grep -i legacy`.
 
-> Das **Original-Dokument** in Paperless bleibt unverändert. Nach erfolgreichem Split ggf. manuell archivieren oder taggen.
+> Ohne Checkbox bleibt das Quelldokument in Paperless unverändert — ggf. manuell archivieren oder taggen. Mit Checkbox wird es nach erfolgreichem Split automatisch gelöscht (Einstellung wird im Browser gemerkt).
 
 ### `.env` auf CT 121
 
