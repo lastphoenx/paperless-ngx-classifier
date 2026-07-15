@@ -15,6 +15,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Windows-Git liefert .sh oft ohne +x — nach pull sicherstellen
+chmod +x "$REPO_DIR"/scripts/*.sh 2>/dev/null || true
 TARGET="${PAPERLESS_SCRIPTS_DIR:-/opt/paperless-scripts}"
 PAPERLESS_COMPOSE_DIR="${PAPERLESS_COMPOSE_DIR:-/opt/paperless}"
 RESTART=1
