@@ -281,24 +281,29 @@ Platzhalter erscheinen im Dokument-Review-Picker, werden aber **nie** automatisc
 
 Ersetzt natives `<select>` in Dokument-Review und Pending-Zuweisung. Zeigt `badge-kuerzel` und `badge-platzhalter` als echte HTML-Badges (durchsuchbar).
 
-### 7.3 Identifikatoren & IBAN (`iban_utils.py`)
+### 7.3 Identifikatoren (`iban_utils.py`, `phone_utils.py`, `swift_utils.py`)
 
 ```json
 "identifikatoren": {
   "uid": ["CHE-123.456.789"],
   "iban": ["CH93 0076 2011 6238 5295 7"],
+  "swift": ["POFICHBEXXX"],
   "email": [],
-  "telefon": []
+  "telefon": ["+41 61 266 22 22"]
 }
 ```
 
 | Funktion | Ort | Zweck |
 |---|---|---|
 | `extract_ibans_from_text()` | `iban_utils.py` → `post_consume.py` | Kandidaten per Regex, nur gültige IBANs (Modulo 97, Länderlänge) |
+| `extract_phones_from_text()` | `phone_utils.py` → `post_consume.py` | `phonenumbers` + Regex; `+41 (0) …`, national/international |
+| `extract_swifts_from_text()` | `swift_utils.py` → `post_consume.py` | SWIFT/BIC aus Label oder Standalone |
 | `validate_iban()` / `is_valid_iban_compact()` | `iban_utils.py` | Backend + Pipeline |
 | `_normalize_identifikatoren()` | `correspondent_manager_app.py` | Speichern; IBAN-Fehler → HTTP 400 |
 
-Tests: `tests/test_iban_utils.py`
+Matching-Reihenfolge in `post_consume.py`: UID → IBAN → SWIFT → E-Mail → Telefon.
+
+Tests: `tests/test_iban_utils.py`, `tests/test_phone_utils.py`, `tests/test_swift_utils.py`, `tests/test_identifikatoren_email.py`
 
 ### 7.4 API (Auszug)
 
@@ -336,23 +341,29 @@ Body (JSON):
 {
   "dry_run": true,
   "sync": false,
+  "regex_preset": "underscore",
   "regex": "^[0-9]{6}_[^\\s]+$",
-  "consume_dir": "/mnt/paperless-data/consume"
+  "delete_source": false
 }
 ```
 
 - `dry_run: true` → Vorschau `{ok, pages, splits, scan_seconds, scan_meta}`
-- `dry_run: false` → Split lokal, `shutil.move` nach `consume_dir`
+- `dry_run: false` → Split lokal, atomischer Publish nach `PAPERLESS_CONSUME_DIR`
+- `regex_preset`: `underscore` (Default) oder `space` (Alt-NAS)
+- `delete_source: true` → Quelldokument in Paperless löschen **nach** erfolgreichem Publish aller Teile
 - `sync: true` → blockierend (curl/Debug), kein Polling
+- `consume_dir` im Body wird **ignoriert** (nur `PAPERLESS_CONSUME_DIR` aus `.env`)
 
-### 8.3 Architektur (BE 2.51)
+### 8.3 Architektur (BE 2.62)
 
 ```
 POST trigger → BackgroundTask → _LEGACY_SPLIT_EXECUTOR
   → PDF API → /tmp/legacy-qr-split/{id}/source.pdf
   → subprocess: legacy_qr_scan_worker.py (Hauptthread, pyzbar-sicher)
   → find_split_markers (ghostscript @ 150 dpi, early exit ab 2 Markern)
-  → split_pdf_at_markers in /tmp/.../parts/ → move nach consume/
+  → split_pdf_at_markers in /tmp/.../parts/
+  → _legacy_split_publish_parts: staging → {name}.part → rename {name}.pdf
+  → optional: pl_delete Quelldokument wenn delete_source
 ```
 
 **Wichtig:** `LEGACY_SPLIT_QR_REGEX` in `.env` **mit Quotes** — sonst `[^\s]` → `[^s]` und 0 Treffer (Vollscan alle DPI).
@@ -383,7 +394,7 @@ Env: `PAPERLESS_CONSUME_DIR`, `LEGACY_SPLIT_QR_REGEX`, `LEGACY_SPLIT_TMP`
 | `PAPERLESS_TOKEN` / `PAPERLESS_API_TOKEN` | Backend → Paperless API |
 | `PAPERLESS_URL` | Kanonische URL (Domain) |
 | `PAPERLESS_INTERNAL_URL` | Container-zu-Container, Session-Fallback |
-| `PAPER_MANAGER_TOKEN` | Optional: API ohne Browser-Session |
+| `PAPER_MANAGER_TOKEN` | API ohne Browser-Session (`X-Paper-Manager-Token` oder `Authorization: Bearer`); in Prod setzen |
 | `PAPERLESS_CONSUME_DIR` | Legacy QR-Split Ziel |
 | `LEGACY_SPLIT_QR_REGEX` | QR-Metadaten-Regex — **in .env mit Quotes:** `'^[0-9]{6}_[^\s]+$'` |
 | `LEGACY_SPLIT_TMP` | Temp für PDF/Scan (Default `/tmp/legacy-qr-split`) |
@@ -399,7 +410,8 @@ Vollständig: `.env.example`
 
 ```bash
 cd paperless-ngx-classifier
-python -m pytest tests/test_brillenpass_parsers.py tests/test_htr_sanitize.py -q
+python -m pytest tests/test_brillenpass_parsers.py tests/test_htr_sanitize.py \
+  tests/test_phone_utils.py tests/test_swift_utils.py tests/test_legacy_split_publish.py -q
 ```
 
 Backend lokal (ohne Paperless):
@@ -447,7 +459,25 @@ grep -m1 UI_VERSION /opt/paperless-scripts/correspondent_manager_app.py
 systemctl restart correspondent-manager   # falls systemd-Unit
 ```
 
-Sidebar: `UI v3.09 | be v2.56 | pipe v12.72`
+Sidebar: `UI v3.15 | be v2.62 | pipe v12.75`
+
+---
+
+## 13. Sicherheit & Backlog (Stand Juli 2026)
+
+| Thema | Status | Anmerkung |
+|---|---|---|
+| Proxy-Auth `/api/proxy/*` | ✅ BE 2.60 | Session oder `PAPER_MANAGER_TOKEN` |
+| Legacy-Split Härtung | ✅ BE 2.51+ | Regex-Validierung, `consume_dir` nicht überschreibbar |
+| Legacy-Split atomischer Publish + `delete_source` | ✅ BE 2.62 | UI-Checkbox, Löschung erst nach allen Teilen |
+| `PAPER_MANAGER_TOKEN` in Prod | ✅ | In `.env` auf CT 121 — zweite Schicht neben Paperless-Session |
+| Identifikatoren Telefon/SWIFT | ✅ Pipe 12.75 / BE 2.62 | `phone_utils.py`, `swift_utils.py`, `phonenumbers` |
+| `switchMergeToNeu` UI-Bug | ✅ UI 3.15 | Setzt `aktion: neu` inkl. Identifikator-Formular |
+| Fuzzy BKB↔BLKB Blacklist | ✅ Pipe | `_FUZZY_BLACKLIST_PAIRS` in `post_consume.py` |
+| Stored XSS (`escapeHtml` in UI) | ⏸ optional | ~80× `innerHTML`; LAN + Login → geringe Priorität |
+| Rate-Limiting teure Endpoints | ⏸ bewusst weg | Paperless hat das auch nicht; nicht geplant |
+| Fuzzy-Schwellen feintunen | ⏸ pending | `MERGE_THRESHOLD`/`HIGH_THRESHOLD` per Env; bei Bedarf |
+| Brillenpass: Rechnung ohne Werte | ⏸ manuell | Ablehnen im Review reicht vorerst |
 
 ---
 

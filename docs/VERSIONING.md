@@ -44,10 +44,10 @@ grep -m1 POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
 
 Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Refresh (`Ctrl+Shift+R`).
 
-## Aktuell (Stand März 2026)
+## Aktuell (Stand Juli 2026)
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.12 | Menü «Pipeline» — post_consume nachträglich für bestehende Dokumente |
-| BE | 2.59 | API `/api/pipeline/trigger` + `/trigger-status` |
-| Pipe | 12.75 | Fix IndentationError _corr_document_search_text (12.74 Regression) |
+| UI | 3.15 | Legacy-Split `delete_source`, SWIFT-Felder, `switchMergeToNeu`-Fix |
+| BE | 2.62 | Legacy-Split atomischer Publish, Identifikatoren SWIFT/Telefon |
+| Pipe | 12.75 | Telefon (`phonenumbers`), SWIFT-Extraktion, BKB↔BLKB-Blacklist |

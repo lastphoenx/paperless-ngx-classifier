@@ -151,7 +151,7 @@ Pro Dokumenttyp kann ein **Feldprofil** festlegen, welche Custom Fields extrahie
 ### paper.manager UI
 
 Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
-- **Korrespondenten-Review** — unbekannte Absender bestätigen, ablehnen oder zusammenführen; **Kürzel** bereits beim Freigeben neuer Korrespondenten; Ablehnen leitet betroffene Dokumente in die Document-Review
+- **Korrespondenten-Review** — unbekannte Absender bestätigen, ablehnen oder zusammenführen; **Als NEU anlegen** bei falschem Merge-Vorschlag; **Kürzel** bereits beim Freigeben neuer Korrespondenten; Ablehnen leitet betroffene Dokumente in die Document-Review
 - **Dokument-Review** — 30/70-Layout mit grosser Vorschau, KI-Felder, **editierbarer Titel** und **Belegdatum** (`tt.mm.jjjj` → Paperless `created`), Tags als Multiselect (bei «Neu klassifizieren» werden Tags **ersetzt**, nicht gemerged), **Korrespondenten-Picker** (nur freigegebene Einträge; Kürzel- und Platzhalter-Badges)
 - **Dokumenttypen** — Synonyme, Ausschluss-Keywords und **Handschrift (HTR)**-Profil pro Typ
 - **Tags** — Ausschluss-Keywords pro Tag verwalten
@@ -167,6 +167,7 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 - **Kürzel** — 2–6 Zeichen langes Kürzel pro Korrespondent (z. B. `UBS`, `ZV`); als Badge angezeigt, durchsuchbar, Live-Eindeutigkeitsprüfung
 - **Platzhalter-Korrespondenten** — für Dokumente ohne echten Absender (`Gesundheit`, `Medien`, `Privat`); Filter, Batch-Markierung; Pipeline ordnet sie nicht automatisch zu
 - **IBAN-Validierung** — Identifikatoren mit Modulo-97-Prüfung (Backend + Pipeline); keine OCR-Falschtreffer bei IBAN-Extraktion
+- **SWIFT/BIC & Telefon** — Identifikatoren-Extraktion inkl. `phonenumbers` (`+41 (0) …`, international)
 - **Paperless-Link** — direkter «Paperless-NGX öffnen ↗»-Button in der Seitenleiste und auf dem Home-Tab; URL aus `PAPERLESS_URL` in `.env`
 - **Versionsanzeige** — zeigt aktive Versionen aller Komponenten in der Seitenleiste
 
