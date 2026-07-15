@@ -420,16 +420,17 @@ Auf CT 121 (venv unter `/opt/paperless-scripts/venv`):
 
 ```bash
 cd /opt/paperless-ngx-classifier
-chmod +x scripts/dependency-audit.sh
 ./scripts/dependency-audit.sh
 # oder explizit: ./scripts/dependency-audit.sh /opt/paperless-scripts/venv
 ```
+
+Installiert `pip-audit` bei Bedarf ins venv — **kein** systemweites `pip-audit` nötig.
 
 Manuell ohne Skript:
 
 ```bash
 /opt/paperless-scripts/venv/bin/python3 -m pip install pip-audit
-/opt/paperless-scripts/venv/bin/pip-audit -r requirements-corr-manager.txt
+/opt/paperless-scripts/venv/bin/python3 -m pip_audit -r /opt/paperless-ngx-classifier/requirements-corr-manager.txt
 ```
 
 Empfehlung: monatlich + vor Paperless/corr.manager-Deploy. Advisories: [GitHub Dependabot](https://github.com/advisories), [OWASP Dependency-Track](https://owasp.org/www-project-dependency-track/).
