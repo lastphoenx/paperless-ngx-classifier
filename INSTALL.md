@@ -413,10 +413,9 @@ location /corr-manager/ {
 > Ohne Authentik: paper.manager ist nur via Paperless-Session-Cookie geschützt.
 > Für produktiven Betrieb wird Authentik oder ein anderer Reverse-Proxy mit Auth empfohlen.
 >
-> **Proxy-Vorschau (v2.8):** `/api/proxy/document/{id}/preview/` und `/thumb/` sind ohne
-> Browser-Session erreichbar; das Backend authentifiziert sich mit `PAPERLESS_TOKEN`
-> (Fallback: `PAPERLESS_API_TOKEN`). Nur für die Medien-Streams — alle anderen API-Routen
-> bleiben geschützt.
+> **Dokumenten-Vorschau:** `/api/proxy/document/{id}/preview/` und `/thumb/` erfordern
+> dieselbe Session oder `PAPER_MANAGER_TOKEN` wie alle anderen `/api/*`-Routen (ab BE 2.60).
+> Ohne Login: `401` — kein anonymer PDF-Zugriff per Doc-ID.
 
 ---
 
