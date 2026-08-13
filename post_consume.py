@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.75"  # 12.75: Fix IndentationError _corr_document_search_text (12.74 Regression)
+POST_CONSUME_VERSION = "12.76"  # 12.76: Fix IndentationError steuerjahr.infer_steuerjahr Docstring
 import re
 import sys
 import json
