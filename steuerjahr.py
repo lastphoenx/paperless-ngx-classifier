@@ -107,9 +107,9 @@ def infer_steuerjahr(
     doctyp_name: str = "",
     title: str = "",
 ) -> int | None:
-  """
-  Steuerjahr schätzen. None wenn nicht ermittelbar.
-  """
+    """
+    Steuerjahr schätzen. None wenn nicht ermittelbar.
+    """
     vision_meta = vision_meta or {}
     combined = "\n".join(filter(None, [
         title,
