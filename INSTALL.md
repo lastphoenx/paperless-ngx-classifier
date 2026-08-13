@@ -456,6 +456,7 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | Kennzeichen erkannt, falsches Routing in `Person/Auto` | `routing_ordner: true` auf Versicherungs-Kennzeichen | Familie → Fahrzeuge: «Ordner auto» aus |
 | Kennzeichen erkannt, Person falsch (Versicherung) | Beziehung/Empfänger vor Kennzeichen (bis 12.21) oder `family.json` falsch | pipe ≥ 12.22; Kennzeichen → Person in Familie prüfen |
 | Stufe 1 ohne Ref-Match trotzdem geroutet | Alte «einzelne Beziehung»-Logik (bis 12.21) | pipe ≥ 12.21; Ref-Nr in Beziehung pflegen |
+| Rechnung landet unter `…/Policen` trotz Doktyp Rechnung | Nur **eine** Beziehung, ein Ordner — Doktypen erweitern ändert den Ordner nicht | Zwei Beziehungen, gleiche Ref-Nr., Ordner Policen vs. Rechnungen + Stichworte; siehe Benutzerhandbuch § Beziehungen |
 | Deploy zeigt alte Pipeline-Version (z. B. 12.19 statt 12.20) | `git pull` ohne neuen Commit auf `main` | Lokal committen/pushen, dann erneut `git pull && ./scripts/deploy-to-ct121.sh` |
 | Versehentlich v3 nach `docker compose pull` | Image `:latest` in compose | Pin auf `2.20.15`; siehe [UPGRADE_V3.md](docs/UPGRADE_V3.md) Phase 0 |
 | Paperless-Version unklar | — | `./scripts/paperless-version-check.sh` |

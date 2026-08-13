@@ -372,13 +372,35 @@ Pro Korrespondent in **Familie → Beziehungen** (gespeichert in `correspondents
 | **Ref-Nr** | Kunden-/Police-/Vertragsnummer — **muss im Dokument vorkommen** (OCR, Regex-Extraktion oder Vision-Feld Police/Kunde/Rechnung) |
 | **Person** | Ordner-Namensraum + CF «Person» bei Match |
 | **Dokumenttypen** | Bei genau einem Typ → deterministisch; sonst LLM wählt aus der Liste |
-| **Ordner** | Ziel-Speicherpfad bei Ref-Match |
-| **Stichworte** | Optional — Tiebreaker wenn **mehrere** Beziehungen dieselbe Ref-Nr. haben (Substring in OCR/Vision, z. B. `prämienrechnung` vs. `versicherungsschein`) |
+| **Ordner** | **Genau ein** Ziel-Speicherpfad bei Ref-Match (UI erlaubt nur einen Ordner) |
+| **Stichworte** | Tiebreaker wenn **mehrere** Beziehungen dieselbe Ref-Nr. haben (Substring in OCR/Vision) |
 
 **Tiebreaker-Reihenfolge** bei gleicher Ref-Nr.: Stichworte → `dokumenttyp_visuell`/Synonyme → LLM.
 
 - Hat eine Beziehung eine **Ref-Nr**, matcht Stufe 1 **nur**, wenn diese Nummer im Dokument steht — **nicht** allein weil es die einzige Beziehung ist oder der Empfänger passt.
-- Mehrere Beziehungen pro Korrespondent sind normal (z. B. Thomas mit Kunden-Nr., Monika mit Police-Nr. bei derselben Versicherung).
+- Mehrere Beziehungen pro Korrespondent sind normal (z. B. verschiedene Personen mit je eigener Kunden-Nr. beim selben Versicherer).
+- **Wichtig:** Mehrere erlaubte Dokumenttypen auf **einer** Beziehung ändern nur den Typ (LLM wählt) — der **Ordner bleibt derselbe**. Policen und Rechnungen mit derselben Police-Nr. brauchen deshalb **zwei Beziehungen**.
+
+#### Stammdaten: Police und Rechnung, gleiche Ref-Nr.
+
+Typischer Fall: Dieselbe Vertragsnummer steht auf dem Versicherungsschein **und** auf der Prämienrechnung. Ein Ordner pro Beziehung → zwei Zeilen pflegen.
+
+**Muster** (Korrespondent z. B. «Muster Leben AG», Ref-Nr. `8.123.456`, Person «Alex»):
+
+| | Beziehung A — Police | Beziehung B — Rechnung |
+|---|---|---|
+| Bezeichnung | z. B. Leben #8.123.456 Police | z. B. Leben #8.123.456 Rechnung |
+| Ref-Nr | `8.123.456` | `8.123.456` (identisch) |
+| Person | Alex | Alex (oder Zahler/Empfänger, falls anders) |
+| Erlaubte Doktypen | Steuerwertbescheinigung, Versicherungsabrechnung (ohne Rechnung) | Rechnung, Versicherungsabrechnung |
+| Ordner | `Familie/Versicherung/Policen` | `Familie/Versicherung/Rechnungen` |
+| Stichworte | `police`, `steuerwert`, `bescheinigung`, `überschuss` | `rechnung`, `prämie`, `zahlteil`, `einzahlung` |
+
+Ablauf bei Scan einer Prämienrechnung: beide Zeilen matchen über die Ref-Nr. → Stichworte / Vision (`dokumenttyp_visuell=Rechnung`) wählen Beziehung B → Ordner **Rechnungen**.
+
+**Falsch:** Nur eine Beziehung mit Ordner `…/Policen` und Doktypen inkl. «Rechnung» — die Datei landet weiter unter Policen, auch wenn der Typ «Rechnung» heisst.
+
+**Richtig:** Zwei Beziehungen, gleiche Ref-Nr., unterschiedlicher Ordner, Stichworte gesetzt. Ref-Nr. exakt wie im PDF (Bindestriche/Leerzeichen wie in OCR).
 
 **Person-CF — Priorität (ab pipe 12.22):**
 

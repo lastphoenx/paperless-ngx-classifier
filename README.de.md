@@ -109,9 +109,11 @@ Zwei Quellen umgehen das LLM vollständig:
 | Kennzeichen (nur CF) | Kennzeichen erkannt, `routing_ordner: false` | CF + Person; Ordner über Korrespondent/LLM |
 | Kennzeichen (Pre-Route) | Kennzeichen erkannt, `routing_ordner: true` | Ordner deterministisch aus `family.json` |
 | Referenznummer | Ref-Nr in OCR, `extraktion_muster` oder Vision (Police/Kunde/Rechnung) | Ordner + Person + Dokumenttyp aus Beziehung |
-| Ref-Nr + Tiebreaker | Mehrere Ref-Matches: `dokumenttyp_visuell` über Synonym-Map | Deterministisch, kein LLM |
+| Ref-Nr + Tiebreaker | Mehrere Ref-Matches: Stichworte → `dokumenttyp_visuell`/Synonyme → LLM | Deterministisch wenn eindeutig |
 | Einzel-Beziehung | Genau 1 Beziehung **ohne** Ref-Nr | Ordner deterministisch |
 | Vision-Empfänger | Empfänger = Person, nur bei Beziehungen **ohne** Ref-Nr | Ordner wenn eindeutig |
+
+**Stammdaten:** Pro Beziehung gibt es **nur einen Ordner**. Gleiche Police-Nr. auf Schein und Prämienrechnung → **zwei Beziehungen** (gleiche Ref-Nr., Ordner `…/Policen` vs. `…/Rechnungen`, Stichworte z. B. `police`/`steuerwert` vs. `rechnung`/`prämie`). Nur Doktypen erweitern reicht nicht — der Ordner bleibt sonst Policen. Ausführliches Muster: [Benutzerhandbuch § Beziehungen](docs/Benutzerhandbuch_paper_manager.md#bereich-3-beziehungen-stufe-1).
 
 **Person-CF:** Kennzeichen (`family.json`) schlägt Beziehung/Empfänger — relevant bei Versicherungen auf fremdes Auto (Empfänger ≠ Fahrzeughalter).
 
