@@ -104,9 +104,11 @@ Two sources bypass the LLM entirely:
 | Licence plate (CF only) | Plate matched, `routing_ordner: false` | CF + Person; folder via correspondent/LLM |
 | Licence plate (pre-route) | Plate matched, `routing_ordner: true` | Folder from `family.json` deterministically |
 | Ref. number | Ref in OCR, `extraktion_muster`, or Vision (policy/customer/invoice no.) | Folder + person + doc type from relationship |
-| Ref. number + tiebreaker | Multiple ref-matches: `dokumenttyp_visuell` via synonym map | Deterministic, no LLM |
+| Ref. number + tiebreaker | Multiple ref-matches: keywords → `dokumenttyp_visuell`/synonyms → LLM | Deterministic when unique |
 | Single relationship | Exactly 1 relationship **without** ref number | Folder deterministic |
 | Vision recipient | Recipient = person, only for relationships **without** ref number | Folder if unique |
+
+**Master data:** Each relationship has **exactly one folder**. Same policy number on the certificate and the premium invoice → **two relationships** (same ref, folders `…/Policen` vs. `…/Rechnungen`, keywords e.g. `police`/`steuerwert` vs. `rechnung`/`prämie`). Adding document types alone is not enough — the folder would stay Policen. Full pattern: [User guide § Relationships](docs/Benutzerhandbuch_paper_manager.md#bereich-3-beziehungen-stufe-1) (German).
 
 **Person CF:** Licence plate from `family.json` overrides relationship/recipient (e.g. insurance policy addressed to spouse, car registered to other person).
 
