@@ -13,7 +13,7 @@ Typischer Ablauf:
 Aufruf:
   /opt/paperless-scripts/venv/bin/python3 mail-paperless-bridge.py
   mail-paperless-bridge.py --dry-run --limit 3
-  mail-paperless-bridge.py --env /etc/mail-paperless-bridge.env
+  mail-paperless-bridge.py --env /opt/paperless-scripts/mail-paperless-bridge.env
 
 Abhängigkeiten (im paperless-scripts venv):
   pip install pypdf reportlab pillow
@@ -110,7 +110,7 @@ class BridgeConfig:
     imap_port: int = 993
     imap_ssl: bool = True
     consume_dir: Path = Path("/mnt/paperless-data/consume")
-    state_file: Path = Path("/var/lib/mail-paperless-bridge/state.json")
+    state_file: Path = Path("/opt/paperless-scripts/state/mail-paperless-bridge.json")
     skip_inline: bool = True
     mark_seen_on_success: bool = True
     delete_after_export: bool = False
@@ -132,7 +132,7 @@ class BridgeConfig:
             imap_port=int(os.environ.get("MAIL_BRIDGE_IMAP_PORT", "993")),
             imap_ssl=os.environ.get("MAIL_BRIDGE_IMAP_SSL", "true").lower() in ("1", "true", "yes"),
             consume_dir=Path(os.environ.get("MAIL_BRIDGE_CONSUME_DIR", "/mnt/paperless-data/consume")),
-            state_file=Path(os.environ.get("MAIL_BRIDGE_STATE_FILE", "/var/lib/mail-paperless-bridge/state.json")),
+            state_file=Path(os.environ.get("MAIL_BRIDGE_STATE_FILE", "/opt/paperless-scripts/state/mail-paperless-bridge.json")),
             skip_inline=os.environ.get("MAIL_BRIDGE_SKIP_INLINE", "true").lower() in ("1", "true", "yes"),
             mark_seen_on_success=os.environ.get("MAIL_BRIDGE_MARK_SEEN", "true").lower() in ("1", "true", "yes"),
             delete_after_export=os.environ.get("MAIL_BRIDGE_DELETE_AFTER", "false").lower() in ("1", "true", "yes"),
@@ -490,7 +490,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    env_path = args.env or Path(os.environ.get("MAIL_BRIDGE_ENV", "/etc/mail-paperless-bridge.env"))
+    env_path = args.env or Path(os.environ.get("MAIL_BRIDGE_ENV", "/opt/paperless-scripts/mail-paperless-bridge.env"))
     load_dotenv(env_path)
 
     try:

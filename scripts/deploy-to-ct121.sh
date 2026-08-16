@@ -65,6 +65,7 @@ FILES=(
   scripts/legacy_qr_split_test.py
   scripts/test_handwriting_vision.py
   scripts/ensure-legacy-qr-deps.sh
+  scripts/mail-paperless-bridge.py
 )
 
 echo "==> Repo:   $REPO_DIR"
@@ -74,7 +75,7 @@ for f in "${FILES[@]}"; do
   dest_name="$(basename "$f")"
   [[ -f "$src" ]] || { echo "FEHLER: $src fehlt" >&2; exit 1; }
   cp -v "$src" "$TARGET/$dest_name"
-  if [[ "$dest_name" == *.sh || "$dest_name" == legacy_qr_split_test.py || "$dest_name" == test_handwriting_vision.py ]]; then
+  if [[ "$dest_name" == *.sh || "$dest_name" == legacy_qr_split_test.py || "$dest_name" == test_handwriting_vision.py || "$dest_name" == mail-paperless-bridge.py ]]; then
     chmod +x "$TARGET/$dest_name"
   fi
 done
