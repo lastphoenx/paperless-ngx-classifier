@@ -370,6 +370,17 @@ def ensure_folder(conn: imaplib.IMAP4, folder: str) -> None:
         pass
 
 
+def get_uidvalidity(conn: imaplib.IMAP4, folder: str) -> str:
+    """Echte UIDVALIDITY per STATUS — nicht SELECT-Rückgabe (das ist nur Message-Count)."""
+    quoted = f'"{folder}"' if " " in folder else folder
+    typ, data = conn.status(quoted, "(UIDVALIDITY)")
+    if typ != "OK" or not data or not data[0]:
+        return ""
+    raw = data[0].decode() if isinstance(data[0], bytes) else str(data[0])
+    match = re.search(r"UIDVALIDITY\s+(\d+)", raw)
+    return match.group(1) if match else ""
+
+
 def process_mailbox(
     cfg: BridgeConfig,
     *,
@@ -387,17 +398,17 @@ def process_mailbox(
         if typ != "OK":
             raise SystemExit(f"IMAP SELECT fehlgeschlagen für Ordner: {cfg.imap_folder}")
 
-        uidvalidity = ""
-        if data and data[0]:
-            uidvalidity = data[0].decode() if isinstance(data[0], bytes) else str(data[0])
-        if entry.get("uidvalidity") and entry.get("uidvalidity") != uidvalidity:
+        uidvalidity = get_uidvalidity(conn, cfg.imap_folder)
+        if entry.get("uidvalidity") and uidvalidity and entry.get("uidvalidity") != uidvalidity:
             log.warning("UIDVALIDITY geändert — verarbeitete UIDs zurücksetzen")
             processed_uids.clear()
-        entry["uidvalidity"] = uidvalidity
+        if uidvalidity:
+            entry["uidvalidity"] = uidvalidity
 
         typ, msgnums = conn.uid("SEARCH", None, "ALL")
         if typ != "OK" or not msgnums or not msgnums[0]:
             log.info("Keine Mails in %s", cfg.imap_folder)
+            entry["processed_uids"] = sorted(processed_uids, key=int)
             save_state(cfg.state_file, state)
             return 0
 
