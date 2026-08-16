@@ -1,5 +1,7 @@
-# systemd — nach /etc/systemd/system/mail-paperless-bridge.service
+# systemd — /etc/systemd/system/mail-paperless-bridge.service
 # systemctl daemon-reload && systemctl enable --now mail-paperless-bridge.timer
+#
+# Konfiguration: /opt/paperless-scripts/mail-paperless-bridge.env (nicht /etc/)
 
 [Unit]
 Description=IMAP Paperless Bridge (Mail-Ordner → consume/)
@@ -9,7 +11,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=root
-EnvironmentFile=/etc/mail-paperless-bridge.env
+EnvironmentFile=/opt/paperless-scripts/mail-paperless-bridge.env
 ExecStart=/opt/paperless-scripts/venv/bin/python3 /opt/paperless-scripts/mail-paperless-bridge.py
 Nice=10
 
