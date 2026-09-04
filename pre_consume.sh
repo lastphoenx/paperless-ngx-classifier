@@ -176,15 +176,21 @@ fi
 
 # ── Schritt 2: Swiss QR Bill Parser ──────────────────────────────────────────
 QR_SCRIPT="/opt/paperless-scripts/pre_consume_qr.py"
-VENV_PYTHON="/opt/paperless-scripts/venv/bin/python3"
 PYTHON=""
-if [ -x "$VENV_PYTHON" ] && "$VENV_PYTHON" -c "import pyzbar, pdf2image" 2>/dev/null; then
-    PYTHON="$VENV_PYTHON"
-elif command -v python3 &>/dev/null && python3 -c "import pyzbar, pdf2image" 2>/dev/null; then
-    PYTHON="python3"
-else
+for candidate in \
+    "/opt/paperless-scripts/venv-docker/bin/python3" \
+    "/opt/paperless-scripts/venv/bin/python3" \
+    "python3"; do
+    if [ -x "$candidate" ] 2>/dev/null || command -v "$candidate" &>/dev/null; then
+        if "$candidate" -c "import pyzbar, pdf2image" 2>/dev/null; then
+            PYTHON="$candidate"
+            break
+        fi
+    fi
+done
+if [ -z "$PYTHON" ]; then
     echo "[pre_consume] pyzbar/pdf2image nicht verfügbar — QR-Scan übersprungen"
-    echo "[pre_consume] Fix: sudo ./scripts/ensure-legacy-qr-deps.sh (Host + Container)"
+    echo "[pre_consume] Fix: ./scripts/ensure-legacy-qr-deps.sh (Host + Container venv-docker)"
     echo "[pre_consume] Fertig: $file"
     exit 0
 fi
