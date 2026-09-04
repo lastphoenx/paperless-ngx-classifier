@@ -4,7 +4,7 @@ post_consume_v12.68.py — Paperless-NGX Post-Consume Pipeline v12.68
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
-  3. bge-m3           → Embeddings auf OCR-Text → Top-K ähnlichste Manifest-Einträge
+  3. Embeddings       → OCR-Text → Top-K ähnlichste Manifest-Einträge (OLLAMA_MODEL_EMBED)
   4. llama3.3:70b     → Entscheidung: Tags + Korrespondent + Storage Path
   5. Paperless API    → Metadaten setzen
 
@@ -12,6 +12,7 @@ Umgebungsvariablen (.env):
   PAPERLESS_URL           http://localhost:8000
   PAPERLESS_TOKEN         <token>           (gleich wie in v10)
   OLLAMA_BASE_URL         http://localhost:11434
+  OLLAMA_MODEL_EMBED      bge-m3            (gleiches Modell wie PAPERLESS_AI_LLM_EMBEDDING_MODEL)
   OLLAMA_MODEL_VISION     mistral-small3.1  (oder qwen2.5vl:32b)
   MANIFEST_PATH           /opt/paperless-scripts/training/manifest.json
   CORRECTIONS_PATH        /opt/paperless-scripts/training/corrections.jsonl
@@ -1111,7 +1112,7 @@ STORAGE_MODE      = os.environ.get("PAPERLESS_STORAGE_MODE", "api").lower()
 # Samples: ausgebaut (v12.8) — kein Trainings-Loop vorhanden, Timing-Bug bei Paperless-Verschiebung
 
 MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
-MODEL_EMBED  = "bge-m3"
+MODEL_EMBED  = os.environ.get("OLLAMA_MODEL_EMBED", "bge-m3")
 MODEL_LLM    = os.environ.get("OLLAMA_MODEL_LLM", "llama3.3:70b")
 
 BRILLENPASS_VISION_FALLBACK = os.environ.get("BRILLENPASS_VISION_FALLBACK", "0").strip().lower() in (
@@ -1576,7 +1577,7 @@ def load_corrections() -> list[dict]:
     return corrections
 
 
-# ─── RAG: bge-m3 Embeddings ───────────────────────────────────────────────────
+# ─── RAG: Embeddings (OLLAMA_MODEL_EMBED) ─────────────────────────────────────
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
@@ -1596,7 +1597,7 @@ def get_embedding(text: str) -> Optional[list[float]]:
         )
         return resp.get("embedding")
     except Exception as e:
-        log.warning("bge-m3 Embedding fehlgeschlagen: %s", e)
+        log.warning("%s Embedding fehlgeschlagen: %s", MODEL_EMBED, e)
         return None
 
 
@@ -4142,8 +4143,8 @@ def main():
     # Vision leer → confidence später auf mittel setzen (Doc-Review erzwingen)
     _vision_empty = not vision_meta or vision_meta == {}
 
-    # ── Schritt 3: bge-m3 RAG ─────────────────────────────────────────────────
-    log.info("Schritt 3: bge-m3 RAG (Top-%d)", RAG_TOP_K)
+    # ── Schritt 3: Embedding-RAG ──────────────────────────────────────────────
+    log.info("Schritt 3: %s RAG (Top-%d)", MODEL_EMBED, RAG_TOP_K)
     rag_text = ocr_text or f"{DOCUMENT_FILE_NAME} {vision_meta.get('dokumenttyp_visuell', '')}"
     similar_entries = find_similar_manifest_entries(rag_text, manifest, manifest_embeddings, top_k=RAG_TOP_K)
 

@@ -71,8 +71,7 @@ patch_env() {
     echo 'PAPERLESS_CONSUMER_POLLING_INTERVAL=10' >> "$f"
   grep -q '^PAPERLESS_DBENGINE=' "$f" || \
     echo 'PAPERLESS_DBENGINE=postgresql' >> "$f"
-  grep -q '^PAPERLESS_AI_ENABLED=' "$f" || \
-    echo 'PAPERLESS_AI_ENABLED=false' >> "$f"
+  # Paperless AI: siehe docs/UPGRADE_V3.md §3.2.1 (nicht automatisch patchen)
   grep -q '^PAPERLESS_CONSUMER_DELETE_DUPLICATES=' "$f" || \
     echo 'PAPERLESS_CONSUMER_DELETE_DUPLICATES=true' >> "$f"
 }

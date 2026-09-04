@@ -45,7 +45,7 @@ cd /opt/paperless-ngx-classifier && git pull
 
 | Datei | Änderung |
 |-------|----------|
-| `post_consume.py` | `Accept: application/json; version=9`; `paperless_get_notes()` paginiert |
+| `post_consume.py` | `Accept: application/json; version=9`; `paperless_get_notes()` paginiert; `OLLAMA_MODEL_EMBED` |
 | `correspondent_manager_app.py` | Gleicher Accept-Header |
 | `scripts/legacy-tasks-summary.sh` | `task_type` statt `task_name` |
 | `scripts/legacy-duplicate-audit.sh` | `task_type`, Pagination |
@@ -74,7 +74,7 @@ cp .env .env.bak-v2
 | `PAPERLESS_CONSUMER_POLLING=10` | → `PAPERLESS_CONSUMER_POLLING_INTERVAL=10` |
 | `PAPERLESS_CONSUMER_DELETE_DUPLICATES=true` | **behalten** (v3 erlaubt Duplikate sonst standardmäßig) |
 | — | `PAPERLESS_DBENGINE=postgresql` |
-| — | `PAPERLESS_AI_ENABLED=false` (optional explizit; UI-Werte haben Vorrang) |
+| — | Paperless AI: Embeddings aktivieren (siehe **3.2.1**), Generation leer |
 | `CONSUMER_BARCODE_SCANNER` | entfernen falls gesetzt |
 
 `skip` → `auto` ist bei uns korrekt: `pre_consume.sh` legt per ocrmypdf Text an → Paperless überspringt OCR wie bisher.
@@ -92,10 +92,79 @@ grep -q '^PAPERLESS_CONSUMER_POLLING_INTERVAL=' .env || \
   echo 'PAPERLESS_CONSUMER_POLLING_INTERVAL=10' >> .env
 grep -q '^PAPERLESS_DBENGINE=' .env || \
   echo 'PAPERLESS_DBENGINE=postgresql' >> .env
-grep -q '^PAPERLESS_AI_ENABLED=' .env || \
-  echo 'PAPERLESS_AI_ENABLED=false' >> .env
 grep -q '^PAPERLESS_CONSUMER_DELETE_DUPLICATES=' .env || \
   echo 'PAPERLESS_CONSUMER_DELETE_DUPLICATES=true' >> .env
+```
+
+#### 3.2.1 Paperless AI — Embeddings (ein Modell mit post_consume)
+
+**Ziel:** Semantische Suche in der Paperless-UI, **ohne** Suggestions/Document-Chat (kein Konflikt mit `post_consume`).
+
+**Ein Embedding-Modell für alles** — wichtig wenn Ollama nur ein Modell gleichzeitig im RAM hält:
+
+| Variable | Wert | Zweck |
+|----------|------|--------|
+| `OLLAMA_MODEL_EMBED` | `bge-m3` | RAG in `post_consume.py` |
+| `PAPERLESS_AI_LLM_EMBEDDING_MODEL` | `bge-m3` | Paperless semantische Suche |
+| `PAPERLESS_AI_LLM_MODEL` | *(leer)* | Kein Generation-LLM |
+
+Beide Embedding-Variablen **müssen identisch** sein. Bei Modellwechsel: `manifest_embeddings.json` löschen und Paperless-LLM-Index neu bauen.
+
+**In `/opt/paperless/.env` ergänzen** (Endpoint anpassen):
+
+```bash
+# Classifier-Pipeline (post_consume im Container)
+OLLAMA_MODEL_EMBED=bge-m3
+
+# Paperless AI — nur Embeddings
+PAPERLESS_AI_ENABLED=true
+PAPERLESS_AI_LLM_EMBEDDING_BACKEND=ollama
+PAPERLESS_AI_LLM_EMBEDDING_MODEL=bge-m3
+PAPERLESS_AI_LLM_EMBEDDING_ENDPOINT=http://192.168.131.60:11434
+# Generation absichtlich leer — keine Suggestions, kein Document Chat:
+PAPERLESS_AI_LLM_MODEL=
+PAPERLESS_AI_LLM_BACKEND=ollama
+PAPERLESS_AI_LLM_ENDPOINT=http://192.168.131.60:11434
+```
+
+Falls `PAPERLESS_AI_ENABLED=false` noch gesetzt ist → auf `true` ändern oder Zeile entfernen und neu setzen.
+
+**Auf dem Ollama-Server (EVO)** — Modell muss vorhanden sein:
+
+```bash
+ollama pull bge-m3
+ollama list | grep bge-m3
+```
+
+**Erst-Index:** Paperless embeddet alle Dokumente (~30–40 Min bei ~3000 Docs). Am besten abends starten; währenddessen kann Ollama mit Consume-Pipeline um den einen RAM-Slot konkurrieren.
+
+**Deploy nach .env-Änderung** (Container liest `.env` nur beim Recreate):
+
+```bash
+cd /opt/paperless-ngx-classifier && git pull
+./scripts/deploy-to-ct121.sh
+cd /opt/paperless
+docker compose up -d --force-recreate webserver
+```
+
+**Verifizieren:**
+
+```bash
+# post_consume nutzt konfiguriertes Modell
+docker compose exec webserver env | grep OLLAMA_MODEL_EMBED
+
+# Embedding-API auf EVO
+curl -s http://192.168.131.60:11434/api/embeddings \
+  -d '{"model":"bge-m3","prompt":"test"}' | head -c 80
+
+# Paperless: Settings → Application Configuration → AI aktiviert, Embedding bge-m3
+```
+
+**Modellwechsel später** (z. B. auf anderes Embedding):
+
+```bash
+rm -f /opt/paperless-scripts/training/manifest_embeddings.json
+# Paperless LLM-Index in UI neu bauen oder meta.json prüfen (data/llm_index/)
 ```
 
 ### 3.3 `/opt/paperless/docker-compose.yml`
@@ -177,7 +246,8 @@ curl -sI -H "Authorization: Token $TOKEN" \
 - [ ] paper.manager unter `paperless.example.app/corr-manager/`
 - [ ] `systemctl status correspondent-manager` — keine Errors
 - [ ] `docker compose logs webserver` nach Testdokument — kein ERROR
-- [ ] AI in Paperless UI deaktiviert (Settings → Application Configuration)
+- [ ] Paperless AI: Embeddings aktiv (`bge-m3`), Generation-LLM leer (keine Suggestions)
+- [ ] Semantische Suche in Paperless UI testen (nach Index-Aufbau)
 
 **Pipeline-Logs:**
 

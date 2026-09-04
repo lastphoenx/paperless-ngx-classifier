@@ -205,7 +205,7 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 |---|---|---|
 | `qwen2.5vl:7b` | Vision — Dokument-Bild analysieren | 16 GB |
 | `llama3.3:70b` | LLM — Klassifizierung, Routing | 64 GB RAM (CPU-Inferenz möglich) |
-| `bge-m3` | Embeddings (optional, verbessert RAG) | — |
+| `bge-m3` | Embeddings — RAG + Paperless-Suche (`OLLAMA_MODEL_EMBED`) | — |
 
 > Getestet auf GMKtec EVO mit AMD Ryzen AI Max+ 395, 128 GB RAM. Langsamere Hardware funktioniert ebenfalls — die Verarbeitungszeit steigt, die Qualität bleibt gleich. Durch das Lernen werden mit der Zeit weniger LLM-Aufrufe benötigt.
 

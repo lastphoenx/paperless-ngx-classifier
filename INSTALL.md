@@ -142,6 +142,7 @@ PAPERLESS_API_URL=http://localhost:8000/api
 OLLAMA_BASE_URL=http://192.168.x.x:11434
 OLLAMA_MODEL_VISION=qwen2.5vl:7b
 OLLAMA_MODEL_LLM=llama3.3:70b
+OLLAMA_MODEL_EMBED=bge-m3
 OLLAMA_MODEL=llama3.3:70b
 
 # Berechtigungen (IDs aus Paperless Admin → Gruppen)
