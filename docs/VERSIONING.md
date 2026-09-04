@@ -1,6 +1,6 @@
 # Versionierung (paper.manager + Pipeline)
 
-**Paperless-NGX** (Docker-Image) ist unabhängig: Produktion **2.20.15** gepinnt — siehe [UPGRADE_V3.md](./UPGRADE_V3.md) und `./scripts/paperless-version-check.sh`.
+**Paperless-NGX** (Docker-Image) ist unabhängig: Ziel **3.1.2** — siehe [UPGRADE_V3.md](./UPGRADE_V3.md) und `./scripts/paperless-version-check.sh`.
 
 Drei Classifier-Versionsnummern — in der Sidebar und auf dem Home-Tab sichtbar (`/api/config` → `versions`).
 
@@ -44,10 +44,10 @@ grep -m1 POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
 
 Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Refresh (`Ctrl+Shift+R`).
 
-## Aktuell (Stand Juli 2026)
+## Aktuell (Stand September 2026)
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.15 | Legacy-Split `delete_source`, SWIFT-Felder, `switchMergeToNeu`-Fix |
-| BE | 2.62 | Legacy-Split atomischer Publish, Identifikatoren SWIFT/Telefon |
-| Pipe | 12.75 | Telefon (`phonenumbers`), SWIFT-Extraktion, BKB↔BLKB-Blacklist |
+| UI | 3.15 | Legacy-Split `delete_source`, SWIFT-Felder |
+| BE | 2.63 | Paperless v3 API Accept header |
+| Pipe | 12.77 | Paperless v3 API (notes pagination) |

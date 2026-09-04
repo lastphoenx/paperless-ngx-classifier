@@ -118,7 +118,16 @@ grep -q '^PAPERLESS_CONSUMER_DELETE_DUPLICATES=' .env || \
 
 Zeitplan: **2–3 Stunden** bei ~90k Dokumenten (DB-Migration + Tantivy-Rebuild).
 
+**Automatisiert** (empfohlen):
+
 ```bash
+cd /opt/paperless-ngx-classifier && git pull
+./scripts/deploy-to-ct121.sh --no-docker
+./scripts/upgrade-v3-ct121.sh --dry-run
+./scripts/upgrade-v3-ct121.sh
+```
+
+**Manuell:**
 cd /opt/paperless
 
 docker compose pull webserver
