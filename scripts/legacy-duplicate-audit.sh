@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Duplikat-Dateiaufgaben: Tasks vs. einzigartige Dateien (Paperless tasks-API = JSON-Array).
+# Duplikat-Dateiaufgaben: Tasks vs. einzigartige Dateien (v2: JSON-Array, v3: paginiert).
 set -euo pipefail
 
 ENV_FILE="${PAPERLESS_ENV:-/opt/paperless/.env}"
@@ -16,22 +16,25 @@ python3 <<'PY'
 import json
 import os
 import re
+import urllib.parse
 import urllib.request
 
 token = os.environ["PAPERLESS_TOKEN"]
-url = "http://127.0.0.1:8000/api/tasks/?task_name=consume_file&status=FAILURE"
+base = "http://127.0.0.1:8000/api/tasks/"
+params = {"task_type": "consume_file", "status": "FAILURE", "page_size": "100"}
+url = base + "?" + urllib.parse.urlencode(params)
+headers = {"Authorization": f"Token {token}"}
 
-req = urllib.request.Request(
-    url,
-    headers={"Authorization": f"Token {token}"},
-)
-with urllib.request.urlopen(req, timeout=60) as resp:
-    data = json.load(resp)
-
-if isinstance(data, dict):
-    tasks = data.get("results", [])
-else:
-    tasks = data
+tasks: list = []
+while url:
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.load(resp)
+    if isinstance(data, list):
+        tasks.extend(data)
+        break
+    tasks.extend(data.get("results", []))
+    url = data.get("next")
 
 files: set[str] = set()
 targets: dict[str, int] = {}
@@ -40,7 +43,9 @@ other_fail = 0
 
 for t in tasks:
     r = t.get("result") or ""
-    if "duplicate of" not in r.lower():
+    rl = r.lower()
+    is_dup = "duplicate of" in rl or "duplicate document" in rl or "already exists" in rl
+    if not is_dup:
         other_fail += 1
         continue
     dup_msgs += 1

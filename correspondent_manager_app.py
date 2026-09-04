@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.62"  # 2.62: Legacy-Split delete_source, SWIFT/Telefon, switchMergeToNeu
+__version__ = "2.63"  # 2.63: Paperless v3 API Accept header (version=9)
 UI_VERSION = "3.15"
 
 import requests
@@ -110,6 +110,7 @@ ALL_PENDING_TAGS         = {PENDING_REVIEW_TAG, PENDING_QS_TAG, PENDING_NEW_CORR
 PAPERLESS_HEADERS = {
     "Authorization": f"Token {PAPERLESS_API_TOKEN}",
     "Content-Type": "application/json",
+    "Accept": os.environ.get("PAPERLESS_API_ACCEPT", "application/json; version=9"),
 }
 PAPERLESS_OWNER_ID     = int(os.environ.get("PAPERLESS_OWNER_ID", "3"))  # deprecated — wird nicht verwendet, siehe _default_permissions()
 _PERM_VIEW_GROUP_IDS   = [int(g) for g in os.environ.get("PAPERLESS_VIEW_GROUP_IDS",  "1,2").split(",") if g.strip().isdigit()]

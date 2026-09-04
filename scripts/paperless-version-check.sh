@@ -5,7 +5,7 @@ set -euo pipefail
 
 COMPOSE_DIR="${PAPERLESS_COMPOSE_DIR:-/opt/paperless}"
 COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yml"
-TARGET_VERSION="${PAPERLESS_TARGET_VERSION:-2.20.15}"
+TARGET_VERSION="${PAPERLESS_TARGET_VERSION:-3.1.2}"
 TARGET_IMAGE="ghcr.io/paperless-ngx/paperless-ngx:$TARGET_VERSION"
 
 echo "=== Paperless Version Check ==="

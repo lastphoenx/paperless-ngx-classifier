@@ -24,7 +24,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.76"  # 12.76: Fix IndentationError steuerjahr.infer_steuerjahr Docstring
+POST_CONSUME_VERSION = "12.77"  # 12.77: Paperless v3 API (Accept version=9, notes pagination)
 import re
 import sys
 import json
@@ -1153,12 +1153,26 @@ DOCUMENT_SOURCE_PATH = os.environ.get("DOCUMENT_SOURCE_PATH", "")
 
 # ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
 
+PAPERLESS_API_ACCEPT = os.environ.get(
+    "PAPERLESS_API_ACCEPT", "application/json; version=9"
+)
+
+
 def _headers() -> dict:
     return {
         "Authorization": f"Token {PAPERLESS_TOKEN}",
         "Content-Type": "application/json",
-        "Accept": "application/json",
+        "Accept": PAPERLESS_API_ACCEPT,
     }
+
+
+def _unwrap_api_list(data) -> list:
+    """v2: JSON-Array; v3: paginiertes {results: [...]}."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("results", [])
+    return []
 
 
 def _api_url(endpoint: str) -> str:
@@ -1257,7 +1271,7 @@ def paperless_get_notes(document_id: int) -> list:
             headers=_headers(), timeout=15,
         )
         if r.ok:
-            return r.json()
+            return _unwrap_api_list(r.json())
     except Exception as e:
         log.warning("GET notes/%s fehlgeschlagen: %s", document_id, e)
     return []

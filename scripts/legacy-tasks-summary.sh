@@ -19,7 +19,7 @@ if [[ -n "$TOKEN" ]]; then
     name="${spec#*:}"
     n=$(curl -sf --connect-timeout 5 --max-time 15 \
       -H "Authorization: Token $TOKEN" \
-      "http://127.0.0.1:8000/api/tasks/?task_name=consume_file&status=$key" \
+      "http://127.0.0.1:8000/api/tasks/?task_type=consume_file&status=$key" \
       | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
