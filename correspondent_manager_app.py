@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.64"  # 2.64: /api/config ollama_models (Vision/LLM/Embed aus Env)
-UI_VERSION = "3.16"
+UI_VERSION = "3.17"
 
 import requests
 from iban_utils import validate_iban

@@ -74,6 +74,12 @@
   .ver-badge-ui   { background: rgba(147,197,253,.28); color: #93c5fd; border: 1px solid rgba(147,197,253,.45); }
   .ver-badge-be   { background: rgba(167,243,208,.25); color: #6ee7b7; border: 1px solid rgba(167,243,208,.4); }
   .ver-badge-pipe { background: rgba(253,230,138,.25); color: #fcd34d; border: 1px solid rgba(253,230,138,.4); }
+  #version-text {
+    display: flex; flex-wrap: wrap; gap: 4px; line-height: 1.5;
+  }
+  #version-text .ver-badge {
+    font-size: 10px; padding: 3px 8px; border-radius: 5px;
+  }
   .badge-platzhalter {
     display: inline-block; flex-shrink: 0;
     background: rgba(245,158,11,.2); color: #fbbf24;
@@ -343,8 +349,8 @@
 <!-- SIDEBAR -->
 <nav class="sidebar">
   <div class="logo" onclick="navigateTo('home')" style="cursor:pointer">paper<span>.</span>manager</div>
-  <div id="version-bar" style="padding:3px 16px 8px;border-bottom:1px solid var(--border);margin-bottom:2px">
-    <div id="version-text" style="font-size:9px;color:var(--muted);font-family:monospace;line-height:1.7">…</div>
+  <div id="version-bar" style="padding:6px 12px 10px;border-bottom:1px solid var(--border);margin-bottom:2px">
+    <div id="version-text">…</div>
   </div>
   <div style="padding:10px 16px 10px;border-bottom:1px solid var(--border);margin-bottom:8px">
     <div style="font-size:10px;color:var(--muted);margin-bottom:8px;letter-spacing:1px">QS-MODUS</div>
@@ -1151,7 +1157,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.16';
+const UI_VERSION = '3.17';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -1251,6 +1257,8 @@ window.addEventListener('popstate', () => {
 document.addEventListener('DOMContentLoaded', () => { init(); });
 
 async function init() {
+  // Sidebar-Versionen sofort als Badges (vor Config-Load)
+  applyVersionDisplay({ ui: UI_VERSION, backend: '…', post_consume: '…' });
   // Bei abgelaufener Session: Login-Redirect (GET / liefert HTML ohne Auth-Check)
   const _checkAuth = (r) => {
     if (r.status === 401) {

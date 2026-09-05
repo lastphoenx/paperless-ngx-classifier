@@ -48,6 +48,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.16 | Speicherpfad-Beschreibung, Version-Badges |
+| UI | 3.17 | Sidebar-Version-Badges (Kontrast) |
 | BE | 2.64 | `/api/config` → `ollama_models` |
 | Pipe | 12.78 | `OLLAMA_MODEL_EMBED` konfigurierbar |
