@@ -84,7 +84,7 @@ else:
     for label, path in [
         ("gemeinsam", "/mnt/paperless-data/migrate-gemeinsam/nas-missing-import.tsv"),
         ("user-b", "/mnt/paperless-data/migrate-user-b/nas-missing-import.tsv"),
-        ("thomas", "/mnt/paperless-data/migrate-user-a/nas-missing-import.tsv"),
+        ("user-a", "/mnt/paperless-data/migrate-user-a/nas-missing-import.tsv"),
     ]:
         if os.path.isfile(path):
             n = sum(1 for ln in open(path, encoding="utf-8") if ln.strip() and not ln.startswith("relpath"))

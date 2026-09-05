@@ -540,7 +540,7 @@ def test_consolidate_near_bucket_still_moves_real_add():
     assert merged["fern"]["rechts"] is None
 
 
-THOMAS_OFFICE_OCR = """
+GENERIC_OFFICE_OCR = """
 3850RX Comfort Pro HD 160 MAX CRYSTAL SOLID
 SPH ZYL ACHSE ADD PD
 R +0.25 -0.25 57 1.50 31.5
@@ -550,7 +550,7 @@ L 0.00 -0.25 110 1.50 31.5
 
 
 def test_office_comfort_pro_routes_to_messung():
-    r = parse_mcoptic_pass(THOMAS_OFFICE_OCR)
+    r = parse_mcoptic_pass(GENERIC_OFFICE_OCR)
     assert r["extraktion"]["layout"] == "messung"
     assert r["fern"]["rechts"] is None
     assert r["messung"]["rechts"]["sph"] == "+0.25"
