@@ -12,7 +12,16 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-: "${PAPERLESS_TOKEN:?PAPERLESS_TOKEN fehlt — ENV_FILE setzen oder exportieren}"
+TOKEN="${PAPERLESS_TOKEN:-${PAPERLESS_API_TOKEN:-}}"
+if [[ -z "$TOKEN" ]] && [[ -f "$ENV_FILE" ]]; then
+  TOKEN=$(grep -m1 '^PAPERLESS_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+  [[ -z "$TOKEN" ]] && TOKEN=$(grep -m1 '^PAPERLESS_API_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+fi
+TOKEN="${TOKEN%\"}"
+TOKEN="${TOKEN#\"}"
+: "${TOKEN:?PAPERLESS_TOKEN oder PAPERLESS_API_TOKEN fehlt — ENV_FILE setzen}"
+
+export PAPERLESS_TOKEN="$TOKEN"
 
 export INVENTORY_ENV_FILE="$ENV_FILE"
 export INVENTORY_NAS_ORIGINALS="${NAS_ORIGINALS:-}"
@@ -58,7 +67,7 @@ _API_BASE = ""
 
 def api_get(path: str) -> dict:
     global _API_BASE
-    token = os.environ["PAPERLESS_TOKEN"]
+    token = os.environ["PAPERLESS_TOKEN"].strip().strip('"').strip("'")
     accept = os.environ.get("PAPERLESS_API_ACCEPT", "application/json; version=9")
     errors: list[str] = []
     bases = [_API_BASE] if _API_BASE else api_bases()
@@ -66,7 +75,7 @@ def api_get(path: str) -> dict:
         url = base + path
         req = urllib.request.Request(
             url,
-            headers={"Authorization": f"Bearer {token}", "Accept": accept},
+            headers={"Authorization": f"Token {token}", "Accept": accept},
         )
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
