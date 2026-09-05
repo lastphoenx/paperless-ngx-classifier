@@ -158,13 +158,33 @@ curl -s http://192.168.131.60:11434/api/embeddings \
   -d '{"model":"bge-m3","prompt":"test"}' | head -c 80
 
 # Paperless: Settings → Application Configuration → AI aktiviert, Embedding bge-m3
+
+# LLM-Index vorhanden? (Pfad kommt von PAPERLESS_DATA_DIR — bei CT121: /mnt/paperless-data/data)
+docker compose exec webserver python manage.py shell -c "
+from django.conf import settings
+from pathlib import Path
+p = Path(settings.LLM_INDEX_DIR)
+print('LLM_INDEX_DIR=', p)
+print('llmindex.db  =', (p/'llmindex.db').exists(), (p/'llmindex.db').stat().st_size if (p/'llmindex.db').exists() else 0)
+from paperless_ai.indexing import llm_index_exists
+print('llm_index_exists:', llm_index_exists())
+"
+
+# Metadaten (embedding_model, schema_version):
+docker compose exec webserver python manage.py shell -c "
+import sqlite3
+from django.conf import settings
+db = settings.LLM_INDEX_DIR / 'llmindex.db'
+for row in sqlite3.connect(db).execute('SELECT * FROM index_meta'):
+    print(row)
+"
 ```
 
 **Modellwechsel später** (z. B. auf anderes Embedding):
 
 ```bash
 rm -f /opt/paperless-scripts/training/manifest_embeddings.json
-# Paperless LLM-Index in UI neu bauen oder meta.json prüfen (data/llm_index/)
+docker compose exec webserver python manage.py document_llmindex rebuild
 ```
 
 ### 3.3 `/opt/paperless/docker-compose.yml`

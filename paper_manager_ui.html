@@ -62,6 +62,10 @@
     border: 1px solid rgba(16,185,129,.4); border-radius: 4px;
     padding: 1px 7px; font-size: 10px; font-weight: 700; letter-spacing: .5px;
   }
+  .mf-desc-badge {
+    display: inline-block; border-radius: 6px; padding: 5px 12px;
+    font-size: 12px; font-weight: 500; line-height: 1.45; max-width: 100%;
+  }
   .badge-platzhalter {
     display: inline-block; flex-shrink: 0;
     background: rgba(245,158,11,.2); color: #fbbf24;
@@ -4152,6 +4156,22 @@ async function loadManifestPendingCount() {
   } catch (e) { /* ignore */ }
 }
 
+const _MF_DESC_STYLES = [
+  'background:rgba(147,197,253,.22);color:#7dd3fc;border:1px solid rgba(147,197,253,.35)',
+  'background:rgba(167,243,208,.22);color:#6ee7b7;border:1px solid rgba(167,243,208,.35)',
+  'background:rgba(253,230,138,.22);color:#fcd34d;border:1px solid rgba(253,230,138,.35)',
+  'background:rgba(244,114,182,.18);color:#f9a8d4;border:1px solid rgba(244,114,182,.32)',
+  'background:rgba(196,181,253,.22);color:#c4b5fd;border:1px solid rgba(196,181,253,.35)',
+  'background:rgba(94,234,212,.18);color:#5eead4;border:1px solid rgba(94,234,212,.32)',
+];
+
+function _mfDescBadgeHtml(text, pfad) {
+  const t = (text || '').trim();
+  if (!t) return '';
+  const idx = pfad.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % _MF_DESC_STYLES.length;
+  return `<div style="margin-bottom:8px"><span class="badge mf-desc-badge" style="${_MF_DESC_STYLES[idx]}">${_escHtml(t)}</span></div>`;
+}
+
 async function loadManifest() {
   try {
     const r = await fetch(`${API_BASE}/manifest`);
@@ -4185,7 +4205,7 @@ function renderManifest(ordner) {
         <button class="btn ${isPending ? 'btn-success' : 'btn-ghost'}" style="padding:3px 10px;font-size:11px" onclick="openMfEdit('${eid}')">✎ ${isPending ? 'Jetzt ergänzen' : 'Edit'}</button>
       </div>
       <div id="mf-view-${eid}">
-        <div style="color:var(--muted);font-size:12px;margin-bottom:6px">${e.beschreibung||''}</div>
+        ${_mfDescBadgeHtml(e.beschreibung, e.pfad)}
         <div style="margin-bottom:4px"><span style="color:var(--muted);font-size:11px">ERLAUBTE TAGS: </span>${(e.erlaubte_tags||[]).map(t=>`<span class="badge badge-neu" style="margin-right:3px">${t}</span>`).join('')}</div>
         <div><span style="color:var(--muted);font-size:11px">DOKUMENTTYPEN: </span>${(e.erlaubte_dokumenttypen||[]).map(t=>`<span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent);margin-right:3px">${t}</span>`).join('')}</div>
         <div style="margin-top:4px"><span style="color:var(--muted);font-size:11px">MAX TAGS: ${e.max_tags||4}</span></div>
@@ -4260,6 +4280,11 @@ async function openMfEdit(eid) {
   edit.innerHTML = `
     <div style="margin-top:12px">
       <div class="field-group">
+        <label>Beschreibung <span style="color:var(--label);font-weight:normal;font-size:11px;text-transform:none">(für Übersicht &amp; KI-Kontext)</span></label>
+        <input type="text" id="mfbesch-${eid}" value="${_escHtml(entry.beschreibung||'')}"
+          placeholder="z.B. Reparatur- und Unterhaltsrechnungen für Haus und Garten" style="width:100%;box-sizing:border-box">
+      </div>
+      <div class="field-group">
         <label>Erlaubte Tags <span style="color:var(--label);font-weight:normal;font-size:11px;text-transform:none">(Vorschläge für KI)</span></label>
         <div id="mft-cb-${eid}" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:140px;overflow-y:auto;line-height:1.8">
           ${tagCheckboxes}
@@ -4303,8 +4328,9 @@ async function saveMfEditCb(pfad, eid) {
   const erlaubte_dokumenttypen = Array.from(typeCbs).map(cb => cb.value);
   const max_tags    = parseInt(document.getElementById(`mfmax-${eid}`)?.value || '4');
   const abgrenzung  = document.getElementById(`mfabgr-${eid}`)?.value || '';
+  const beschreibung = document.getElementById(`mfbesch-${eid}`)?.value.trim() || '';
 
-  const body = { erlaubte_tags, erlaubte_dokumenttypen, max_tags, abgrenzung, pending: false };
+  const body = { erlaubte_tags, erlaubte_dokumenttypen, max_tags, abgrenzung, beschreibung, pending: false };
   const r = await fetch(`${API_BASE}/manifest/ordner/${encodeURIComponent(pfad)}`,{
     method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   if (r.ok) {
@@ -4324,6 +4350,7 @@ async function saveMfEdit(pfad, eid) {
     pending: false,  // pending-Status aufheben nach Speichern
     max_tags: parseInt(document.getElementById(`mfmax-${eid}`)?.value)||4,
     abgrenzung: document.getElementById(`mfabgr-${eid}`)?.value||'',
+    beschreibung: document.getElementById(`mfbesch-${eid}`)?.value.trim() || '',
   };
   const r = await fetch(`${API_BASE}/manifest/ordner/${encodeURIComponent(pfad)}`,{method:'PATCH',headers: {'Content-Type': 'application/json'},body:JSON.stringify(body)});
   if (r.ok) { showToast('Manifest gespeichert','success'); loadManifest(); }
