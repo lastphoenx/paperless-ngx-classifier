@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.64"  # 2.64: /api/config ollama_models (Vision/LLM/Embed aus Env)
-UI_VERSION = "3.17"
+__version__ = "2.65"  # 2.65: /api/manifest root_colors für Speicherpfad-Badges
+UI_VERSION = "3.18"
 
 import requests
 from iban_utils import validate_iban
@@ -4156,6 +4156,42 @@ def api_batch_platzhalter(body: dict = Body(...)):
     }
 
 
+def _manifest_root_colors(ordner: list) -> dict:
+    """Badge-Farben pro Manifest-Hauptordner (Namen kommen aus manifest.json zur Laufzeit)."""
+    known = {
+        "Familie": "background:rgba(167,243,208,.22);color:#6ee7b7;border:1px solid rgba(167,243,208,.35)",
+        "Eltern":  "background:rgba(253,230,138,.22);color:#fcd34d;border:1px solid rgba(253,230,138,.35)",
+        "legacy":  "background:rgba(148,163,184,.18);color:#94a3b8;border:1px solid rgba(148,163,184,.32)",
+        "none":    "background:rgba(100,116,139,.15);color:#64748b;border:1px solid rgba(100,116,139,.28)",
+    }
+    person_slots = [
+        "background:rgba(147,197,253,.22);color:#7dd3fc;border:1px solid rgba(147,197,253,.35)",
+        "background:rgba(244,114,182,.18);color:#f9a8d4;border:1px solid rgba(244,114,182,.32)",
+        "background:rgba(196,181,253,.22);color:#c4b5fd;border:1px solid rgba(196,181,253,.35)",
+    ]
+    colors = dict(known)
+    persons: list[str] = []
+    order_env = os.environ.get("MANIFEST_ROOT_COLOR_ORDER", "").strip()
+    if order_env:
+        priority = [p.strip() for p in order_env.split(",") if p.strip()]
+        for root in priority:
+            if root in known:
+                continue
+            if root not in persons:
+                persons.append(root)
+    for entry in ordner:
+        pfad = (entry.get("pfad") or "").strip()
+        if not pfad:
+            continue
+        root = pfad.split("/")[0]
+        if root in known or root in persons:
+            continue
+        persons.append(root)
+    for i, root in enumerate(persons):
+        colors[root] = person_slots[i % len(person_slots)]
+    return colors
+
+
 @app.get("/api/manifest", response_class=JSONResponse)
 def api_manifest():
     """Manifest lesen."""
@@ -4163,7 +4199,10 @@ def api_manifest():
         "/opt/paperless-scripts/training/manifest.json"))
     if not manifest_path.exists():
         raise HTTPException(404, "manifest.json nicht gefunden")
-    return json.loads(manifest_path.read_text(encoding="utf-8"))
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    ordner = data.get("ordner") or []
+    data["root_colors"] = _manifest_root_colors(ordner)
+    return data
 
 
 @app.post("/api/manifest/ordner")

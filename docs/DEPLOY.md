@@ -9,7 +9,7 @@ Kurzablauf: **Cursor/Windows → `git commit` + `git push` → auf CT 121 `git p
 Änderungen liegen in `paperless-ngx-classifier/` (eigenes Git-Repo).
 
 ```powershell
-cd "/home/user/projects"
+cd "C:\path\to\github_code\paperless-ngx-classifier"
 git status
 git pull
 git add -A

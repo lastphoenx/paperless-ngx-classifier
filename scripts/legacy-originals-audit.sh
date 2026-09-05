@@ -83,7 +83,7 @@ if state_dir:
 else:
     for label, path in [
         ("gemeinsam", "/mnt/paperless-data/migrate-gemeinsam/nas-missing-import.tsv"),
-        ("monika", "/mnt/paperless-data/migrate-user-b/nas-missing-import.tsv"),
+        ("user-b", "/mnt/paperless-data/migrate-user-b/nas-missing-import.tsv"),
         ("thomas", "/mnt/paperless-data/migrate-user-a/nas-missing-import.tsv"),
     ]:
         if os.path.isfile(path):

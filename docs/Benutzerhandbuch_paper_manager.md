@@ -339,7 +339,7 @@ Zentrale Haushaltskonfiguration — wird von der Pipeline dynamisch geladen.
 **Personen** definieren den Ordner-Namensraum:
 - **ID** — interner Schlüssel (Kleinbuchstaben, keine Leerzeichen, eindeutig)
 - **Anzeigename** — für Logs und UI
-- **Ordner-Prefix** — erster Teil aller Ablage-Pfade (z.B. «Thomas» → `Thomas/Auto`, `Thomas/Steuern`)
+- **Ordner-Prefix** — erster Teil aller Ablage-Pfade (z.B. «PersonA» → `PersonA/Auto`, `PersonA/Steuern`)
 
 > Zuerst Personen speichern — dann können Referenzen erfasst werden.
 > Person kann nicht gelöscht werden solange Referenzen damit verknüpft sind.
@@ -358,7 +358,7 @@ Jede Referenz in `family.json` (`fahrzeuge[]`) steuert **immer** das Custom Fiel
 - **Referenz** — Kennzeichen/ID, Pflicht, eindeutig; muss als Option im Paperless-Select «Auto-Kennzeichen» existieren
 - **Kategorie** — frei pflegbar in `fahrzeug_kategorien` (nur Anzeige/Hilfe in der UI, kein Pipeline-Routing)
 - **Person** — Pflicht, aus gespeicherten Personen
-- **Ziel-Ordner** — nur bei aktivem «Ordner autom.», Format `Person/Kategorie` (z. B. `Monika/Auto`)
+- **Ziel-Ordner** — nur bei aktivem «Ordner autom.», Format `Person/Kategorie` (z. B. `PersonB/Auto`)
 
 > Mofas mit gemeinsamem Schild: ein Eintrag, Person setzen, **Ordner autom. aus** — Versicherungsdokumente sollen nicht in `Person/Auto` landen.
 > Policen- und Vertragsnummern gehören in **Beziehungen**, nicht in Referenzen.
@@ -434,7 +434,7 @@ Ablauf bei Scan einer Prämienrechnung: beide Zeilen matchen über die Ref-Nr. �
 | Zahllauf vom 06.02.2026 | Custom Field `Bezahlt am` = `2026-02-06` |
 | Heute gescannt | Custom Field `Gescannt am` = heute |
 | Vollautomatisch verarbeitet | Custom Field `Verarbeitung` = `auto STP` |
-| Dokumente für Monika | Custom Field `Person` = `Monika` |
+| Dokumente für Person B | Custom Field `Person` = `PersonB` |
 | Steuerbelege 2025 | Tag = `Steuerrelevant` + Datum 2025 |
 | Absender X | Korrespondent = «X» |
 | Schulberichte mit HTR | Inhalt enthält `--- Handschrift (HTR) ---` |

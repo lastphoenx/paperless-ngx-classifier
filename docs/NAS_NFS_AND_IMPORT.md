@@ -46,26 +46,26 @@ Mount: `192.168.141.140:/mnt/ssd1` → `/mnt/nas-legacy`
 /mnt/nas-legacy/Paperless/…
 ```
 
-**Nicht sichtbar** auf CT 121 (trotz `/mnt/ssd1/Thomas` auf pi-nas):
+**Nicht sichtbar** auf CT 121 (trotz `/mnt/ssd1/user-a` auf pi-nas):
 
 ```text
-/mnt/nas-legacy/Thomas   → No such file or directory
-/mnt/nas-legacy/Monika   → No such file or directory
+/mnt/nas-legacy/user-a   → No such file or directory
+/mnt/nas-legacy/user-b   → No such file or directory
 ```
 
-Ursache: pi-nas `/etc/exports` exportiert typischerweise nur `…/Paperless/media` und `…/Eltern` — **nicht** `Thomas`/`Monika`. Der fstab-Eintrag `:/mnt/ssd1` zeigt auf dem Client nur die freigegebenen Zweige.
+Ursache: pi-nas `/etc/exports` exportiert typischerweise nur `…/Paperless/media` und `…/Eltern` — **nicht** `user-a`/`user-b`. Der fstab-Eintrag `:/mnt/ssd1` zeigt auf dem Client nur die freigegebenen Zweige.
 
-Thomas/Monika liegen physisch unter `/mnt/ssd1/Thomas`, `/mnt/ssd1/Monika` (und teils ssd2); für Import **zusätzliche Export-Zeilen** + Mount auf CT 121 nötig (siehe Abschnitt 1.1).
+user-a/user-b liegen physisch unter `/mnt/ssd1/user-a`, `/mnt/ssd1/user-b` (und teils ssd2); für Import **zusätzliche Export-Zeilen** + Mount auf CT 121 nötig (siehe Abschnitt 1.1).
 
-### 1.1 Thomas / Monika — NFS ergänzen (pi-nas)
+### 1.1 user-a / user-b — NFS ergänzen (pi-nas)
 
 ```text
-# /etc/exports — Beispiel (fsid neu, no_root_squash wegen 2770 thomas:thomas / monika:monika)
-/mnt/ssd1/Thomas  192.168.131.31(ro,sync,no_subtree_check,no_root_squash,fsid=3)
-/mnt/ssd1/Monika  192.168.131.31(ro,sync,no_subtree_check,no_root_squash,fsid=4)
+# /etc/exports — Beispiel (fsid neu, no_root_squash wegen 2770 user-a:user-a / user-b:user-b)
+/mnt/ssd1/user-a  192.168.131.31(ro,sync,no_subtree_check,no_root_squash,fsid=3)
+/mnt/ssd1/user-b  192.168.131.31(ro,sync,no_subtree_check,no_root_squash,fsid=4)
 ```
 
-Optional mergerfs-Gesamtsicht (ssd1+ssd2): stattdessen `/srv/nas/Thomas` exportieren — nur wenn gewollt.
+Optional mergerfs-Gesamtsicht (ssd1+ssd2): stattdessen `/srv/nas/user-a` exportieren — nur wenn gewollt.
 
 ```bash
 exportfs -rav
@@ -74,8 +74,8 @@ exportfs -rav
 **CT 121** — separate Mountpoints (fstab):
 
 ```fstab
-192.168.141.140:/mnt/ssd1/Thomas  /mnt/nas-user-a  nfs4  ro,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
-192.168.141.140:/mnt/ssd1/Monika  /mnt/nas-user-b  nfs4  ro,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
+192.168.141.140:/mnt/ssd1/user-a  /mnt/nas-user-a  nfs4  ro,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
+192.168.141.140:/mnt/ssd1/user-b  /mnt/nas-user-b  nfs4  ro,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
 ```
 
 ```bash
@@ -84,21 +84,21 @@ mount -a
 ls /mnt/nas-user-a /mnt/nas-user-b | head
 ```
 
-Import dann mit `LEGACY_NAS_FINANZEN=/mnt/nas-user-a` bzw. `/mnt/nas-user-b` — **nicht** `/mnt/nas-legacy/Thomas`.
+Import dann mit `LEGACY_NAS_FINANZEN=/mnt/nas-user-a` bzw. `/mnt/nas-user-b` — **nicht** `/mnt/nas-legacy/user-a`.
 
 ### mergerfs vs. ssd1-Mount (wichtig)
 
-Auf **pi-nas** zeigt `/srv/nas/Thomas` und `/srv/nas/Monika` die **mergerfs**-Sicht (ssd1 **+** ssd2).
+Auf **pi-nas** zeigt `/srv/nas/user-a` und `/srv/nas/user-b` die **mergerfs**-Sicht (ssd1 **+** ssd2).
 
 CT 121 sieht nur **`/mnt/ssd1/...`** — Dateien, die **nur auf ssd2** liegen, fehlen im Import.
 
-Vor Thomas/Monika auf pi-nas prüfen:
+Vor user-a/user-b auf pi-nas prüfen:
 
 ```bash
 # Gibt es Inhalte nur auf ssd2?
-diff -rq /mnt/ssd1/Thomas /mnt/ssd2/Thomas 2>/dev/null | head
-diff -rq /mnt/ssd1/Monika /mnt/ssd2/Monika 2>/dev/null | head
-find /mnt/ssd2/Thomas /mnt/ssd2/Monika -type f 2>/dev/null | wc -l
+diff -rq /mnt/ssd1/user-a /mnt/ssd2/user-a 2>/dev/null | head
+diff -rq /mnt/ssd1/user-b /mnt/ssd2/user-b 2>/dev/null | head
+find /mnt/ssd2/user-a /mnt/ssd2/user-b -type f 2>/dev/null | wc -l
 ```
 
 Falls ssd2-only Dateien relevant sind: Export `/srv/nas` (ro) **oder** Konsolidierung auf ssd1 **vor** Import — nicht blind nur ssd1-Pfad scannen.
@@ -147,7 +147,7 @@ Pro Chunk: pop → `consume/legacy/queue/` → warten → reconcile.
 
 ---
 
-## 3. Thomas / Monika (Legacy-Modus — wie Finanzen / Gemeinsam)
+## 3. user-a / user-b (Legacy-Modus — wie Finanzen / Gemeinsam)
 
 Voraussetzung: NFS-Mount auf CT 121 existiert (Abschnitt 2).
 
@@ -161,7 +161,7 @@ LEGACY_TAG=legacy
 LEGACY_STORAGE_PATH_TEMPLATE=legacy/{title}
 ```
 
-Import-Ziel: **`/mnt/paperless-data/consume/legacy/thomas-inbox/`** (nicht `consume/thomas-inbox/` ohne `legacy`!).
+Import-Ziel: **`/mnt/paperless-data/consume/legacy/user-a-inbox/`** (nicht `consume/user-a-inbox/` ohne `legacy`!).
 
 ```bash
 export LEGACY_NAS_FINANZEN=/mnt/nas-user-a
@@ -173,12 +173,12 @@ export LEGACY_CONSUME_ROOT=/mnt/paperless-data/consume/legacy
 /opt/paperless-scripts/legacy-nas-sha256.sh vs-paperless
 /opt/paperless-scripts/legacy-nas-sha256.sh missing
 
-/opt/paperless-scripts/legacy-nas-sha256.sh import-loop --batch thomas-inbox --chunk 10
+/opt/paperless-scripts/legacy-nas-sha256.sh import-loop --batch user-a-inbox --chunk 10
 ```
 
-Monika PDF analog: `migrate-user-b`, `consume/legacy/monika-inbox`, optional `EXCLUDE_REGEX`.
+user-b PDF analog: `migrate-user-b`, `consume/legacy/user-b-inbox`, optional `EXCLUDE_REGEX`.
 
-Grössen (pi-nas, mergerfs): Thomas ~81 eindeutige PDFs; Monika ~94 eindeutige PDFs (+ Fotos separat entscheiden).
+Grössen (pi-nas, mergerfs): user-a ~81 eindeutige PDFs; user-b ~94 eindeutige PDFs (+ Fotos separat entscheiden).
 
 ---
 
@@ -186,7 +186,7 @@ Grössen (pi-nas, mergerfs): Thomas ~81 eindeutige PDFs; Monika ~94 eindeutige P
 
 0. **consume leer?** (siehe unten)
 1. pi-nas: physischer Pfad + Zählung (`/mnt/ssd1/...`, ggf. ssd2-Diff)
-2. pi-nas: Export + `exportfs -rav` für neue Quellen (Thomas/Monika)
+2. pi-nas: Export + `exportfs -rav` für neue Quellen (user-a/user-b)
 3. CT 121: `findmnt`, neuer Mount sichtbar (`/mnt/nas-user-a` …)
 4. CT 121: `LEGACY_NAS_FINANZEN` auf **diesen** Mount
 5. Eigenes `LEGACY_MIGRATE_STATE_DIR` pro Quelle

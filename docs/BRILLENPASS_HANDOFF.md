@@ -38,7 +38,7 @@ Audit: `brillenpass_s1_tsv`, `brillenpass_s1` (Regex), `brillenpass_s2` (Vision,
 
 | Feld | Wert |
 |---|---|
-| Dokument | Paperless **#3563** (McOptic Brillenpass, Monika) |
+| Dokument | Paperless **#3563** (McOptic Brillenpass, Person B) |
 | Parser-Override | `mcoptic_brillenpass` |
 | Erwartung | Review-Eintrag oben im Tab Brillenpass nach ~1–2 Min Vision |
 

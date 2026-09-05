@@ -20,8 +20,8 @@ def test_is_htr_junk_line_filters_placeholders():
     assert is_htr_junk_line("handschrift_zeilen")
     assert is_htr_junk_line("SCHULBERICHT")
     assert is_htr_junk_line("Schuljahr:")
-    assert is_htr_junk_line("für Thomas Sa")
-    assert not is_htr_junk_line("Thomas rechnet gut im allgemeinen")
+    assert is_htr_junk_line("für Max Mu")
+    assert not is_htr_junk_line("Max rechnet gut im allgemeinen")
 
 
 def test_clean_htr_lines_dedupes_and_drops_boilerplate():
@@ -29,17 +29,17 @@ def test_clean_htr_lines_dedupes_and_drops_boilerplate():
         "SCHULBERICHT",
         "...",
         "handschrift_zeilen",
-        "Thomas rechnet gut.",
-        "Thomas rechnet gut.",
+        "Max rechnet gut.",
+        "Max rechnet gut.",
         "Der Beförderungsentscheid ist im Zeugnis eingetragen.",
-        "In letzter Zeit zeigt Thomas öfters Unlust.",
+        "In letzter Zeit zeigt Max öfters Unlust.",
     ]
     out = clean_htr_lines(raw)
     assert "SCHULBERICHT" not in out
     assert "..." not in out
-    assert out.count("Thomas rechnet gut.") == 1
+    assert out.count("Max rechnet gut.") == 1
     assert not any("Beförderungsentscheid" in x for x in out)
-    assert "In letzter Zeit zeigt Thomas öfters Unlust." in out
+    assert "In letzter Zeit zeigt Max öfters Unlust." in out
 
 
 def test_merge_htr_transcribe_pages_keeps_per_page_text():
@@ -79,7 +79,7 @@ def test_extract_htr_searchable_text_strategy_d():
     meta = {
         "htr_profile": "schulbericht",
         "_schulbericht": {
-            "schueler_vorname": "user-a",
+            "schueler_vorname": "Max",
             "schueler_nachname": "Muster",
             "klasse": "1 Kl.",
             "semester_oder_zeitraum": "1997/98",
@@ -118,7 +118,7 @@ def test_format_htr_note_summary_compact():
         "htr_profile": "schulbericht",
         "schulbericht_confidence": 0.58,
         "_schulbericht": {
-            "schueler_vorname": "user-a",
+            "schueler_vorname": "Max",
             "schueler_nachname": "Muster",
             "arbeits_haltung": "Kurz.",
             "leistungen": "Gut.",
@@ -127,6 +127,6 @@ def test_format_htr_note_summary_compact():
     }
     note = format_htr_note_summary(meta)
     assert "Confidence: 0.58" in note
-    assert "Vorname: Thomas" in note
+    assert "Vorname: Max" in note
     assert "Arbeitshaltung: Kurz." in note
     assert "X" * 100 not in note

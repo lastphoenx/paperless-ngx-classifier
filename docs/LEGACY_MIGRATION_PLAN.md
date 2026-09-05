@@ -37,7 +37,7 @@ tmux new -s legacy
 
 Pro Chunk: pop → consume → warten → **reconcile** (live Delta). Kein `done.lst`.
 
-Details NFS + Thomas/Monika: [NAS_NFS_AND_IMPORT.md](./NAS_NFS_AND_IMPORT.md)
+Details NFS + user-a/user-b: [NAS_NFS_AND_IMPORT.md](./NAS_NFS_AND_IMPORT.md)
 
 ---
 

@@ -547,7 +547,7 @@
           <span style="color:var(--accent)">Kennzeichen</span>
           <span>Bekannte Referenz aus family.json → CF «Auto-Kennzeichen» + Person. Ordner nur wenn «Ordner automatisch» aktiv (Familie → Referenzen)</span>
           <span style="color:var(--accent)">Arbeitgeber</span>
-          <span>«Reformierte Kirche» = Arbeitgeber von Monika → Monika/Kirchgemeinde/Lohnabrechnung</span>
+          <span>«Reformierte Kirche» = Arbeitgeber von Person B → PersonB/Kirchgemeinde/Lohnabrechnung</span>
           <span style="color:var(--accent)">Bank / Arzt</span>
           <span>Bekannte Beziehungen direkt zur richtigen Person geroutet — konfiguriert unter Familie → Beziehungen</span>
         </div>
@@ -1157,7 +1157,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.17';
+const UI_VERSION = '3.18';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -4188,20 +4188,19 @@ async function loadManifestPendingCount() {
   } catch (e) { /* ignore */ }
 }
 
-const _MF_DESC_STYLES = [
-  'background:rgba(147,197,253,.22);color:#7dd3fc;border:1px solid rgba(147,197,253,.35)',
-  'background:rgba(167,243,208,.22);color:#6ee7b7;border:1px solid rgba(167,243,208,.35)',
-  'background:rgba(253,230,138,.22);color:#fcd34d;border:1px solid rgba(253,230,138,.35)',
-  'background:rgba(244,114,182,.18);color:#f9a8d4;border:1px solid rgba(244,114,182,.32)',
-  'background:rgba(196,181,253,.22);color:#c4b5fd;border:1px solid rgba(196,181,253,.35)',
-  'background:rgba(94,234,212,.18);color:#5eead4;border:1px solid rgba(94,234,212,.32)',
-];
+let _mfRootColors = {};
+const _MF_ROOT_DEFAULT = 'background:rgba(94,234,212,.18);color:#5eead4;border:1px solid rgba(94,234,212,.32)';
+
+function _mfRootStyle(pfad) {
+  const root = (pfad || '').split('/')[0];
+  return _mfRootColors[root] || _MF_ROOT_DEFAULT;
+}
 
 function _mfDescBadgeHtml(text, pfad) {
   const t = (text || '').trim();
   if (!t) return '';
-  const idx = pfad.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % _MF_DESC_STYLES.length;
-  return `<div style="margin-bottom:8px"><span class="badge mf-desc-badge" style="${_MF_DESC_STYLES[idx]}">${_escHtml(t)}</span></div>`;
+  const style = _mfRootStyle(pfad);
+  return `<div style="margin-bottom:8px"><span style="color:var(--muted);font-size:11px">BESCHREIBUNG: </span><span class="badge mf-desc-badge" style="${style}">${_escHtml(t)}</span></div>`;
 }
 
 async function loadManifest() {
@@ -4212,6 +4211,7 @@ async function loadManifest() {
     if (!d.ordner?.length) { container.innerHTML = '<div class="empty">Kein Manifest</div>'; return; }
     _mfEntries = {};
     _mfAllOrdner = d.ordner;
+    _mfRootColors = d.root_colors || {};
     updateManifestPendingBadge(d.ordner);
     d.ordner.forEach(e => {
       const eid = e.pfad.replace(/[^a-z0-9]/gi,'_');
