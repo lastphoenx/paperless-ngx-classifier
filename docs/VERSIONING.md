@@ -48,6 +48,6 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.15 | Legacy-Split `delete_source`, SWIFT-Felder |
-| BE | 2.63 | Paperless v3 API Accept header |
-| Pipe | 12.77 | Paperless v3 API (notes pagination) |
+| UI | 3.16 | Speicherpfad-Beschreibung, Version-Badges |
+| BE | 2.64 | `/api/config` → `ollama_models` |
+| Pipe | 12.78 | `OLLAMA_MODEL_EMBED` konfigurierbar |

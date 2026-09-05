@@ -66,6 +66,14 @@
     display: inline-block; border-radius: 6px; padding: 5px 12px;
     font-size: 12px; font-weight: 500; line-height: 1.45; max-width: 100%;
   }
+  .ver-badge {
+    display: inline-block; border-radius: 6px; padding: 4px 11px;
+    font-size: 12px; font-weight: 700; font-family: ui-monospace, monospace;
+    letter-spacing: 0.02em;
+  }
+  .ver-badge-ui   { background: rgba(147,197,253,.28); color: #93c5fd; border: 1px solid rgba(147,197,253,.45); }
+  .ver-badge-be   { background: rgba(167,243,208,.25); color: #6ee7b7; border: 1px solid rgba(167,243,208,.4); }
+  .ver-badge-pipe { background: rgba(253,230,138,.25); color: #fcd34d; border: 1px solid rgba(253,230,138,.4); }
   .badge-platzhalter {
     display: inline-block; flex-shrink: 0;
     background: rgba(245,158,11,.2); color: #fbbf24;
@@ -419,24 +427,24 @@
       <div class="card" style="margin-bottom:16px">
         <div class="card-header"><span class="card-title">Aktive Versionen</span></div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px;font-size:12px">
-          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
-            <div style="color:var(--muted);font-size:10px;margin-bottom:4px">UI</div>
-            <div style="color:var(--accent);font-weight:bold">v<span id="home-ui-version">—</span></div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 10px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:8px;letter-spacing:.5px">UI</div>
+            <span class="ver-badge ver-badge-ui">v<span id="home-ui-version">—</span></span>
           </div>
-          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
-            <div style="color:var(--muted);font-size:10px;margin-bottom:4px">BACKEND</div>
-            <div style="color:var(--accent);font-weight:bold">v<span id="home-be-version">—</span></div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 10px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:8px;letter-spacing:.5px">BACKEND</div>
+            <span class="ver-badge ver-badge-be">v<span id="home-be-version">—</span></span>
           </div>
-          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
-            <div style="color:var(--muted);font-size:10px;margin-bottom:4px">PIPELINE</div>
-            <div style="color:var(--accent);font-weight:bold">v<span id="home-pipe-version">—</span></div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 10px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:8px;letter-spacing:.5px">PIPELINE</div>
+            <span class="ver-badge ver-badge-pipe">v<span id="home-pipe-version">—</span></span>
           </div>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
-          <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">Vision: qwen2.5vl:7b</span>
-          <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">LLM: llama3.3:70b</span>
-          <span class="badge" style="background:rgba(79,156,249,.15);color:var(--accent)">Embeddings: OLLAMA_MODEL_EMBED</span>
-          <span class="badge" style="background:rgba(124,58,237,.15);color:#a78bfa">100% lokal</span>
+        <div id="home-model-badges" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <span class="badge" style="background:rgba(79,156,249,.2);color:var(--accent);border:1px solid rgba(79,156,249,.35)">Vision: <span id="home-model-vision">—</span></span>
+          <span class="badge" style="background:rgba(79,156,249,.2);color:var(--accent);border:1px solid rgba(79,156,249,.35)">LLM: <span id="home-model-llm">—</span></span>
+          <span class="badge" style="background:rgba(79,156,249,.2);color:var(--accent);border:1px solid rgba(79,156,249,.35)">Embeddings: <span id="home-model-embed">—</span></span>
+          <span class="badge" style="background:rgba(124,58,237,.2);color:#a78bfa;border:1px solid rgba(124,58,237,.35)">100% lokal</span>
         </div>
       </div>
 
@@ -1143,7 +1151,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.15';
+const UI_VERSION = '3.16';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 function isWorkflowTag(name) {
@@ -1262,10 +1270,7 @@ async function init() {
     window.PAPERLESS_URL_CONFIG = cfg.paperless_url_config || '';
     applyPaperlessLinks(cfg.paperless_url || effectivePaperlessBase());
     if (cfg.versions) {
-      const v = cfg.versions;
-      const uiVer = v.ui || UI_VERSION;
-      const el = document.getElementById('version-text');
-      if (el) el.innerHTML = `UI&nbsp;v${uiVer} | be&nbsp;v${v.backend||'?'} | pipe&nbsp;v${v.post_consume||'?'}`;
+      applyVersionDisplay(cfg.versions, cfg.ollama_models);
     }
     if (cfg.pending_mode) {
       // Direkt setzen ohne Umweg über updatePendingModeUI
@@ -1357,24 +1362,9 @@ function showView(name) {
         btn.title = 'Backend nicht erreichbar';
       });
     });
-    ['home-ui-version','home-ui-version2'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = UI_VERSION;
-    });
     // Backend + Pipeline Version laden
     fetch(`${API_BASE}/config`).then(r=>r.json()).then(d => {
-      ['home-ui-version','home-ui-version2'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = d.versions?.ui || UI_VERSION;
-      });
-      ['home-be-version'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = d.versions?.backend || d.be_version || '—';
-      });
-      ['home-pipe-version'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = d.versions?.pipeline || d.pipe_version || '—';
-      });
+      applyVersionDisplay(d.versions, d.ollama_models);
     }).catch(()=>{});
   }
   if (name === 'correspondents') loadCorrMap();
@@ -1558,6 +1548,40 @@ function _pendingEntryLabel(e) {
 function _escHtml(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function _verBadgeHtml(label, ver, kind) {
+  const v = ver || '—';
+  return `<span class="ver-badge ver-badge-${kind}">${label}&nbsp;v${_escHtml(v)}</span>`;
+}
+
+function applyVersionDisplay(v, ollama) {
+  const uiVer = v?.ui || UI_VERSION;
+  const beVer = v?.backend || '?';
+  const pipeVer = v?.post_consume || v?.pipeline || '?';
+  const el = document.getElementById('version-text');
+  if (el) {
+    el.innerHTML = [
+      _verBadgeHtml('UI', uiVer, 'ui'),
+      _verBadgeHtml('be', beVer, 'be'),
+      _verBadgeHtml('pipe', pipeVer, 'pipe'),
+    ].join(' ');
+  }
+  ['home-ui-version','home-ui-version2'].forEach(id => {
+    const node = document.getElementById(id);
+    if (node) node.textContent = uiVer;
+  });
+  const beEl = document.getElementById('home-be-version');
+  if (beEl) beEl.textContent = beVer;
+  const pipeEl = document.getElementById('home-pipe-version');
+  if (pipeEl) pipeEl.textContent = pipeVer;
+  if (ollama) {
+    const m = ollama;
+    const set = (id, val) => { const n = document.getElementById(id); if (n && val) n.textContent = val; };
+    set('home-model-vision', m.vision);
+    set('home-model-llm', m.llm);
+    set('home-model-embed', m.embed);
+  }
 }
 
 function corrPickerBadgesHtml(e) {

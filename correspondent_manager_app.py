@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.63"  # 2.63: Paperless v3 API Accept header (version=9)
-UI_VERSION = "3.15"
+__version__ = "2.64"  # 2.64: /api/config ollama_models (Vision/LLM/Embed aus Env)
+UI_VERSION = "3.16"
 
 import requests
 from iban_utils import validate_iban
@@ -3495,6 +3495,12 @@ def api_config(request: Request):
             "post_consume":   _rv(f"{base}/post_consume.py",   "POST_CONSUME_VERSION"),
             "pre_consume_sh": _rv(f"{base}/pre_consume.sh",    "# VERSION"),
             "pre_consume_qr": _rv(f"{base}/pre_consume_qr.py", "__version__"),
+        },
+        "ollama_models": {
+            "vision": os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b"),
+            "llm": os.environ.get("OLLAMA_MODEL_LLM")
+                 or os.environ.get("OLLAMA_MODEL", "llama3.3:70b"),
+            "embed": os.environ.get("OLLAMA_MODEL_EMBED", "bge-m3"),
         },
     }
 

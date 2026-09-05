@@ -25,7 +25,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.77"  # 12.77: Paperless v3 API (Accept version=9, notes pagination)
+POST_CONSUME_VERSION = "12.78"  # 12.78: OLLAMA_MODEL_EMBED konfigurierbar (Default bge-m3)
 import re
 import sys
 import json
