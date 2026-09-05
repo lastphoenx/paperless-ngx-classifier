@@ -21,6 +21,7 @@ export INVENTORY_MANIFEST="${MANIFEST_PATH:-}"
 exec python3 <<'PY'
 import json
 import os
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -31,16 +32,69 @@ def section(title: str) -> None:
     print(f"---------- {title} ----------")
 
 
+def api_bases() -> list[str]:
+    """Lokal auf dem Host: interne API, nicht die öffentliche Domain (liefert oft HTML)."""
+    candidates = [
+        os.environ.get("INVENTORY_API_URL", "").strip(),
+        os.environ.get("PAPERLESS_INTERNAL_URL", "").strip(),
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        os.environ.get("PAPERLESS_URL", "").strip(),
+    ]
+    seen: set[str] = set()
+    bases: list[str] = []
+    for c in candidates:
+        if not c:
+            continue
+        c = c.rstrip("/")
+        if c not in seen:
+            seen.add(c)
+            bases.append(c)
+    return bases or ["http://127.0.0.1:8000"]
+
+
+_API_BASE = ""
+
+
 def api_get(path: str) -> dict:
-    base = os.environ.get("PAPERLESS_URL", "http://127.0.0.1:8000").rstrip("/")
+    global _API_BASE
     token = os.environ["PAPERLESS_TOKEN"]
     accept = os.environ.get("PAPERLESS_API_ACCEPT", "application/json; version=9")
-    req = urllib.request.Request(
-        base + path,
-        headers={"Authorization": f"Bearer {token}", "Accept": accept},
+    errors: list[str] = []
+    bases = [_API_BASE] if _API_BASE else api_bases()
+    for base in bases:
+        url = base + path
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Accept": accept},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                body = resp.read()
+                ctype = resp.headers.get("Content-Type", "")
+                if "json" not in ctype.lower() and body[:1] not in (b"{", b"["):
+                    snippet = body[:300].decode("utf-8", errors="replace")
+                    errors.append(
+                        f"{url} → HTTP {resp.status}, Content-Type={ctype!r}, "
+                        f"kein JSON (Antwort beginnt mit: {snippet[:120]!r}…)"
+                    )
+                    continue
+                data = json.loads(body)
+            _API_BASE = base
+            return data
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read(300).decode("utf-8", errors="replace")
+            errors.append(f"{url} → HTTP {exc.code}: {err_body[:200]}")
+        except urllib.error.URLError as exc:
+            errors.append(f"{url} → Verbindung fehlgeschlagen: {exc.reason}")
+        except json.JSONDecodeError as exc:
+            snippet = body[:300].decode("utf-8", errors="replace") if body else ""
+            errors.append(f"{url} → JSON-Fehler {exc}: {snippet[:120]!r}…")
+    hint = (
+        "Tipp: Auf dem Paperless-Host PAPERLESS_INTERNAL_URL=http://127.0.0.1:8000 "
+        "in /opt/paperless/.env setzen (PAPERLESS_URL bleibt die Domain für Browser)."
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)
+    raise SystemExit("API-Aufruf fehlgeschlagen:\n  " + "\n  ".join(errors) + f"\n\n{hint}")
 
 
 def perm_groups(permissions: dict | None, key: str) -> str:
@@ -56,10 +110,10 @@ def perm_groups(permissions: dict | None, key: str) -> str:
     return str(val)
 
 
-base = os.environ.get("PAPERLESS_URL", "http://127.0.0.1:8000").rstrip("/")
+bases = api_bases()
 print("========== Phase 0 — Paperless Permissions Inventar ==========")
 print(f"Datum: {datetime.now().astimezone().isoformat(timespec='seconds')}")
-print(f"API:   {base}")
+print(f"API:   {bases[0]}  (Fallbacks: {', '.join(bases[1:]) or '—'})")
 print()
 
 section("1) Gruppen (id, name)")
