@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.68.py — Paperless-NGX Post-Consume Pipeline v12.68
+post_consume_v12.79.py — Paperless-NGX Post-Consume Pipeline v12.79
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -13,7 +13,8 @@ Umgebungsvariablen (.env):
   PAPERLESS_TOKEN         <token>           (gleich wie in v10)
   OLLAMA_BASE_URL         http://localhost:11434
   OLLAMA_MODEL_EMBED      bge-m3            (gleiches Modell wie PAPERLESS_AI_LLM_EMBEDDING_MODEL)
-  OLLAMA_MODEL_VISION     mistral-small3.1  (oder qwen2.5vl:32b)
+  OLLAMA_MODEL_VISION     qwen2.5vl:7b      (schneller Erstpass, alle Dokumente)
+  OLLAMA_MODEL_VISION_HQ  qwen2.5vl:32b     (Brillenpass + Handschrift/Schulbericht — praezisere Zahlen/HTR)
   MANIFEST_PATH           /opt/paperless-scripts/training/manifest.json
   CORRECTIONS_PATH        /opt/paperless-scripts/training/corrections.jsonl
   LOG_PATH                /opt/paperless-scripts/logs/post_consume_v12.log
@@ -25,7 +26,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.78"  # 12.78: OLLAMA_MODEL_EMBED konfigurierbar (Default bge-m3)
+POST_CONSUME_VERSION = "12.79"  # 12.79: qwen3.8:27b Default (think:false) + OLLAMA_MODEL_VISION_HQ fuer Brillenpass/Handschrift
 import re
 import sys
 import json
@@ -1112,6 +1113,11 @@ STORAGE_MODE      = os.environ.get("PAPERLESS_STORAGE_MODE", "api").lower()
 # Samples: ausgebaut (v12.8) — kein Trainings-Loop vorhanden, Timing-Bug bei Paperless-Verschiebung
 
 MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
+# Automatischer Upgrade-Pfad für Brillenpass (Zahlentabellen) + Handschrift (HTR/Schulbericht) —
+# schnelles MODEL_VISION reicht für den generischen Erstpass, halluziniert aber bei dichten
+# Zahlen/Handschrift (siehe docs/BRILLENPASS_HANDOFF.md). Nur diese beiden Pfade nutzen das HQ-Modell,
+# der generische vision_analyze()-Erstpass bleibt auf MODEL_VISION für Durchsatz.
+MODEL_VISION_HQ = os.environ.get("OLLAMA_MODEL_VISION_HQ", "qwen2.5vl:32b")
 MODEL_EMBED  = os.environ.get("OLLAMA_MODEL_EMBED", "bge-m3")
 MODEL_LLM    = os.environ.get("OLLAMA_MODEL_LLM", "qwen3.8:27b")
 
@@ -1958,7 +1964,7 @@ def vision_schulbericht_page(
         resp = ollama_post(
             "api/chat",
             {
-                "model": MODEL_VISION,
+                "model": MODEL_VISION_HQ,
                 "messages": [{
                     "role": "user",
                     "content": user_content,
@@ -1988,7 +1994,7 @@ def vision_htr_page(image_b64: str, page: int, page_total: int, variant_id: str 
         resp = ollama_post(
             "api/chat",
             {
-                "model": MODEL_VISION,
+                "model": MODEL_VISION_HQ,
                 "messages": [{
                     "role": "user",
                     "content": user_content,
@@ -2088,7 +2094,7 @@ def vision_brillenpass_analyze(
         resp = ollama_post(
             "api/chat",
             {
-                "model": MODEL_VISION,
+                "model": MODEL_VISION_HQ,
                 "messages": messages,
                 "system": VISION_SYSTEM,
                 "stream": False,
@@ -2236,7 +2242,7 @@ def run_brillenpass_extraction_stages(
     if vision_used:
         log.info(
             "Brillenpass Stufe 2: Vision-Fallback (%s, Anker=%s) Dok #%s",
-            MODEL_VISION, header_anchors, document_id,
+            MODEL_VISION_HQ, header_anchors, document_id,
         )
         vision_bp = vision_brillenpass_analyze(image_b64, ocr_text, parser_data)
     elif not BRILLENPASS_VISION_FALLBACK:

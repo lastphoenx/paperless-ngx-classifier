@@ -13,7 +13,11 @@ Für Wiederherstellung nach Ausfall → siehe `paperless-restore-checkliste.md`.
 | Debian/Ubuntu | 12/24.04 | Andere Distros möglich, nicht getestet |
 
 ### Empfohlene Hardware für Ollama
-- **Vision-Modell** `qwen2.5vl:7b`: min. 16 GB VRAM/RAM
+- **Vision-Modell** `qwen2.5vl:7b`: min. 16 GB VRAM/RAM (Erstpass, alle Dokumente)
+- **Vision-Modell HQ** `qwen2.5vl:32b`: min. ~24 GB VRAM/RAM (4-bit-Quant) — wird automatisch
+  nur bei Brillenpass-Stufe-2 und der Handschrift/HTR-Pipeline (`OLLAMA_MODEL_VISION_HQ`)
+  verwendet, nicht für jeden Durchlauf. **Muss gepullt sein**, sonst schlägt genau dieser Schritt
+  fehl (leeres Ergebnis + Warning im Log, kein Absturz, aber keine Brillenpass-/HTR-Daten)
 - **LLM** `qwen3.8:27b`: min. ~18-24 GB VRAM/RAM (4-bit-Quant), CPU/Unified-Memory möglich, langsamer
   - Hybrid-Thinking-Modell — die Pipeline sendet `"think": false` an Ollama, damit die
     Reasoning-Tokens nicht das JSON-Antwortbudget (`num_predict`) auffressen
@@ -28,6 +32,7 @@ Auf dem Ollama-Server:
 
 ```bash
 ollama pull qwen2.5vl:7b
+ollama pull qwen2.5vl:32b
 ollama pull qwen3.8:27b
 ollama pull bge-m3
 
@@ -144,6 +149,7 @@ PAPERLESS_API_URL=http://localhost:8000/api
 # Ollama
 OLLAMA_BASE_URL=http://192.168.x.x:11434
 OLLAMA_MODEL_VISION=qwen2.5vl:7b
+OLLAMA_MODEL_VISION_HQ=qwen2.5vl:32b
 OLLAMA_MODEL_LLM=qwen3.8:27b
 OLLAMA_MODEL_EMBED=bge-m3
 OLLAMA_MODEL=qwen3.8:27b

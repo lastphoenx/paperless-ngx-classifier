@@ -203,7 +203,8 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 
 | Modell | Zweck | Min. VRAM/RAM |
 |---|---|---|
-| `qwen2.5vl:7b` | Vision — Dokument-Bild analysieren | 16 GB |
+| `qwen2.5vl:7b` | Vision — Dokument-Bild analysieren (Erstpass, alle Dokumente) | 16 GB |
+| `qwen2.5vl:32b` | Vision HQ — Auto-Upgrade für Brillenpass + Handschrift/HTR (`OLLAMA_MODEL_VISION_HQ`) | ~24 GB (4-bit) |
 | `qwen3.8:27b` | LLM — Klassifizierung, Routing | ~18 GB (4-bit), gut für Unified Memory |
 | `bge-m3` | Embeddings — RAG + Paperless-Suche (`OLLAMA_MODEL_EMBED`) | — |
 

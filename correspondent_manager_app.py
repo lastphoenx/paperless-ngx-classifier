@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.65"  # 2.65: /api/manifest root_colors für Speicherpfad-Badges
+__version__ = "2.66"  # 2.66: Regex-Assistent Default qwen3.8:27b + think:false
 UI_VERSION = "3.18"
 
 import requests

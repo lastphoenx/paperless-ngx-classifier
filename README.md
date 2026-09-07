@@ -189,7 +189,8 @@ A single-page browser UI (no framework, no build step) for:
 
 | Model | Purpose | Min. RAM |
 |---|---|---|
-| `qwen2.5vl:7b` | Vision — image analysis | 16 GB |
+| `qwen2.5vl:7b` | Vision — image analysis (first pass, all documents) | 16 GB |
+| `qwen2.5vl:32b` | Vision HQ — auto-upgrade for Brillenpass + handwriting/HTR (`OLLAMA_MODEL_VISION_HQ`) | ~24 GB (4-bit) |
 | `qwen3.8:27b` | LLM — classification | ~18 GB (4-bit), unified-memory friendly |
 | `bge-m3` | Embeddings (optional, improves RAG) | — |
 
