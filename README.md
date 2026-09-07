@@ -190,7 +190,7 @@ A single-page browser UI (no framework, no build step) for:
 | Model | Purpose | Min. RAM |
 |---|---|---|
 | `qwen2.5vl:7b` | Vision — image analysis | 16 GB |
-| `llama3.3:70b` | LLM — classification | 64 GB (CPU possible) |
+| `qwen3.8:27b` | LLM — classification | ~18 GB (4-bit), unified-memory friendly |
 | `bge-m3` | Embeddings (optional, improves RAG) | — |
 
 > Tested on GMKtec EVO with AMD Ryzen AI Max+ 395, 128 GB RAM. Slower hardware works too — processing time increases but quality is the same. With learning, fewer LLM calls are needed over time.
@@ -252,7 +252,7 @@ nano /opt/paperless/.env
 | `CF_GESCANNT_AM_ID` | — | Paperless custom field ID for "scanned on" date |
 | `CF_VERARBEITUNG_ID` | — | Select "Processing" — pipeline sets `auto STP` |
 | `CF_PERSON_ID` | — | Select "Person" — values = `anzeigename` from `family.json` |
-| `OLLAMA_REGEX_MODEL` | `llama3.3:70b` | Separate Ollama model for the Regex-Assistent in paper.manager (falls back to `OLLAMA_MODEL`) |
+| `OLLAMA_REGEX_MODEL` | `qwen3.8:27b` | Separate Ollama model for the Regex-Assistent in paper.manager (falls back to `OLLAMA_MODEL`) |
 
 See `.env.example` for all variables with descriptions. Versioning rules: `docs/VERSIONING.md`.
 

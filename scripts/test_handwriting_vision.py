@@ -85,7 +85,7 @@ _load_env_files()
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
-MODEL_LLM = os.environ.get("OLLAMA_MODEL_LLM", "llama3.3:70b")
+MODEL_LLM = os.environ.get("OLLAMA_MODEL_LLM", "qwen3.8:27b")
 MODEL_EXTRACT = os.environ.get("SCHULBERICHT_EXTRACT_MODEL", MODEL_LLM)
 VISION_TIMEOUT = int(os.environ.get("VISION_TIMEOUT", "120"))
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "300"))
@@ -452,6 +452,7 @@ def ollama_text_chat(
         "system": system,
         "stream": False,
         "format": "json",
+        "think": False,
         "options": {"temperature": temperature, "num_predict": num_predict},
     }
     url = f"{OLLAMA_BASE.rstrip('/')}/api/chat"

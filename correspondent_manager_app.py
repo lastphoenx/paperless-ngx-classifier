@@ -3499,7 +3499,7 @@ def api_config(request: Request):
         "ollama_models": {
             "vision": os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b"),
             "llm": os.environ.get("OLLAMA_MODEL_LLM")
-                 or os.environ.get("OLLAMA_MODEL", "llama3.3:70b"),
+                 or os.environ.get("OLLAMA_MODEL", "qwen3.8:27b"),
             "embed": os.environ.get("OLLAMA_MODEL_EMBED", "bge-m3"),
         },
     }
@@ -4425,7 +4425,7 @@ def api_patch_family(body: dict = Body(...)):
 def api_regex_assistent(body: dict = Body(...)):
     """
     Regex-Assistent: aus Beispiel-String einen Regex ableiten via Ollama.
-    Verwendet OLLAMA_REGEX_MODEL (default llama3.3:70b) — NICHT das Vision-Modell.
+    Verwendet OLLAMA_REGEX_MODEL (default qwen3.8:27b) — NICHT das Vision-Modell.
     body: {beispiel: "LV_889.117", feldname: "Policennummer", kontext: "Zürich Versicherung",
            weitere_beispiele: ["LV_123.456"]}
     """
@@ -4440,7 +4440,7 @@ def api_regex_assistent(body: dict = Body(...)):
     # Dediziertes Modell für Regex — unabhängig vom Vision-Modell
     ollama_url   = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     ollama_model = os.environ.get("OLLAMA_REGEX_MODEL",
-                   os.environ.get("OLLAMA_MODEL", "llama3.3:70b"))
+                   os.environ.get("OLLAMA_MODEL", "qwen3.8:27b"))
 
     alle_beispiele = [beispiel] + [w for w in weitere if w]
     beispiele_str  = "\n".join(f"  - {b}" for b in alle_beispiele)
@@ -4469,6 +4469,7 @@ def api_regex_assistent(body: dict = Body(...)):
             "prompt": prompt,
             "stream": False,
             "format": "json",
+            "think": False,
             "options": {"temperature": 0.05, "num_predict": 256}
         }).encode()
         req = _ur.Request(

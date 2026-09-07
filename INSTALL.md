@@ -14,8 +14,11 @@ Für Wiederherstellung nach Ausfall → siehe `paperless-restore-checkliste.md`.
 
 ### Empfohlene Hardware für Ollama
 - **Vision-Modell** `qwen2.5vl:7b`: min. 16 GB VRAM/RAM
-- **LLM** `llama3.3:70b`: min. 64 GB RAM (CPU-Inference möglich, langsamer)
-- Getestet: GMKtec EVO mit AMD Ryzen AI Max+ 395, 128 GB RAM
+- **LLM** `qwen3.8:27b`: min. ~18-24 GB VRAM/RAM (4-bit-Quant), CPU/Unified-Memory möglich, langsamer
+  - Hybrid-Thinking-Modell — die Pipeline sendet `"think": false` an Ollama, damit die
+    Reasoning-Tokens nicht das JSON-Antwortbudget (`num_predict`) auffressen
+  - Alternative bei Problemen: `llama3.3:70b` (min. 64 GB RAM, kein Thinking-Modus)
+- Getestet: GMKtec EVO-X2 mit AMD Ryzen AI Max+ 395, 128 GB RAM
 
 ---
 
@@ -25,7 +28,7 @@ Auf dem Ollama-Server:
 
 ```bash
 ollama pull qwen2.5vl:7b
-ollama pull llama3.3:70b
+ollama pull qwen3.8:27b
 ollama pull bge-m3
 
 # Testen:
@@ -141,9 +144,9 @@ PAPERLESS_API_URL=http://localhost:8000/api
 # Ollama
 OLLAMA_BASE_URL=http://192.168.x.x:11434
 OLLAMA_MODEL_VISION=qwen2.5vl:7b
-OLLAMA_MODEL_LLM=llama3.3:70b
+OLLAMA_MODEL_LLM=qwen3.8:27b
 OLLAMA_MODEL_EMBED=bge-m3
-OLLAMA_MODEL=llama3.3:70b
+OLLAMA_MODEL=qwen3.8:27b
 
 # Berechtigungen (IDs aus Paperless Admin → Gruppen)
 # PAPERLESS_OWNER_ID=1  # deprecated — nicht mehr verwenden (s. Hinweis unten)

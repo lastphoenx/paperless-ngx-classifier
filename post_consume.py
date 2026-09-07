@@ -5,7 +5,7 @@ Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
   3. Embeddings       → OCR-Text → Top-K ähnlichste Manifest-Einträge (OLLAMA_MODEL_EMBED)
-  4. llama3.3:70b     → Entscheidung: Tags + Korrespondent + Storage Path
+  4. qwen3.8:27b      → Entscheidung: Tags + Korrespondent + Storage Path
   5. Paperless API    → Metadaten setzen
 
 Umgebungsvariablen (.env):
@@ -1113,7 +1113,7 @@ STORAGE_MODE      = os.environ.get("PAPERLESS_STORAGE_MODE", "api").lower()
 
 MODEL_VISION = os.environ.get("OLLAMA_MODEL_VISION", "qwen2.5vl:7b")
 MODEL_EMBED  = os.environ.get("OLLAMA_MODEL_EMBED", "bge-m3")
-MODEL_LLM    = os.environ.get("OLLAMA_MODEL_LLM", "llama3.3:70b")
+MODEL_LLM    = os.environ.get("OLLAMA_MODEL_LLM", "qwen3.8:27b")
 
 BRILLENPASS_VISION_FALLBACK = os.environ.get("BRILLENPASS_VISION_FALLBACK", "0").strip().lower() in (
     "1", "true", "yes",
@@ -2029,6 +2029,7 @@ def extract_schulbericht_from_transcript(transcript: str) -> dict:
                 "system": EXTRACT_SYSTEM,
                 "stream": False,
                 "format": "json",
+                "think": False,
                 "options": {"temperature": 0.0, "num_predict": 1024},
             },
             timeout=LLM_TIMEOUT,
@@ -2984,6 +2985,7 @@ def llm_decide(prompt: str) -> dict:
                 "system": LLM_SYSTEM,
                 "stream": False,
                 "format": "json",
+                "think": False,
                 "options": {"temperature": 0.05, "num_predict": 256},
             },
             timeout=LLM_TIMEOUT,
@@ -3844,6 +3846,7 @@ def _resolve_doctype_via_ollama(name: str) -> Optional[str]:
         r = _http.post(
             f"{OLLAMA_BASE}/api/generate",
             json={"model": MODEL_LLM, "prompt": prompt, "stream": False,
+                  "think": False,
                   "options": {"temperature": 0, "num_predict": 30}},
             timeout=15
         )
@@ -4869,7 +4872,7 @@ def main():
         else:
             _stufe_label = "1 — deterministisch"
     else:
-        _stufe_label = f"3 — LLM ({os.environ.get('OLLAMA_MODEL', 'llama3.3:70b')})"
+        _stufe_label = f"3 — LLM ({os.environ.get('OLLAMA_MODEL', 'qwen3.8:27b')})"
 
     # ── PATCH ausführen (Paperless verschiebt Datei danach) ───────────────────
     if patch:
@@ -4889,7 +4892,7 @@ def main():
             vision_meta       = vision_meta,
             pre_decision_used = pre_decision is not None,
             stufe_label       = _stufe_label,
-            llm_model         = os.environ.get("OLLAMA_MODEL", "llama3.3:70b"),
+            llm_model         = os.environ.get("OLLAMA_MODEL", "qwen3.8:27b"),
         )
     except Exception as e:
         log.warning("Pipeline-Notiz fehlgeschlagen (unkritisch): %s", e)
@@ -5401,12 +5404,12 @@ def process_escalation_queue() -> None:
         return
 
     log.info("=" * 70)
-    log.info("ESKALATION: %d Dokumente mit %s nachbearbeiten", len(entries), os.environ.get("OLLAMA_MODEL_ESCALATION", "llama3.3:70b"))
+    log.info("ESKALATION: %d Dokumente mit %s nachbearbeiten", len(entries), os.environ.get("OLLAMA_MODEL_ESCALATION", "qwen3.8:27b"))
 
     manifest = load_manifest()
-    # Standard: llama3.3:70b statt qwen3:32b — qwen3 Thinking-Modus stoert JSON-Extraktion
-    # Ueberschreibbar via: OLLAMA_MODEL_ESCALATION=qwen3:32b
-    escalation_model = os.environ.get("OLLAMA_MODEL_ESCALATION", "llama3.3:70b")
+    # qwen3.8 ist ein Hybrid-Thinking-Modell — der api/chat-Call unten setzt "think": false,
+    # sonst frisst das Reasoning das kleine num_predict-Budget vor der JSON-Antwort auf.
+    escalation_model = os.environ.get("OLLAMA_MODEL_ESCALATION", "qwen3.8:27b")
 
     for entry in entries:
         doc_id  = entry["document_id"]
@@ -5452,6 +5455,7 @@ Antworte NUR mit JSON:
                     "system": "Antworte ausschliesslich mit einem validen JSON-Objekt. Kein Markdown.",
                     "stream": False,
                     "format": "json",
+                    "think": False,
                     "options": {"temperature": 0.1, "num_predict": 256},
                 },
                 timeout=LLM_TIMEOUT,

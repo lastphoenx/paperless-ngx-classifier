@@ -204,7 +204,7 @@ Eine Single-Page-Browser-UI (kein Framework, kein Build-Schritt) für:
 | Modell | Zweck | Min. VRAM/RAM |
 |---|---|---|
 | `qwen2.5vl:7b` | Vision — Dokument-Bild analysieren | 16 GB |
-| `llama3.3:70b` | LLM — Klassifizierung, Routing | 64 GB RAM (CPU-Inferenz möglich) |
+| `qwen3.8:27b` | LLM — Klassifizierung, Routing | ~18 GB (4-bit), gut für Unified Memory |
 | `bge-m3` | Embeddings — RAG + Paperless-Suche (`OLLAMA_MODEL_EMBED`) | — |
 
 > Getestet auf GMKtec EVO mit AMD Ryzen AI Max+ 395, 128 GB RAM. Langsamere Hardware funktioniert ebenfalls — die Verarbeitungszeit steigt, die Qualität bleibt gleich. Durch das Lernen werden mit der Zeit weniger LLM-Aufrufe benötigt.
@@ -276,7 +276,7 @@ nano /opt/paperless/.env
 | `PAPERLESS_CONSUME_DIR` | `/mnt/paperless-data/consume` | Ziel für Legacy QR-Split |
 | `LEGACY_SPLIT_QR_REGEX` | `'^[0-9]{6}_[^\s]+$'` in `.env` **mit Quotes** |
 | `LEGACY_SPLIT_TMP` | `/tmp/legacy-qr-split` — lokales PDF vor Scan |
-| `OLLAMA_REGEX_MODEL` | `llama3.3:70b` | Separates Ollama-Modell für den Regex-Assistenten in paper.manager (Fallback auf `OLLAMA_MODEL`) |
+| `OLLAMA_REGEX_MODEL` | `qwen3.8:27b` | Separates Ollama-Modell für den Regex-Assistenten in paper.manager (Fallback auf `OLLAMA_MODEL`) |
 
 Alle Variablen mit Beschreibungen siehe `.env.example`. Versionsregeln: `docs/VERSIONING.md`.
 
