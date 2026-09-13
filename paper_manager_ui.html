@@ -74,6 +74,7 @@
   .ver-badge-ui   { background: rgba(147,197,253,.28); color: #93c5fd; border: 1px solid rgba(147,197,253,.45); }
   .ver-badge-be   { background: rgba(167,243,208,.25); color: #6ee7b7; border: 1px solid rgba(167,243,208,.4); }
   .ver-badge-pipe { background: rgba(253,230,138,.25); color: #fcd34d; border: 1px solid rgba(253,230,138,.4); }
+  .ver-badge-pre  { background: rgba(148,163,184,.2); color: #94a3b8; border: 1px solid rgba(148,163,184,.35); }
   #version-text {
     display: flex; flex-wrap: wrap; gap: 4px; line-height: 1.5;
   }
@@ -444,6 +445,16 @@
           <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 10px;text-align:center">
             <div style="color:var(--muted);font-size:10px;margin-bottom:8px;letter-spacing:.5px">PIPELINE</div>
             <span class="ver-badge ver-badge-pipe">v<span id="home-pipe-version">—</span></span>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px;font-size:12px">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:6px;letter-spacing:.5px">PRE OCR (Container)</div>
+            <span class="ver-badge ver-badge-pre">v<span id="home-pre-sh-version">—</span></span>
+          </div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;text-align:center">
+            <div style="color:var(--muted);font-size:10px;margin-bottom:6px;letter-spacing:.5px">PRE QR (Container)</div>
+            <span class="ver-badge ver-badge-pre">v<span id="home-pre-qr-version">—</span></span>
           </div>
         </div>
         <div id="home-model-badges" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
@@ -1583,6 +1594,10 @@ function applyVersionDisplay(v, ollama) {
   if (beEl) beEl.textContent = beVer;
   const pipeEl = document.getElementById('home-pipe-version');
   if (pipeEl) pipeEl.textContent = pipeVer;
+  const preShEl = document.getElementById('home-pre-sh-version');
+  if (preShEl) preShEl.textContent = v?.pre_consume_sh || '—';
+  const preQrEl = document.getElementById('home-pre-qr-version');
+  if (preQrEl) preQrEl.textContent = v?.pre_consume_qr || '—';
   if (ollama) {
     const m = ollama;
     const set = (id, val) => { const n = document.getElementById(id); if (n && val) n.textContent = val; };

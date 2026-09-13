@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.67"  # 2.67: Regex-Assistent nutzt LLM_NUM_PREDICT (Default 1024)
-UI_VERSION = "3.18"
+__version__ = "2.68"  # 2.68: _rv() liest pre_consume # VERSION: und __version__
+UI_VERSION = "3.19"
 
 import requests
 from iban_utils import validate_iban
@@ -3473,13 +3473,21 @@ def _set_pending_mode(mode: str) -> None:
 def api_config(request: Request):
     """Konfiguration + Versionen für Frontend — einziger Init-Call."""
     def _rv(path: str, marker: str) -> str:
+        """Versionsstring aus Skript-Zeile — POST_CONSUME_VERSION=, # VERSION:, __version__=."""
         try:
-            for line in open(path):
-                if line.strip().startswith(marker):
-                    val = line.split("=")[1].strip().strip('"\'')
-                    # Inline-Kommentar abschneiden: '12.3  # Beschreibung' → '12.3'
-                    val = val.split("#")[0].strip().strip('"\'')
-                    return val
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if marker == "POST_CONSUME_VERSION" and s.startswith("POST_CONSUME_VERSION"):
+                        val = s.split("=", 1)[1].strip().strip('"\'')
+                        return val.split("#")[0].strip().strip('"\'')
+                    if marker == "# VERSION" and s.startswith("# VERSION"):
+                        # pre_consume.sh: `# VERSION: 1.6 — Kommentar`
+                        rest = s.split(":", 1)[1].strip()
+                        return rest.split("#")[0].split()[0].strip()
+                    if marker == "__version__" and s.startswith("__version__"):
+                        val = s.split("=", 1)[1].strip().strip('"\'')
+                        return val.split("#")[0].strip().strip('"\'')
         except Exception:
             pass
         return "?"

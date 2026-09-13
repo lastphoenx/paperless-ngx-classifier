@@ -2,13 +2,29 @@
 
 **Paperless-NGX** (Docker-Image) ist unabhängig: Ziel **3.1.2** — siehe [UPGRADE_V3.md](./UPGRADE_V3.md) und `./scripts/paperless-version-check.sh`.
 
-Drei Classifier-Versionsnummern — in der Sidebar und auf dem Home-Tab sichtbar (`/api/config` → `versions`).
+Classifier-Versionsnummern — Sidebar (UI · be · pipe), Home-Tab inkl. **pre OCR / pre QR** (`/api/config` → `versions`).
 
 | Komponente | Konstante | Datei(en) |
 |---|---|---|
 | **UI** | `UI_VERSION` | `paper_manager_ui.html` **und** `correspondent_manager_app.py` (immer synchron!) |
 | **Backend** | `__version__` | `correspondent_manager_app.py` |
-| **Pipeline** | `POST_CONSUME_VERSION` | `post_consume.py` (auch Dateikopf-Kommentar anpassen) |
+| **Pipeline (post)** | `POST_CONSUME_VERSION` | `post_consume.py` (auch Dateikopf-Kommentar anpassen) |
+| **Pre OCR** | `# VERSION:` | `pre_consume.sh` (Zeile 3, Format `# VERSION: 1.6 — Kurzkommentar`) |
+| **Pre QR** | `__version__` | `pre_consume_qr.py` |
+
+## Für Agents (Cursor / CI)
+
+**Bei jeder Code-Änderung** an einer der Dateien oben: **Versionsnummer derselben Komponente im selben Commit hochzählen** — nicht vergessen, nicht «nur kurz fixen».
+
+| Datei geändert | Pflicht |
+|---|---|
+| `post_consume.py` | `POST_CONSUME_VERSION` + Docstring `post_consume_v12.x` |
+| `pre_consume.sh` | `# VERSION: x.y` in Zeile 3 |
+| `pre_consume_qr.py` | `__version__ = "x.y"` |
+| `correspondent_manager_app.py` | `__version__` (und `UI_VERSION` nur wenn UI mitgeändert) |
+| `paper_manager_ui.html` | `UI_VERSION` + synchron in `correspondent_manager_app.py` |
+
+Nach Deploy prüfen: `/api/config` → `versions.pre_consume_sh` / `pre_consume_qr` (nicht `?`).
 
 ## Wann hochzählen?
 
@@ -16,14 +32,15 @@ Drei Classifier-Versionsnummern — in der Sidebar und auf dem Home-Tab sichtbar
 
 | Komponente | Hochzählen bei | Beispiel |
 |---|---|---|
-| UI | Layout, Formulare, Tabs, clientseitige Logik, neue Felder in der Review-UI | `2.22` → `2.23` |
-| BE | API-Endpunkte, Review-Aktionen, Queues, serverseitige Fixes in `correspondent_manager_app.py` | `2.10` → `2.11` |
-| Pipe | Klassifizierung, Custom Fields, Routing, Tags, Pending-Logik in `post_consume.py` / `pre_consume*` | `12.19` → `12.20` |
+| UI | Layout, Formulare, Tabs, clientseitige Logik, neue Felder in der Review-UI | `3.18` → `3.19` |
+| BE | API-Endpunkte, Review-Aktionen, Queues, serverseitige Fixes in `correspondent_manager_app.py` | `2.67` → `2.68` |
+| Pipe (post) | Klassifizierung, Custom Fields, Routing, Tags, Pending-Logik in `post_consume.py` | `12.80` → `12.81` |
+| Pre OCR | OCR/QR-Lock, ocrmypdf, Container-Pfade in `pre_consume.sh` | `1.6` → `1.7` |
+| Pre QR | Swiss-QR-Parsing, pyzbar, Sidecar in `pre_consume_qr.py` | `1.0` → `1.1` |
 
 - **Nur Bugfix** in einer Komponente → nur diese Komponente +1 (Patch-Stelle).
 - **Feature über mehrere Schichten** → jede betroffene Komponente +1.
 - **Reine Doku** → keine Versionsänderung.
-- **`pre_consume.sh` / `pre_consume_qr.py`** → nur bei Änderungen dort (eigene `# VERSION` / `__version__`).
 
 ## Pflichten beim Bump
 
@@ -38,16 +55,20 @@ Drei Classifier-Versionsnummern — in der Sidebar und auf dem Home-Tab sichtbar
 ```bash
 cd /opt/paperless-ngx-classifier && git pull && ./scripts/deploy-to-ct121.sh
 grep -m1 POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
+grep -m1 '^# VERSION' /opt/paperless-scripts/pre_consume.sh
+grep -m1 __version__ /opt/paperless-scripts/pre_consume_qr.py
 ```
 
-`deploy-to-ct121.sh` kopiert **immer** `post_consume.py` (nicht nur UI/BE). Ohne das läuft auf dem Server weiter die alte Pipeline. Anschliessend wird `docker compose up -d --force-recreate webserver` ausgeführt (lädt `/opt/paperless/.env` neu — `restart` reicht nicht für neue `CF_*_ID`). Mit `--no-docker` überspringen.
+`deploy-to-ct121.sh` kopiert **immer** `post_consume.py`, `pre_consume.sh`, `pre_consume_qr.py`. Anschliessend `docker compose up -d --force-recreate webserver` (lädt `.env` neu). **Danach** `ensure-legacy-qr-deps.sh` (Container-Recreate löscht apt-Pakete wie libzbar).
 
-Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Refresh (`Ctrl+Shift+R`).
+Sidebar: `UI v… | be v… | pipe v…` — Home-Tab: zusätzlich **pre OCR / pre QR**. Hard-Refresh (`Ctrl+Shift+R`).
 
 ## Aktuell (Stand September 2026)
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.18 | Speicherpfad-Badges nach Hauptordner, Phase-0-Inventar |
-| BE | 2.67 | Regex-Assistent nutzt `LLM_NUM_PREDICT` (Default 1024) |
-| Pipe | 12.80 | `LLM_NUM_PREDICT` konfigurierbar (Default 1024, war hardcoded 256) |
+| UI | 3.19 | Home-Tab: pre OCR / pre QR Versionen |
+| BE | 2.68 | `_rv()` für pre_consume `# VERSION:` + `__version__` |
+| Pipe | 12.80 | `LLM_NUM_PREDICT` konfigurierbar (Default 1024) |
+| Pre OCR | 1.6 | ocrmypdf + QR-Lock (unverändert) |
+| Pre QR | 1.0 | Versionskennzeichnung init |

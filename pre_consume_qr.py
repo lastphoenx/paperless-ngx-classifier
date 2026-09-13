@@ -20,6 +20,8 @@ SIX Swiss QR Bill Standard:
 https://www.six-group.com/de/products-services/banking-services/payment-standardization/standards/qr-bill.html
 """
 
+__version__ = "1.0"  # 1.0: initiale Versionskennzeichnung (Swiss QR Sidecar)
+
 import sys
 import os
 import json
