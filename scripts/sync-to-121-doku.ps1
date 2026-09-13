@@ -77,6 +77,7 @@ Write-Host ""
 Write-Host "Skripte:" -ForegroundColor Yellow
 @(
     "correspondent_manager_app.py",
+    "url_links.py",
     "paper_manager_ui.html",
     "post_consume.py",
     "post_consume_runner.py",
@@ -91,6 +92,17 @@ Write-Host "Skripte:" -ForegroundColor Yellow
     Sync-File (Join-Path $SrcRoot $_) (Join-Path $DstScripts $_)
 }
 Sync-File (Join-Path $SrcRoot "scripts\deploy-to-ct121.sh") (Join-Path $DstScripts "deploy-to-ct121.sh")
+Sync-File (Join-Path $SrcRoot "static\README.md") (Join-Path $DstScripts "static-README.md")
+
+Write-Host ""
+Write-Host "User/Permissions-Skripte:" -ForegroundColor Yellow
+@(
+    "paperless-users-inventory.sh",
+    "paperless-copy-user-groups.sh",
+    "paperless-permissions-inventory.sh"
+) | ForEach-Object {
+    Sync-File (Join-Path $SrcRoot "scripts\$_") (Join-Path $DstScripts $_)
+}
 
 Write-Host ""
 Write-Host "Legacy-Skripte:" -ForegroundColor Yellow
@@ -135,7 +147,8 @@ Write-Host "Doku:" -ForegroundColor Yellow
     @{ Src = "docs\VERSIONING.md"; Dst = "VERSIONING.md" },
     @{ Src = "docs\LEGACY_MIGRATION_PLAN.md"; Dst = "LEGACY_MIGRATION_PLAN.md" },
     @{ Src = "docs\LEGACY_IMPORT.md";         Dst = "LEGACY_IMPORT.md" },
-    @{ Src = "docs\UPGRADE_V3.md";            Dst = "UPGRADE_V3.md" }
+    @{ Src = "docs\UPGRADE_V3.md";            Dst = "UPGRADE_V3.md" },
+    @{ Src = "docs\PAPERLESS_CUSTOMIZATION.md"; Dst = "PAPERLESS_CUSTOMIZATION.md" }
 ) | ForEach-Object {
     Sync-File (Join-Path $SrcRoot $_.Src) (Join-Path $DstDocs $_.Dst)
 }
