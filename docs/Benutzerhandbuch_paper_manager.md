@@ -1,6 +1,6 @@
 # paper.manager — Benutzerhandbuch
 
-**Version 3.15 | Juli 2026** (Pipeline `12.75`, Backend `2.62`)
+**Version 3.21 | September 2026** (Pipeline `12.81`, Backend `2.69`, UI `3.21`)
 
 > Entwickler-Details: [`DEVELOPER.md`](DEVELOPER.md) · Legacy-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
 
@@ -12,7 +12,16 @@ paper.manager ist die Review- und Verwaltungsoberfläche für die automatische D
 
 > 💡 **Tipp:** Bezahlte Rechnungen mit `bez. 6.2.26` oben rechts markieren — das System setzt automatisch `Status=Bezahlt` und `Bezahlt am=06.02.2026`.
 
-Klick auf **«paper.manager»** in der **Sidebar** (Logo links) öffnet die Landing Page — nicht im Paperless-Dashboard eingebettet.
+### Start-Tab (Home)
+
+Menü **⌂ Start** oder Klick auf **«paper.manager»** (Logo) → Landing Page mit:
+
+- **Aktive Versionen** (UI, Backend, Pipeline, pre OCR, pre QR, Ollama-Modelle)
+- **Benutzerhandbuch** (dieses Dokument, direkt in der UI)
+- Download **Bedienungsanleitung.docx** (Word, zum Ausdrucken)
+- Kurzüberblick Pipeline, Custom Fields, Vorher/Nachher
+
+Standard nach dem Öffnen ohne Hash: **Korrespondenten Review** (`#pending`).
 
 ### Zugangswege
 
@@ -33,17 +42,17 @@ Klick auf **«paper.manager»** in der **Sidebar** (Logo links) öffnet die Land
 
 ### Versionsanzeige
 
-Direkt unter dem Logo zeigt die Sidebar die aktuellen Versionen:
-```
-UI v3.15 | be v2.62 | pipe v12.75
-```
-Stimmt die Version nicht → Ctrl+Shift+R oder Service-Restart. Regeln zum Hochzählen: `docs/VERSIONING.md`.
+**Sidebar** (kompakt): `UI v… | be v… | pipe v…`
+
+**Start-Tab** (vollständig): zusätzlich **pre OCR**, **pre QR**, Vision/LLM/Embeddings-Modelle.
+
+Stimmt die Version nicht → Ctrl+Shift+R oder `systemctl restart correspondent-manager`. Regeln: `docs/VERSIONING.md`.
 
 ### Navigation
 
 | Menüpunkt | Hash | Funktion |
 |---|---|---|
-| Logo-Klick | `#home` | Landing Page — Systemübersicht |
+| ⌂ Start | `#home` | Landing Page — Versionen, Handbuch, Systemübersicht |
 | ! Korrespondenten Review | `#pending` | Neue Absender freigeben |
 | # Korrespondenten | `#correspondents` | Absender verwalten |
 | D Dokument-Review | `#docreview` | Unsichere Dokumente prüfen, Vorschau + LLM-Begründung |
@@ -193,9 +202,13 @@ Unter **Erweitert** pro Korrespondent: UID, IBAN, SWIFT/BIC, E-Mail, Telefon. Di
 
 **IBAN:** Beim Speichern prüft das Backend Modulo-97 und Länderlänge. Ungültige IBANs werden abgelehnt. In der Pipeline werden nur echte IBANs aus dem Text extrahiert (keine OCR-Falschtreffer wie «CHRISTO…» oder «CHE…» ohne Prüfziffer).
 
-**Telefon:** Extraktion über `phonenumbers` (CH/DE/AT/…), inkl. Formate wie `+41 (0) 61 …` und nationale `061 …`.
+**Telefon:** Extraktion über `phonenumbers` (CH/DE/AT/…), inkl. Formate wie `+41 (0) 61 …` und nationale `061 …`. UID-Ziffernfolgen werden nicht als Telefon vorgeschlagen.
 
-**SWIFT/BIC:** 8 oder 11 Zeichen, z. B. aus QR-Rechnung oder OCR-Text.
+**UID / MWST:** In der Schweiz ist die **UID-Nummer identisch mit der MWST-Nummer** (`CHE-xxx.xxx.xxx`). «MWST» ist nur ein Zusatzlabel — im Review erscheint dieselbe Nummer höchstens einmal.
+
+**SWIFT/BIC:** 8 oder 11 Zeichen, z. B. aus QR-Rechnung oder explizit gelabelter Zeile (`SWIFT:` / `BIC:`). Fliesstext-Wörter wie «RECHNUNG» oder «MARKETPLACE» werden **nicht** mehr als SWIFT vorgeschlagen.
+
+**Deutsche Steuernummer** (z. B. `110/106/07177`): bewusst **nicht** im Scope — Fokus auf CH-Identifikatoren.
 
 ### Brillenpass am Korrespondenten (Optiker)
 
@@ -253,6 +266,8 @@ Dokumente mit einem der pending-Tags landen automatisch in der Review-Warteschla
 | Confidence | Farbig: grün ≥90 %, gelb 70 %–89 %, rot <70 % |
 | Review-Grund | Warum das Dokument in die Queue kam |
 | LLM-Begründung | Erklärung des LLM zur Einschätzung |
+
+**Belegdatum (Pipeline ab Pipe 12.81):** Vision und LLM haben Vorrang, wenn sie **übereinstimmen**. Verdächtig alte OCR-Treffer (>2 Jahre, oft Rauschen aus UID/Telefon) werden verworfen — nicht mehr blind übernommen.
 
 Unter den KI-Feldern:
 - **Tags als Chips** — alle gesetzten Tags angezeigt
@@ -560,6 +575,8 @@ LEGACY_SPLIT_QR_REGEX='^[0-9]{6}_[^\s]+$'
 ```
 
 Einmalig Abhängigkeiten: `sudo ./scripts/ensure-legacy-qr-deps.sh` (ghostscript, zbar, venv).
+
+> **Deploy:** `deploy-to-ct121.sh` führt dieses Skript **automatisch** aus, wenn der Paperless-Container neu erstellt wird (`--force-recreate`). Manuell nur nötig bei erstem Setup oder wenn QR-Split/pre_consume_qr «libzbar not found» meldet.
 
 CLI-Diagnose: `legacy_qr_split_test.py` — siehe [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md#qr-split-nachträglich).
 

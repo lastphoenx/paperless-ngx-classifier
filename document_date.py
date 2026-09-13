@@ -194,6 +194,47 @@ def birth_dates_from_family(personen: list[dict]) -> set[str]:
     return out
 
 
+def resolve_issue_date(
+    ocr_text: str,
+    vision_datum: str | None,
+    llm_datum: str | None,
+    scan_year: int,
+    exclude_iso_dates: set[str] | None = None,
+) -> tuple[str | None, str, bool]:
+    """
+    Ausstellungsdatum aus OCR-, Vision- und LLM-Kandidaten auflösen.
+
+    Priorität:
+    1. Vision + LLM einig (beide plausibel) → vision+llm
+    2. OCR-Signale (nur wenn nicht «verdächtig alt»)
+    3. Vision allein
+    4. LLM allein
+
+    Verdächtig alte OCR-Treffer (>2 Jahre) werden verworfen — nicht als Fallback.
+    Returns: (iso_or_none, quelle, suspicious)
+    """
+    exclude = exclude_iso_dates or set()
+    ocr_datum, ocr_src = extract_document_issue_date(ocr_text, exclude)
+
+    v_iso, v_susp = validate_issue_date(vision_datum, scan_year, exclude)
+    l_iso, l_susp = validate_issue_date(llm_datum, scan_year, exclude)
+    o_iso, o_susp = validate_issue_date(ocr_datum, scan_year, exclude)
+
+    if v_iso and l_iso and v_iso == l_iso:
+        return v_iso, "vision+llm", False
+
+    if o_iso and not o_susp:
+        return o_iso, ocr_src or "ocr_signal", False
+
+    if v_iso:
+        return v_iso, "vision", v_susp
+
+    if l_iso:
+        return l_iso, "llm", l_susp
+
+    return None, "", False
+
+
 def validate_issue_date(
     candidate: str | None,
     scan_year: int,

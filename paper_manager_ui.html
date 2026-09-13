@@ -48,6 +48,25 @@
   .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
   .card-title { font-weight: 700; font-size: 14px; }
 
+  /* Handbuch (Markdown) */
+  .md-handbook { font-size: 13px; line-height: 1.65; color: var(--text); max-height: 70vh; overflow-y: auto; padding-right: 8px; }
+  .md-handbook h1, .md-handbook h2, .md-handbook h3 { color: var(--heading); margin: 1.2em 0 .5em; scroll-margin-top: 12px; }
+  .md-handbook h1 { font-size: 1.35em; border-bottom: 1px solid var(--border); padding-bottom: .35em; }
+  .md-handbook h2 { font-size: 1.15em; }
+  .md-handbook h3 { font-size: 1.05em; color: var(--label); }
+  .md-handbook p { margin: .55em 0; }
+  .md-handbook ul, .md-handbook ol { margin: .45em 0 .45em 1.25em; }
+  .md-handbook li { margin: .2em 0; }
+  .md-handbook a { color: var(--accent); }
+  .md-handbook code { background: rgba(79,156,249,.12); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+  .md-handbook pre { background: #0a0c12; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: .6em 0; }
+  .md-handbook pre code { background: none; padding: 0; }
+  .md-handbook blockquote { border-left: 3px solid var(--accent); margin: .6em 0; padding: .25em .85em; color: var(--muted); background: rgba(79,156,249,.06); border-radius: 0 6px 6px 0; }
+  .md-handbook table { width: 100%; border-collapse: collapse; margin: .65em 0; font-size: 12px; }
+  .md-handbook th, .md-handbook td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
+  .md-handbook th { background: rgba(79,156,249,.08); color: var(--label); }
+  .md-handbook hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+
   /* Badges */
   .badge { display: inline-block; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
   .badge-neu      { background: rgba(79,156,249,.2); color: var(--accent); }
@@ -367,6 +386,9 @@
       </div>
     </label>
   </div>
+  <div class="nav-item" onclick="showView('home')" id="nav-home">
+    <span>⌂</span> Start
+  </div>
   <div class="nav-item active" onclick="showView('pending')" id="nav-pending">
     <span>!</span> Korrespondenten Review
     <span class="nav-badge" id="pending-count">0</span>
@@ -462,6 +484,27 @@
           <span class="badge" style="background:rgba(79,156,249,.2);color:var(--accent);border:1px solid rgba(79,156,249,.35)">LLM: <span id="home-model-llm">—</span></span>
           <span class="badge" style="background:rgba(79,156,249,.2);color:var(--accent);border:1px solid rgba(79,156,249,.35)">Embeddings: <span id="home-model-embed">—</span></span>
           <span class="badge" style="background:rgba(124,58,237,.2);color:#a78bfa;border:1px solid rgba(124,58,237,.35)">100% lokal</span>
+        </div>
+      </div>
+
+      <!-- Dokumentation -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <span class="card-title">Dokumentation</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn btn-ghost" style="padding:4px 12px;font-size:11px" onclick="toggleHomeHandbook(true)">Handbuch anzeigen</button>
+            <a class="btn btn-ghost" style="padding:4px 12px;font-size:11px;text-decoration:none" href="#" target="_blank" rel="noopener" id="home-docx-link">Word (.docx) ↗</a>
+          </div>
+        </div>
+        <p style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:4px">
+          Benutzerhandbuch für Review, Korrespondenten, Pipeline und Legacy-Import — direkt hier oder als Word-Export.
+        </p>
+        <div id="home-handbook-wrap" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
+            <span id="home-handbook-status" style="font-size:11px;color:var(--muted)">Lade Handbuch…</span>
+            <button type="button" class="btn btn-ghost" style="padding:3px 10px;font-size:11px" onclick="toggleHomeHandbook(false)">Einklappen</button>
+          </div>
+          <div id="home-handbook-content" class="md-handbook"></div>
         </div>
       </div>
 
@@ -1168,8 +1211,114 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.18';
+const UI_VERSION = '3.21';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
+
+let _homeHandbookLoaded = false;
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderHandbookMarkdown(md) {
+  let t = String(md || '');
+  const blocks = [];
+  t = t.replace(/```([\s\S]*?)```/g, (_, code) => {
+    const id = blocks.length;
+    blocks.push('<pre><code>' + escapeHtml(code.trim()) + '</code></pre>');
+    return `\x00BLOCK${id}\x00`;
+  });
+  t = escapeHtml(t);
+  t = t.replace(/^###### (.+)$/gm, '<h6>$1</h6>');
+  t = t.replace(/^##### (.+)$/gm, '<h5>$1</h5>');
+  t = t.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  t = t.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  t = t.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  t = t.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  t = t.replace(/^&gt; (.+)$/gm, '<blockquote><p>$1</p></blockquote>');
+  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  t = t.replace(/^---+$/gm, '<hr>');
+  const lines = t.split('\n');
+  let out = '';
+  let inUl = false, inOl = false, inTable = false, tableRows = [];
+  function flushTable() {
+    if (!tableRows.length) return;
+    let html = '<table>';
+    tableRows.forEach((row, i) => {
+      const tag = i === 0 ? 'th' : 'td';
+      html += '<tr>' + row.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+    });
+    html += '</table>';
+    out += html;
+    tableRows = [];
+    inTable = false;
+  }
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.startsWith('|') && line.endsWith('|')) {
+      if (inUl) { out += '</ul>'; inUl = false; }
+      if (inOl) { out += '</ol>'; inOl = false; }
+      if (/^\|[\s\-:|]+\|$/.test(line)) continue;
+      inTable = true;
+      tableRows.push(line.slice(1, -1).split('|').map(c => c.trim()));
+      continue;
+    }
+    if (inTable) flushTable();
+    if (/^[-*] /.test(line)) {
+      if (!inUl) { out += '<ul>'; inUl = true; }
+      out += '<li>' + line.replace(/^[-*] /, '') + '</li>';
+      continue;
+    }
+    if (/^\d+\. /.test(line)) {
+      if (!inOl) { out += '<ol>'; inOl = true; }
+      out += '<li>' + line.replace(/^\d+\. /, '') + '</li>';
+      continue;
+    }
+    if (inUl) { out += '</ul>'; inUl = false; }
+    if (inOl) { out += '</ol>'; inOl = false; }
+    if (!line) continue;
+    if (/^<(h[1-6]|blockquote|pre|hr)/.test(line)) out += line;
+    else out += '<p>' + line + '</p>';
+  }
+  if (inUl) out += '</ul>';
+  if (inOl) out += '</ol>';
+  if (inTable) flushTable();
+  blocks.forEach((b, i) => { out = out.replace(`\x00BLOCK${i}\x00`, b); });
+  return out;
+}
+
+function toggleHomeHandbook(show) {
+  const wrap = document.getElementById('home-handbook-wrap');
+  if (!wrap) return;
+  if (show) {
+    wrap.style.display = '';
+    loadHomeHandbookIfNeeded();
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+
+async function loadHomeHandbookIfNeeded() {
+  const status = document.getElementById('home-handbook-status');
+  const content = document.getElementById('home-handbook-content');
+  const docxLink = document.getElementById('home-docx-link');
+  if (docxLink) docxLink.href = `${API_BASE}/docs/bedienungsanleitung.docx`;
+  if (_homeHandbookLoaded || !content) return;
+  if (status) status.textContent = 'Lade Handbuch…';
+  try {
+    const r = await fetch(`${API_BASE}/docs/benutzerhandbuch`);
+    if (!r.ok) throw new Error(r.status === 404 ? 'Handbuch-Datei fehlt auf dem Server' : 'HTTP ' + r.status);
+    const data = await r.json();
+    content.innerHTML = renderHandbookMarkdown(data.content || '');
+    if (status) status.textContent = data.filename || 'Benutzerhandbuch';
+    _homeHandbookLoaded = true;
+  } catch (e) {
+    if (status) status.textContent = 'Handbuch nicht geladen: ' + (e.message || e);
+    content.innerHTML = '<p style="color:var(--warn)">Deploy mit docs/Benutzerhandbuch_paper_manager.md ausführen.</p>';
+  }
+}
 
 function isWorkflowTag(name) {
   return WORKFLOW_TAGS.has(name);
@@ -1385,6 +1534,9 @@ function showView(name) {
     fetch(`${API_BASE}/config`).then(r=>r.json()).then(d => {
       applyVersionDisplay(d.versions, d.ollama_models);
     }).catch(()=>{});
+    loadHomeHandbookIfNeeded();
+    const docxLink = document.getElementById('home-docx-link');
+    if (docxLink) docxLink.href = `${API_BASE}/docs/bedienungsanleitung.docx`;
   }
   if (name === 'correspondents') loadCorrMap();
   if (name === 'docreview') { loadDocReview(); loadDocReviewMeta(); }

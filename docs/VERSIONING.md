@@ -59,7 +59,7 @@ grep -m1 '^# VERSION' /opt/paperless-scripts/pre_consume.sh
 grep -m1 __version__ /opt/paperless-scripts/pre_consume_qr.py
 ```
 
-`deploy-to-ct121.sh` kopiert **immer** `post_consume.py`, `pre_consume.sh`, `pre_consume_qr.py`. Anschliessend `docker compose up -d --force-recreate webserver` (lädt `.env` neu). **Danach** `ensure-legacy-qr-deps.sh` (Container-Recreate löscht apt-Pakete wie libzbar).
+`deploy-to-ct121.sh` kopiert **immer** `post_consume.py`, `pre_consume.sh`, `pre_consume_qr.py`, `docs/Benutzerhandbuch_paper_manager.md` (optional `.docx`). Anschliessend `docker compose up -d --force-recreate webserver` (lädt `.env` neu). **Danach automatisch** `ensure-legacy-qr-deps.sh` (Container-Recreate löscht apt-Pakete wie libzbar). Mit `--no-docker` entfällt beides.
 
 Sidebar: `UI v… | be v… | pipe v…` — Home-Tab: zusätzlich **pre OCR / pre QR**. Hard-Refresh (`Ctrl+Shift+R`).
 
@@ -67,8 +67,10 @@ Sidebar: `UI v… | be v… | pipe v…` — Home-Tab: zusätzlich **pre OCR / p
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.19 | Home-Tab: pre OCR / pre QR Versionen |
-| BE | 2.68 | `_rv()` für pre_consume `# VERSION:` + `__version__` |
-| Pipe | 12.80 | `LLM_NUM_PREDICT` konfigurierbar (Default 1024) |
+| UI | 3.21 | Start-Tab: Handbuch inline + Docx-Download |
+| BE | 2.69 | `/api/docs/benutzerhandbuch`, Docx-Export |
+| Pipe | 12.81 | Datum vision+llm vor suspicious OCR; SWIFT/UID schärfer |
 | Pre OCR | 1.6 | ocrmypdf + QR-Lock (unverändert) |
 | Pre QR | 1.0 | Versionskennzeichnung init |
+
+**Deploy:** `deploy-to-ct121.sh` ruft nach Container-Recreate automatisch `ensure-legacy-qr-deps.sh` auf — manuell nur bei Erstsetup oder libzbar-Fehler.

@@ -80,6 +80,17 @@ for f in "${FILES[@]}"; do
   fi
 done
 
+mkdir -p "$TARGET/docs"
+for df in docs/Benutzerhandbuch_paper_manager.md docs/Bedienungsanleitung_paper_manager.docx; do
+  src="$REPO_DIR/$df"
+  dest_name="$(basename "$df")"
+  if [[ -f "$src" ]]; then
+    cp -v "$src" "$TARGET/docs/$dest_name"
+  else
+    echo "==> Hinweis: $src fehlt (optional)"
+  fi
+done
+
 mkdir -p "$TARGET/training"
 HTR_EXAMPLE="$REPO_DIR/training/htr_profiles.example.json"
 HTR_DEST="$TARGET/training/htr_profiles.json"
@@ -106,6 +117,13 @@ if [[ "$RECREATE_DOCKER" -eq 1 ]] && command -v docker >/dev/null 2>&1; then
     (cd "$PAPERLESS_COMPOSE_DIR" && docker compose up -d --force-recreate webserver)
     if container_id="$(docker ps -qf name=webserver | head -1)"; then
       echo "==> CF_* im Container: $(docker exec "$container_id" env | grep -c '^CF_' || true) Variablen"
+    fi
+    ensure_deps="$TARGET/ensure-legacy-qr-deps.sh"
+    if [[ -x "$ensure_deps" ]]; then
+      echo "==> Container-Deps nach Recreate (libzbar, venv-docker) — automatisch"
+      bash "$ensure_deps"
+    else
+      echo "==> Hinweis: $ensure_deps fehlt — QR/pre_consume_qr evtl. ohne zbar"
     fi
   else
     echo "==> Hinweis: $compose_file nicht gefunden — Paperless-Recreate übersprungen"

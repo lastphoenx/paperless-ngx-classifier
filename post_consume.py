@@ -27,7 +27,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.80"  # 12.80: LLM_NUM_PREDICT konfigurierbar (Default 1024, war 256)
+POST_CONSUME_VERSION = "12.81"  # 12.81: Datum vision+llm vor suspicious OCR; SWIFT/UID schärfer
 import re
 import sys
 import json
@@ -67,6 +67,7 @@ from document_date import (
     DATUM_PROMPT_HINT,
     birth_dates_from_family,
     extract_document_issue_date,
+    resolve_issue_date,
     validate_issue_date,
 )
 from iban_utils import extract_ibans_from_text, fix_iban_ocr_compact, format_iban_display, validate_iban
@@ -696,9 +697,12 @@ def _extract_identifikatoren_vorschlag(
     swift_seen: set[str] = set()
     email_seen: set[str] = set()
 
+    uid_seen: set[str] = set()
     for m in _CORR_UID_RE.findall(text):
-        s = m.strip().rstrip(".")
-        if s and s not in uid_out:
+        s = re.sub(r"\s*MWST\s*$", "", m.strip().rstrip("."), flags=re.IGNORECASE)
+        n = _norm_corr_uid(s)
+        if s and n and n not in uid_seen:
+            uid_seen.add(n)
             uid_out.append(s)
 
     if qr_meta and qr_meta.get("iban"):
@@ -725,11 +729,16 @@ def _extract_identifikatoren_vorschlag(
             email_seen.add(n)
             email_out.append(n)
 
+    uid_digits = {re.sub(r"\D", "", u) for u in uid_seen}
+
     for t in extract_phones_from_text(text, max_results=3):
         n = _norm_corr_telefon(t)
-        if n and n not in tel_seen and len(n) >= 9:
-            tel_seen.add(n)
-            tel_out.append(t)
+        if not n or n in tel_seen or len(n) < 9:
+            continue
+        if any(n in ud or ud in n for ud in uid_digits if len(ud) >= 9):
+            continue
+        tel_seen.add(n)
+        tel_out.append(t)
 
     return {
         "uid": uid_out[:3],
@@ -4600,29 +4609,22 @@ def main():
                  corr_default_dt, decision.get("dokumenttyp_semantisch"))
 
     # Ausstellungsdatum (Paperless-Feld «created»)
-    # Priorität: OCR-Signale (Ort und Datum, Erstellt am, …) → Vision → LLM
+    # Vision+LLM-Einigung schlägt OCR; verdächtig alte OCR-Treffer werden verworfen.
     import datetime as _dt
     _scan_year = _dt.date.today().year
     _birth_exclude = birth_dates_from_family(_load_family().get("personen", []))
 
-    ocr_datum, ocr_src = extract_document_issue_date(ocr_text, _birth_exclude)
     vision_datum = vision_meta.get("datum")
     llm_datum = decision.get("datum")
+    ocr_datum, _ocr_src = extract_document_issue_date(ocr_text, _birth_exclude)
 
-    datum = None
-    _datum_suspicious = False
-    _datum_quelle = ""
-    for candidate, quelle in [
-        (ocr_datum, ocr_src or "ocr_signal"),
-        (vision_datum, "vision"),
-        (llm_datum, "llm"),
-    ]:
-        validated, suspicious = validate_issue_date(candidate, _scan_year, _birth_exclude)
-        if validated:
-            datum = validated
-            _datum_suspicious = suspicious
-            _datum_quelle = quelle
-            break
+    datum, _datum_quelle, _datum_suspicious = resolve_issue_date(
+        ocr_text,
+        vision_datum,
+        llm_datum,
+        _scan_year,
+        _birth_exclude,
+    )
 
     if datum:
         patch["created"] = datum
@@ -4633,7 +4635,9 @@ def main():
     elif ocr_datum or vision_datum or llm_datum:
         log.warning(
             "Ausstellungsdatum verworfen (Kandidaten ocr=%s vision=%s llm=%s)",
-            ocr_datum, vision_datum, llm_datum,
+            ocr_datum,
+            vision_datum,
+            llm_datum,
         )
 
     # Steuerjahr — wenn Tag Steuerrelevant gesetzt (fix_tags / LLM)

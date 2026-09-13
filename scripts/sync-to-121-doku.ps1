@@ -81,6 +81,9 @@ Write-Host "Skripte:" -ForegroundColor Yellow
     "post_consume.py",
     "post_consume_runner.py",
     "iban_utils.py",
+    "document_date.py",
+    "swift_utils.py",
+    "phone_utils.py",
     "pre_consume.sh",
     "pre_consume_qr.py",
     "requirements-corr-manager.txt"

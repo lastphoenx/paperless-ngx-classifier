@@ -32,15 +32,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.68"  # 2.68: _rv() liest pre_consume # VERSION: und __version__
-UI_VERSION = "3.19"
+__version__ = "2.69"  # 2.69: /api/docs/* Handbuch MD + Docx-Download
+UI_VERSION = "3.21"
 
 import requests
 from iban_utils import validate_iban
 from phone_utils import norm_phone_for_match as _norm_corr_telefon
 from swift_utils import normalize_swift as _norm_corr_swift
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Body
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 from brillenpass_parser import (
@@ -3511,6 +3511,45 @@ def api_config(request: Request):
             "embed": os.environ.get("OLLAMA_MODEL_EMBED", "bge-m3"),
         },
     }
+
+
+DOCS_DIR = Path(os.environ.get("DOCS_DIR", "/opt/paperless-scripts/docs"))
+_HANDBUCH_MD = "Benutzerhandbuch_paper_manager.md"
+_HANDBUCH_DOCX = "Bedienungsanleitung_paper_manager.docx"
+
+
+def _resolve_doc_path(name: str) -> Path | None:
+    """Handbuch-Datei: DOCS_DIR, dann Repo docs/ (Dev)."""
+    for base in (DOCS_DIR, Path(__file__).resolve().parent / "docs"):
+        p = base / name
+        if p.is_file():
+            return p
+    return None
+
+
+@app.get("/api/docs/benutzerhandbuch", response_class=JSONResponse)
+def api_docs_benutzerhandbuch():
+    """Benutzerhandbuch als Markdown für Home-Tab."""
+    path = _resolve_doc_path(_HANDBUCH_MD)
+    if not path:
+        raise HTTPException(404, "Benutzerhandbuch nicht gefunden")
+    return {
+        "filename": path.name,
+        "content": path.read_text(encoding="utf-8"),
+    }
+
+
+@app.get("/api/docs/bedienungsanleitung.docx")
+def api_docs_bedienungsanleitung_docx():
+    """Word-Export zum Ausdrucken / Weitergeben."""
+    path = _resolve_doc_path(_HANDBUCH_DOCX)
+    if not path:
+        raise HTTPException(404, "Bedienungsanleitung.docx nicht gefunden — generate_bedienungsanleitung.ps1")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=path.name,
+    )
 
 
 def _load_tags_json() -> dict:
