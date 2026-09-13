@@ -493,11 +493,14 @@
           <span class="card-title">Dokumentation</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button type="button" class="btn btn-ghost" style="padding:4px 12px;font-size:11px" onclick="toggleHomeHandbook(true)">Handbuch anzeigen</button>
-            <a class="btn btn-ghost" style="padding:4px 12px;font-size:11px;text-decoration:none" href="#" target="_blank" rel="noopener" id="home-docx-link">Word (.docx) ↗</a>
+            <a class="btn btn-ghost" style="padding:4px 12px;font-size:11px;text-decoration:none;display:none" href="#" target="_blank" rel="noopener" id="home-handbuch-pdf-link">Handbuch PDF ↗</a>
+            <a class="btn btn-ghost" style="padding:4px 12px;font-size:11px;text-decoration:none;display:none" href="#" target="_blank" rel="noopener" id="home-handbuch-pl-link">In Paperless ↗</a>
+            <a class="btn btn-ghost" style="padding:4px 12px;font-size:11px;text-decoration:none" href="#" target="_blank" rel="noopener" id="home-docx-fallback-link">Word (.docx) ↗</a>
           </div>
         </div>
         <p style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:4px">
-          Benutzerhandbuch inline oder als Word/PDF in Paperless (wenn <code>HANDBUCH_DOC_ID</code> gesetzt).
+          Ordner <strong>#Dokumentations/Benutzerhandbuch</strong> in Paperless — inline hier oder PDF via
+          <code>HANDBUCH_DOC_ID</code> (Proxy für IP, Paperless-Link für Domain).
         </p>
         <div id="home-handbook-wrap" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
@@ -1194,7 +1197,8 @@ function effectivePaperlessBase() {
   return `${proto}://${host}`;
 }
 function paperlessDocUrl(docId) {
-  return `${effectivePaperlessBase()}/documents/${docId}`;
+  const base = (window.PAPERLESS_URL || effectivePaperlessBase()).replace(/\/$/, '');
+  return `${base}/documents/${docId}`;
 }
 function paperlessCorrUrl(plId) {
   return `${effectivePaperlessBase()}/correspondents/?id=${plId}`;
@@ -1211,7 +1215,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.22';
+const UI_VERSION = '3.23';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 let _homeHandbookLoaded = false;
@@ -1318,19 +1322,48 @@ function toggleHomeHandbook(show) {
   }
 }
 
-function applyHomeDocxLink(cfg) {
-  const link = document.getElementById('home-docx-link');
-  if (!link) return;
+function applyHomeHandbuchLinks(cfg) {
+  const pdfLink = document.getElementById('home-handbuch-pdf-link');
+  const plLink = document.getElementById('home-handbuch-pl-link');
+  const fallback = document.getElementById('home-docx-fallback-link');
   const docId = cfg?.handbuch_doc_id;
-  if (docId) {
-    link.href = paperlessDocUrl(docId);
-    link.textContent = `Anleitung in Paperless (#${docId}) ↗`;
-    link.title = 'Bedienungsanleitung in Paperless öffnen (Original .docx/.pdf)';
-  } else {
-    link.href = `${API_BASE}/docs/bedienungsanleitung.docx`;
-    link.textContent = 'Word (.docx) ↗';
-    link.title = 'Bedienungsanleitung vom Server herunterladen';
+  const urls = cfg?.handbuch_urls || {};
+
+  if (docId && pdfLink) {
+    const proxyPath = urls.pdf_proxy || `/api/proxy/document/${docId}/preview/`;
+    const proxySuffix = proxyPath.replace(/^\/api/, '');
+    pdfLink.href = `${API_BASE}${proxySuffix}`;
+    pdfLink.textContent = `Handbuch PDF (#${docId}) ↗`;
+    pdfLink.title = 'PDF im Browser (Proxy — funktioniert auch per IP :8100)';
+    pdfLink.style.display = '';
+  } else if (pdfLink) {
+    pdfLink.style.display = 'none';
   }
+
+  if (docId && plLink) {
+    plLink.href = urls.paperless_ui || paperlessDocUrl(docId);
+    plLink.textContent = 'In Paperless ↗';
+    plLink.title = plLink.href;
+    plLink.style.display = '';
+  } else if (plLink) {
+    plLink.style.display = 'none';
+  }
+
+  if (fallback) {
+    if (docId) {
+      fallback.style.display = 'none';
+    } else {
+      fallback.href = `${API_BASE}/docs/bedienungsanleitung.docx`;
+      fallback.textContent = 'Word (.docx) ↗';
+      fallback.title = 'Bedienungsanleitung vom Server herunterladen';
+      fallback.style.display = '';
+    }
+  }
+}
+
+/** @deprecated use applyHomeHandbuchLinks */
+function applyHomeDocxLink(cfg) {
+  applyHomeHandbuchLinks(cfg);
 }
 
 async function loadHomeHandbookIfNeeded() {
@@ -1480,7 +1513,7 @@ async function init() {
     if (cfg.versions) {
       applyVersionDisplay(cfg.versions, cfg.ollama_models);
     }
-    applyHomeDocxLink(cfg);
+    applyHomeHandbuchLinks(cfg);
     if (cfg.pending_mode) {
       // Direkt setzen ohne Umweg über updatePendingModeUI
       _qsModeActive = (cfg.pending_mode === 'always');

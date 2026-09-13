@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.70"  # 2.70: HANDBUCH_DOC_ID in /api/config für Start-Tab Word-Link
-UI_VERSION = "3.22"
+__version__ = "2.71"  # 2.71: handbuch_urls in /api/config (PDF-Proxy + Paperless-UI, IP/Domain)
+UI_VERSION = "3.23"
 
 import requests
 from iban_utils import validate_iban
@@ -3495,9 +3495,15 @@ def api_config(request: Request):
     canonical = os.environ.get("PAPERLESS_URL", "http://localhost:8000")
     handbuch_raw = os.environ.get("HANDBUCH_DOC_ID", "").strip()
     handbuch_doc_id: int | None = None
+    handbuch_urls: dict | None = None
     if handbuch_raw:
         try:
             handbuch_doc_id = int(handbuch_raw)
+            pl_base = _effective_paperless_url(request).rstrip("/")
+            handbuch_urls = {
+                "paperless_ui": f"{pl_base}/documents/{handbuch_doc_id}",
+                "pdf_proxy": f"/api/proxy/document/{handbuch_doc_id}/preview/",
+            }
         except ValueError:
             log.warning("HANDBUCH_DOC_ID ungültig: %r", handbuch_raw)
     return {
@@ -3505,6 +3511,7 @@ def api_config(request: Request):
         "paperless_url_config": canonical,
         "pending_mode":  _get_pending_mode(),
         "handbuch_doc_id": handbuch_doc_id,
+        "handbuch_urls": handbuch_urls,
         "versions": {
             "ui":             UI_VERSION,
             "backend":        __version__,
