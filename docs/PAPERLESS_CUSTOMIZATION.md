@@ -51,7 +51,7 @@ PAPER_MANAGER_HINT_TITLE=true    # Browser-Tab «paper.manager — …»
 
 ### Info-Leiste in Paperless (Wegweiser zu corr-manager)
 
-Paperless selbst kann keinen Freitext auf dem Dashboard. **Sinnvoller Weg:** nginx auf dem Reverse-Proxy (`sub_filter` vor `<app-root>`) — nur für HTTPS/Domain, nicht für direktes `:8000`. Betreiber-Doku im privaten Ops-Repo; Variante `PAPER_MANAGER_HINT_*` gilt nur für paper.manager (`:8100`), nicht für Nutzer die nur Paperless kennen.
+Paperless selbst kann keinen Freitext auf dem Dashboard. **Sinnvoller Weg:** nginx auf dem Reverse-Proxy (`sub_filter` vor `<pngx-root>`) — nur für HTTPS/Domain, nicht für direktes `:8000`. Betreiber-Doku im privaten Ops-Repo; Variante `PAPER_MANAGER_HINT_*` gilt nur für paper.manager (`:8100`), nicht für Nutzer die nur Paperless kennen.
 
 ## CI/CD-tauglich (ohne Paperless-Fork)
 
