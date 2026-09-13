@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.72"  # 2.72: handbuch/manager URLs auf Paperless :8000 (kein PDF-Proxy für Handbuch)
+__version__ = "2.73"  # 2.73: url_links.py zentral; Proxy-Binary-Headers; links in /api/config
 UI_VERSION = "3.23"
 
 import requests
@@ -102,6 +102,12 @@ from legacy_split_by_qr import (
     resolve_legacy_qr_regex,
     validate_user_regex,
 )
+from url_links import (
+    build_config_links,
+    effective_paperless_url as _effective_paperless_url_from_links,
+    manager_urls_config as _manager_urls_config,
+)
+
 LEGACY_SPLIT_QR_REGEX      = normalize_legacy_qr_regex(
     os.environ.get("LEGACY_SPLIT_QR_REGEX", _LEGACY_QR_DEFAULT),
 )
@@ -111,6 +117,10 @@ PAPERLESS_HEADERS = {
     "Authorization": f"Token {PAPERLESS_API_TOKEN}",
     "Content-Type": "application/json",
     "Accept": os.environ.get("PAPERLESS_API_ACCEPT", "application/json; version=9"),
+}
+PAPERLESS_BINARY_HEADERS = {
+    "Authorization": f"Token {PAPERLESS_API_TOKEN}",
+    "Accept": "*/*",
 }
 PAPERLESS_OWNER_ID     = int(os.environ.get("PAPERLESS_OWNER_ID", "3"))  # deprecated — wird nicht verwendet, siehe _default_permissions()
 _PERM_VIEW_GROUP_IDS   = [int(g) for g in os.environ.get("PAPERLESS_VIEW_GROUP_IDS",  "1,2").split(",") if g.strip().isdigit()]
@@ -221,65 +231,7 @@ async def _session_valid_for_request(request: Request, paperless_internal: str) 
 
 
 def _effective_paperless_url(request: Request | None = None) -> str:
-    """Request-host-aware Paperless-URL für Links und Login-Redirect."""
-    canonical = os.environ.get("PAPERLESS_URL", "http://localhost:8000")
-    if request is None:
-        return canonical
-    host = request.headers.get("host", "localhost:8100")
-    proto = request.headers.get("x-forwarded-proto", "http")
-    host_without_port = host.split(":")[0]
-    if host_without_port.replace(".", "").isdigit():
-        return f"http://{host_without_port}:8000"
-    if host_without_port in ("localhost", "127.0.0.1"):
-        return canonical
-    return f"{proto}://{host_without_port}"
-
-
-def _paperless_internal_base() -> str:
-    return os.environ.get(
-        "PAPERLESS_INTERNAL_URL",
-        os.environ.get("PAPERLESS_URL", "http://localhost:8000"),
-    ).rstrip("/")
-
-
-def _paperless_public_base() -> str:
-    return os.environ.get("PAPERLESS_URL", "http://localhost:8000").rstrip("/")
-
-
-def _manager_urls_config() -> dict[str, str]:
-    """Stabile paper.manager-Links (IP :8100 + Domain /corr-manager/) für Home-Willkommen."""
-    from urllib.parse import urlparse
-
-    internal = os.environ.get("PAPER_MANAGER_INTERNAL_URL", "").strip().rstrip("/")
-    if not internal:
-        parsed = urlparse(_paperless_internal_base())
-        if parsed.hostname and parsed.hostname.replace(".", "").isdigit():
-            internal = f"http://{parsed.hostname}:8100"
-
-    public = os.environ.get("PAPER_MANAGER_PUBLIC_URL", "").strip().rstrip("/")
-    out: dict[str, str] = {}
-    if internal:
-        out["internal"] = internal
-        out["home_internal"] = f"{internal}/#home"
-    if public:
-        out["public"] = f"{public}/"
-        out["home_public"] = f"{public}/#home"
-    return out
-
-
-def _handbuch_urls_for(doc_id: int, request: Request) -> dict[str, str]:
-    """Handbuch-PDF und Paperless-UI — immer auf Paperless (:8000 / Domain), nicht paper.manager."""
-    pl_current = _effective_paperless_url(request).rstrip("/")
-    pl_internal = _paperless_internal_base()
-    pl_public = _paperless_public_base()
-    return {
-        "pdf_preview": f"{pl_current}/api/documents/{doc_id}/preview/",
-        "pdf_preview_ip": f"{pl_internal}/api/documents/{doc_id}/preview/",
-        "pdf_preview_public": f"{pl_public}/api/documents/{doc_id}/preview/",
-        "paperless_ui": f"{pl_current}/documents/{doc_id}/details",
-        "paperless_ui_ip": f"{pl_internal}/documents/{doc_id}/details",
-        "paperless_ui_public": f"{pl_public}/documents/{doc_id}/details",
-    }
+    return _effective_paperless_url_from_links(request)
 
 
 def _parse_geburtsdatum(geb: str) -> tuple[int, int, int] | None:
@@ -3542,13 +3494,15 @@ def api_config(request: Request):
     canonical = os.environ.get("PAPERLESS_URL", "http://localhost:8000")
     handbuch_raw = os.environ.get("HANDBUCH_DOC_ID", "").strip()
     handbuch_doc_id: int | None = None
-    handbuch_urls: dict | None = None
+    config_links: dict | None = None
     if handbuch_raw:
         try:
             handbuch_doc_id = int(handbuch_raw)
-            handbuch_urls = _handbuch_urls_for(handbuch_doc_id, request)
         except ValueError:
             log.warning("HANDBUCH_DOC_ID ungültig: %r", handbuch_raw)
+    config_links = build_config_links(request, handbuch_doc_id)
+    # Rückwärtskompatibel für ältere UI-Teile
+    handbuch_urls = config_links.get("handbuch") if handbuch_doc_id else None
     return {
         "paperless_url": _effective_paperless_url(request),
         "paperless_url_config": canonical,
@@ -3556,6 +3510,7 @@ def api_config(request: Request):
         "handbuch_doc_id": handbuch_doc_id,
         "handbuch_urls": handbuch_urls,
         "manager_urls": _manager_urls_config(),
+        "links": config_links,
         "versions": {
             "ui":             UI_VERSION,
             "backend":        __version__,
@@ -4653,26 +4608,34 @@ _UI_HTML = _load_ui_html()  # Fallback; Live-Route lädt Datei bei jedem Request
 
 @app.get("/api/proxy/document/{doc_id}/preview/")
 def proxy_document_preview(doc_id: int):
-    """Proxied PDF-Vorschau — funktioniert auch per IP ohne Authentik-Cookie."""
+    """Proxied PDF — Same-Origin für iframe (Paperless blockiert Fremdeinbettung)."""
+    if not PAPERLESS_API_TOKEN:
+        raise HTTPException(503, "PAPERLESS_TOKEN fehlt — Proxy kann PDF nicht laden")
     try:
-        r = requests.get(
-            f"{PAPERLESS_API_URL.rstrip('/')}/documents/{doc_id}/preview/",
-            headers=PAPERLESS_HEADERS,
-            stream=True,
-            timeout=30,
-        )
-        if r.status_code in (301, 302, 303, 307, 308):
-            raise HTTPException(401, "Paperless: Authentifizierung fehlgeschlagen (Redirect)")
-        if not r.ok:
-            raise HTTPException(r.status_code, f"Paperless: {r.text[:200]}")
-        ct = r.headers.get("content-type", "application/pdf")
-        if "text/html" in ct:
-            raise HTTPException(401, "Paperless: Login-Seite erhalten statt PDF")
-        return StreamingResponse(
-            r.iter_content(chunk_size=65536),
-            media_type=ct,
-            headers={"Content-Disposition": f"inline; filename=document_{doc_id}.pdf"},
-        )
+        for suffix in ("/preview/", "/download/"):
+            r = requests.get(
+                f"{PAPERLESS_API_URL.rstrip('/')}/documents/{doc_id}{suffix}",
+                headers=PAPERLESS_BINARY_HEADERS,
+                stream=True,
+                timeout=60,
+                allow_redirects=False,
+            )
+            if r.status_code in (301, 302, 303, 307, 308):
+                continue
+            if not r.ok:
+                continue
+            ct = r.headers.get("content-type", "application/pdf")
+            if "text/html" in ct:
+                continue
+            return StreamingResponse(
+                r.iter_content(chunk_size=65536),
+                media_type=ct,
+                headers={
+                    "Content-Disposition": f"inline; filename=document_{doc_id}.pdf",
+                    "X-Frame-Options": "SAMEORIGIN",
+                },
+            )
+        raise HTTPException(502, "Paperless: PDF nicht abrufbar (Token/Rechte prüfen)")
     except HTTPException:
         raise
     except Exception as e:
@@ -4685,9 +4648,10 @@ def proxy_document_thumb(doc_id: int):
     try:
         r = requests.get(
             f"{PAPERLESS_API_URL.rstrip('/')}/documents/{doc_id}/thumb/",
-            headers=PAPERLESS_HEADERS,
+            headers=PAPERLESS_BINARY_HEADERS,
             stream=True,
             timeout=15,
+            allow_redirects=False,
         )
         if r.status_code in (301, 302, 303, 307, 308):
             raise HTTPException(401, "Paperless: Authentifizierung fehlgeschlagen (Redirect)")
