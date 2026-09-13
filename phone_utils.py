@@ -106,6 +106,7 @@ def extract_phones_from_text(
     *,
     max_results: int = 3,
     default_region: str = "CH",
+    labeled_only: bool = False,
 ) -> list[str]:
     """Telefonnummern aus OCR/Vision-Text — Labels, phonenumbers-Matcher, CH-Regex."""
     if not (text or "").strip():
@@ -119,6 +120,9 @@ def extract_phones_from_text(
         _add_phone(m, found, seen, default_region=default_region)
         if len(found) >= max_results:
             return found[:max_results]
+
+    if labeled_only:
+        return found[:max_results]
 
     if _HAS_PHONENUMBERS:
         for region in _DEFAULT_REGIONS:

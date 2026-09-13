@@ -69,7 +69,7 @@ Sidebar: `UI v… | be v… | pipe v…` — Home-Tab: zusätzlich **pre OCR / p
 |---|---|---|
 | UI | 3.21 | Start-Tab: Handbuch inline + Docx-Download |
 | BE | 2.69 | `/api/docs/benutzerhandbuch`, Docx-Export |
-| Pipe | 12.81 | Datum vision+llm vor suspicious OCR; SWIFT/UID schärfer |
+| Pipe | 12.82 | Identifikatoren: SWIFT nur mit Bank-Kontext, Tel nur gelabelt |
 | Pre OCR | 1.6 | ocrmypdf + QR-Lock (unverändert) |
 | Pre QR | 1.0 | Versionskennzeichnung init |
 

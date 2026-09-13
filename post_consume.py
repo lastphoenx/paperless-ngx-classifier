@@ -27,7 +27,7 @@ Umgebungsvariablen (.env):
 
 import os
 
-POST_CONSUME_VERSION = "12.81"  # 12.81: Datum vision+llm vor suspicious OCR; SWIFT/UID schärfer
+POST_CONSUME_VERSION = "12.82"  # 12.82: Identifikatoren-Vorschläge — SWIFT nur mit Bank-Kontext, Tel nur gelabelt
 import re
 import sys
 import json
@@ -560,6 +560,8 @@ def _is_ignored_email(email_norm: str, *, extra_ignore: set[str] | None = None) 
         return True
     if extra_ignore and email_norm in extra_ignore:
         return True
+    if "example.com" in email_norm or "example.org" in email_norm:
+        return True
     return any(x in email_norm for x in ("noreply", "no-reply", "donotreply", "mailer-daemon"))
 
 
@@ -717,7 +719,12 @@ def _extract_identifikatoren_vorschlag(
             iban_seen.add(compact)
             iban_out.append(display)
 
-    for sw in extract_swifts_from_text(text, max_results=2):
+    for sw in extract_swifts_from_text(
+        text,
+        max_results=2,
+        standalone=True,
+        standalone_requires_bank_context=True,
+    ):
         n = _norm_corr_swift(sw)
         if n and n not in swift_seen:
             swift_seen.add(n)
@@ -731,7 +738,7 @@ def _extract_identifikatoren_vorschlag(
 
     uid_digits = {re.sub(r"\D", "", u) for u in uid_seen}
 
-    for t in extract_phones_from_text(text, max_results=3):
+    for t in extract_phones_from_text(text, max_results=3, labeled_only=True):
         n = _norm_corr_telefon(t)
         if not n or n in tel_seen or len(n) < 9:
             continue

@@ -19,11 +19,26 @@ def test_extract_swift_labeled():
 
 
 def test_rejects_german_invoice_words():
-    text = "Ihre RECHNUNG zur Bestellung\nXXXLutz MARKETPLACE\nUNZUFRIEDEN?"
+    text = (
+        "Ihre RECHNUNG zur Bestellung\n"
+        "Wenn Sie Fragen haben brauchen Sie das Kontaktcenter\n"
+        "Ausgestellt von XLCH AG\n"
+        "XXXLutz MARKETPLACE\nUNZUFRIEDEN?"
+    )
     found = extract_swifts_from_text(text)
     assert "RECHNUNG" not in found
     assert "MARKETPLACE" not in found
     assert "UNZUFRIEDEN" not in found
+    assert "BRAUCHEN" not in found
+    assert "AUSGESTELLT" not in found
+
+
+def test_standalone_requires_bank_context():
+    text = "Bezahlte Rechnung BRAUCHEN Sie BKBBCHBB Hilfe"
+    assert extract_swifts_from_text(text, standalone_requires_bank_context=True) == []
+    text2 = "Bankverbindung IBAN CH12 3456 SWIFT BKBBCHBB"
+    found = extract_swifts_from_text(text2, standalone_requires_bank_context=True)
+    assert "BKBBCHBB" in found
 
 
 def test_accepts_real_swiss_bic_standalone():

@@ -22,7 +22,14 @@ _SWIFT_COUNTRY_WHITELIST = frozenset({
 _SWIFT_WORD_DENYLIST = frozenset({
     "BESTELLUNG", "MARKETPLACE", "RECHNUNG", "UNZUFRIEDEN", "KUNDENSERVICE",
     "ZAHLUNGSZIEL", "LIEFERANT", "HANDELSREGISTER", "MWSTNUMMER",
+    "BRAUCHEN", "AUSGESTELLT", "BEZAHLTEN", "KONTAKT", "IMPRESSUM",
+    "HILFREICH", "FILIALEN", "DATENSCH",
 })
+
+_BANK_CTX_RE = re.compile(
+    r"(?:SWIFT|BIC|IBAN|Bankverbindung|Bank\s+clearing|Clearing\s*Nr|Zahlbar\s+an)",
+    re.IGNORECASE,
+)
 
 
 def normalize_swift(raw: str) -> str:
@@ -32,11 +39,18 @@ def normalize_swift(raw: str) -> str:
     return ""
 
 
-def extract_swifts_from_text(text: str, *, max_results: int = 2) -> list[str]:
+def extract_swifts_from_text(
+    text: str,
+    *,
+    max_results: int = 2,
+    standalone: bool = True,
+    standalone_requires_bank_context: bool = False,
+) -> list[str]:
     if not (text or "").strip():
         return []
     found: list[str] = []
     seen: set[str] = set()
+    upper = text.upper()
 
     for m in _SWIFT_LABEL_RE.findall(text):
         n = normalize_swift(m)
@@ -46,8 +60,11 @@ def extract_swifts_from_text(text: str, *, max_results: int = 2) -> list[str]:
         if len(found) >= max_results:
             return found
 
-    for m in _SWIFT_STANDALONE_RE.findall(text.upper()):
-        n = normalize_swift(m)
+    if not standalone:
+        return found[:max_results]
+
+    for m in _SWIFT_STANDALONE_RE.finditer(upper):
+        n = normalize_swift(m.group(1))
         if not n or n in seen:
             continue
         if n in _SWIFT_WORD_DENYLIST:
@@ -55,6 +72,11 @@ def extract_swifts_from_text(text: str, *, max_results: int = 2) -> list[str]:
         country = n[4:6]
         if not (n[:4].isalpha() and country.isalpha() and country in _SWIFT_COUNTRY_WHITELIST):
             continue
+        if standalone_requires_bank_context:
+            start = max(0, m.start() - 100)
+            end = min(len(text), m.end() + 100)
+            if not _BANK_CTX_RE.search(text[start:end]):
+                continue
         seen.add(n)
         found.append(n)
         if len(found) >= max_results:
