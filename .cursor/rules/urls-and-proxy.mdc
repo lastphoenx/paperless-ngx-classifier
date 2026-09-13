@@ -1,0 +1,56 @@
+---
+description: URL/Link/Proxy paper.manager — read-first, url_links.py, keine neuen Env-Keys
+globs:
+  - "**/url_links.py"
+  - "**/correspondent_manager_app.py"
+  - "**/paper_manager_ui.html"
+  - "**/.env.example"
+  - "**/docs/**"
+alwaysApply: false
+---
+
+# URLs / Paperless / paper.manager
+
+## VOR dem ersten Edit (Pflicht — Read-only Discovery)
+
+Symptom melden ≠ Architektur raten. **Zuerst lesen**, dann maximal 3 Sätze zusammenfassen was gilt:
+
+1. `.env.example` — nur `PAPERLESS_URL`, `PAPERLESS_INTERNAL_URL`, `PAPERLESS_API_URL` (+ `PAPER_MANAGER_TOKEN` optional)
+2. `url_links.py` — **eine** Quelle für Link-Bausteine
+3. `docs/DEVELOPER.md` — Proxy, Session, Ports, effective_paperless_url
+4. `docs/Benutzerhandbuch_paper_manager.md` — Zugriff Domain vs IP
+
+**Keine Code-Änderung**, bis du eine Doku- oder Code-Zeile zitieren kannst, die das Zielverhalten beschreibt.
+
+## Invarianten (nicht verhandeln)
+
+| | |
+|---|---|
+| **:8100** | paper.manager (FastAPI, UI, `/api/proxy/*`) |
+| **:8000** | Paperless-NGX direkt |
+| **iframe / eingebettete Vorschau** | `/api/proxy/document/{id}/preview/` auf **gleicher Origin** wie UI (X-Frame-Options) |
+| **PDF / Details neuer Tab** | Paperless `/api/documents/{id}/preview/` oder `/documents/{id}/details` |
+| **Domain-Links** | `PAPERLESS_URL` |
+| **IP-Links** | Request-Host-IP (`:8000` Paperless, `:8100` manager) — **nicht** localhost aus INTERNAL für Browser |
+| **Server→Paperless API** | `PAPERLESS_API_URL` / `PAPERLESS_INTERNAL_URL` |
+
+Zwei Link-Typen **getrennt** halten — nicht einen Fix bauen der den anderen bricht.
+
+## Verboten
+
+- Neue `PAPER_MANAGER_*_URL` oder andere URL-Env-Keys **ohne** ausdrückliche Nutzerfreigabe
+- Muster aus anderen Projekten (LearnAI, SlitProjektHub) blind übernehmen
+- `curl :8100/...` → 401 als «Proxy kaputt» ohne Session-Kontext prüfen
+- `curl :8000/api/proxy/...` — falscher Port (Proxy lebt auf :8100)
+- Fix committen ohne: **welche Doku/Code-Zeile** die Lösung bestätigt
+- In derselben Session Port-/Proxy-Entscheidung **umdrehen** ohne neue Nutzer-Info
+
+## Debug-Hinweise
+
+- `/api/proxy/*` → 401 kann fehlende Browser-Session sein, nicht zwingend Code-Bug
+- Session-Check nutzt request-aware URL (IP vs Domain) — siehe DEVELOPER.md § effective_paperless_url
+- Änderungen an Links: **nur** `url_links.py` erweitern, nicht parallel in UI hardcoden
+
+## Commit
+
+Siehe `AGENTS.md` — kein Push ohne Anfrage; Shell +x im Git-Index.

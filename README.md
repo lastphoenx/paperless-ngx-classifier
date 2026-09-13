@@ -6,6 +6,8 @@
 
 [🇩🇪 Deutsche Version](README.de.md)
 
+**KI-Assistenten:** [AGENTS.md](AGENTS.md) (Git, Deploy CT 121, Grenzen)
+
 ---
 
 ## Why does this exist?

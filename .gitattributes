@@ -1,0 +1,2 @@
+# LF für Shell-Skripte (ausführbares Bit separat: git add --chmod=+x)
+*.sh text eol=lf
