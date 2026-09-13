@@ -49,5 +49,5 @@ Sidebar sollte `UI v… | be v… | pipe v…` zeigen — bei Abweichung Hard-Re
 | Komponente | Version | Kurz |
 |---|---|---|
 | UI | 3.18 | Speicherpfad-Badges nach Hauptordner, Phase-0-Inventar |
-| BE | 2.66 | Regex-Assistent Default qwen3.8:27b + think:false |
-| Pipe | 12.79 | qwen3.8:27b Default (think:false) + `OLLAMA_MODEL_VISION_HQ` für Brillenpass/Handschrift |
+| BE | 2.67 | Regex-Assistent nutzt `LLM_NUM_PREDICT` (Default 1024) |
+| Pipe | 12.80 | `LLM_NUM_PREDICT` konfigurierbar (Default 1024, war hardcoded 256) |

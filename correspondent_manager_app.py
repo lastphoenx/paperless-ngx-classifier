@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.66"  # 2.66: Regex-Assistent Default qwen3.8:27b + think:false
+__version__ = "2.67"  # 2.67: Regex-Assistent nutzt LLM_NUM_PREDICT (Default 1024)
 UI_VERSION = "3.18"
 
 import requests
@@ -4470,7 +4470,10 @@ def api_regex_assistent(body: dict = Body(...)):
             "stream": False,
             "format": "json",
             "think": False,
-            "options": {"temperature": 0.05, "num_predict": 256}
+            "options": {
+                "temperature": 0.05,
+                "num_predict": int(os.environ.get("LLM_NUM_PREDICT", "1024")),
+            }
         }).encode()
         req = _ur.Request(
             f"{ollama_url}/api/generate",

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-post_consume_v12.79.py — Paperless-NGX Post-Consume Pipeline v12.79
+post_consume_v12.80.py — Paperless-NGX Post-Consume Pipeline v12.80
 Architektur:
   1. ocrmypdf         → bereits via pre_consume.sh erledigt
   2. Vision-LLM       → visuelle Metadaten + Layout-Signale (OLLAMA_MODEL_VISION)
@@ -21,12 +21,13 @@ Umgebungsvariablen (.env):
   RAG_TOP_K               5
   VISION_TIMEOUT          120
   LLM_TIMEOUT             180
+  LLM_NUM_PREDICT         1024              (JSON-Entscheidung + Eskalation; Default 1024)
   PAPERLESS_STORAGE_MODE  api  (api oder copy)
 """
 
 import os
 
-POST_CONSUME_VERSION = "12.79"  # 12.79: qwen3.8:27b Default (think:false) + OLLAMA_MODEL_VISION_HQ fuer Brillenpass/Handschrift
+POST_CONSUME_VERSION = "12.80"  # 12.80: LLM_NUM_PREDICT konfigurierbar (Default 1024, war 256)
 import re
 import sys
 import json
@@ -1108,6 +1109,7 @@ LOG_PATH          = Path(os.environ.get("LOG_PATH", "/opt/paperless-scripts/logs
 RAG_TOP_K         = int(os.environ.get("RAG_TOP_K", "5"))
 VISION_TIMEOUT    = int(os.environ.get("VISION_TIMEOUT", "120"))
 LLM_TIMEOUT       = int(os.environ.get("LLM_TIMEOUT", "300"))
+LLM_NUM_PREDICT   = int(os.environ.get("LLM_NUM_PREDICT", "1024"))
 STORAGE_MODE      = os.environ.get("PAPERLESS_STORAGE_MODE", "api").lower()
 
 # Samples: ausgebaut (v12.8) — kein Trainings-Loop vorhanden, Timing-Bug bei Paperless-Verschiebung
@@ -2992,7 +2994,7 @@ def llm_decide(prompt: str) -> dict:
                 "stream": False,
                 "format": "json",
                 "think": False,
-                "options": {"temperature": 0.05, "num_predict": 256},
+                "options": {"temperature": 0.05, "num_predict": LLM_NUM_PREDICT},
             },
             timeout=LLM_TIMEOUT,
         )
@@ -5462,7 +5464,7 @@ Antworte NUR mit JSON:
                     "stream": False,
                     "format": "json",
                     "think": False,
-                    "options": {"temperature": 0.1, "num_predict": 256},
+                    "options": {"temperature": 0.1, "num_predict": LLM_NUM_PREDICT},
                 },
                 timeout=LLM_TIMEOUT,
             )
