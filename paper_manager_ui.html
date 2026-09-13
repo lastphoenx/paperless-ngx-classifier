@@ -1448,8 +1448,10 @@ function applyHomeWelcomeLinks(cfg) {
   }
   if (hb?.pdf_external?.ip) {
     linkParts.push(`<a href="${escapeHtml(hb.pdf_external.ip)}" target="_blank" rel="noopener" style="color:var(--accent)">Handbuch PDF (IP)</a>`);
+  } else if (hb?.pdf_external?.public) {
+    linkParts.push(`<a href="${escapeHtml(hb.pdf_external.public)}" target="_blank" rel="noopener" style="color:var(--accent)">Handbuch PDF</a>`);
   }
-  if (hb?.pdf_external?.public && hb.pdf_external.public !== hb.pdf_external.ip) {
+  if (hb?.pdf_external?.public && hb?.pdf_external?.ip && hb.pdf_external.public !== hb.pdf_external.ip) {
     linkParts.push(`<a href="${escapeHtml(hb.pdf_external.public)}" target="_blank" rel="noopener" style="color:var(--accent)">Handbuch PDF (Domain)</a>`);
   }
   if (!linkParts.length) {

@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.73"  # 2.73: url_links.py zentral; Proxy-Binary-Headers; links in /api/config
+__version__ = "2.74"  # 2.74: url_links nur PAPERLESS_URL/INTERNAL/API — kein PAPER_MANAGER_* URL
 UI_VERSION = "3.23"
 
 import requests
@@ -3509,7 +3509,7 @@ def api_config(request: Request):
         "pending_mode":  _get_pending_mode(),
         "handbuch_doc_id": handbuch_doc_id,
         "handbuch_urls": handbuch_urls,
-        "manager_urls": _manager_urls_config(),
+        "manager_urls": _manager_urls_config(request),
         "links": config_links,
         "versions": {
             "ui":             UI_VERSION,

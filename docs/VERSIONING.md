@@ -68,7 +68,7 @@ Sidebar: `UI v… | be v… | pipe v…` — Home-Tab: zusätzlich **pre OCR / p
 | Komponente | Version | Kurz |
 |---|---|---|
 | UI | 3.25 | PmLinks zentral; Handbuch-iframe via Proxy; breitere Vorschau |
-| BE | 2.73 | url_links.py; Proxy Binary-Headers; links in /api/config |
+| BE | 2.74 | url_links: nur PAPERLESS_URL / INTERNAL / API_URL |
 | Pipe | 12.82 | Identifikatoren: SWIFT nur mit Bank-Kontext, Tel nur gelabelt |
 | Pre OCR | 1.6 | ocrmypdf + QR-Lock (unverändert) |
 | Pre QR | 1.0 | Versionskennzeichnung init |
