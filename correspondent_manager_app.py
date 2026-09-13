@@ -33,8 +33,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.78"  # 2.78: favicon data-URI eingebettet (IP + Domain)
-UI_VERSION = "3.28"
+__version__ = "2.79"  # 2.79: optionaler Hinweis (Text/Banner/Titel) via .env
+UI_VERSION = "3.29"
 
 import requests
 from iban_utils import validate_iban
@@ -85,6 +85,25 @@ BRILLENPAESSE_JSON  = Path(os.environ.get("BRILLENPAESSE_JSON", "/opt/paperless-
 PENDING_BRILLENPASS_JSONL = Path(os.environ.get(
     "PENDING_BRILLENPASS_JSONL", "/opt/paperless-scripts/training/pending_brillenpass.jsonl",
 ))
+def _env_bool(key: str, default: bool = False) -> bool:
+    v = os.environ.get(key, "").strip().lower()
+    if not v:
+        return default
+    return v in ("1", "true", "yes", "on")
+
+
+def _pm_hint_config() -> dict:
+    """Optionaler Hinweis — Text + getrennt Banner oben / Tab-Titel (.env)."""
+    text = os.environ.get("PAPER_MANAGER_HINT_TEXT", "").strip()
+    if not text:
+        return {"text": None, "banner": False, "title": False}
+    return {
+        "text": text,
+        "banner": _env_bool("PAPER_MANAGER_HINT_BANNER"),
+        "title": _env_bool("PAPER_MANAGER_HINT_TITLE"),
+    }
+
+
 PAPERLESS_VIEW_GROUPS   = [g.strip() for g in os.environ.get("PAPERLESS_VIEW_GROUPS", "family,Eltern").split(",")]
 PAPERLESS_CHANGE_GROUPS = [g.strip() for g in os.environ.get("PAPERLESS_CHANGE_GROUPS", "Eltern").split(",")]
 PENDING_REVIEW_TAG       = os.environ.get("PENDING_REVIEW_TAG",       "pending_review")
@@ -3512,6 +3531,7 @@ def api_config(request: Request):
         "handbuch_urls": handbuch_urls,
         "manager_urls": _manager_urls_config(request),
         "links": config_links,
+        "hint": _pm_hint_config(),
         "versions": {
             "ui":             UI_VERSION,
             "backend":        __version__,

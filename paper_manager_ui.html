@@ -363,9 +363,23 @@
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: var(--bg); }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* Optionaler Hinweis (PAPER_MANAGER_HINT_* in .env) */
+  .pm-hint-banner {
+    display: none;
+    background: rgba(79,156,249,.1);
+    border-bottom: 1px solid rgba(79,156,249,.35);
+    color: var(--label);
+    font-size: 12px;
+    line-height: 1.55;
+    padding: 9px 20px;
+    text-align: center;
+  }
+  .pm-hint-banner.visible { display: block; }
 </style>
 </head>
 <body>
+<div id="pm-hint-banner" class="pm-hint-banner" role="status" aria-live="polite"></div>
 <div class="shell">
 
 <!-- SIDEBAR -->
@@ -1276,7 +1290,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.28';
+const UI_VERSION = '3.29';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 let _homeHandbookLoaded = false;
@@ -1437,6 +1451,25 @@ function applyHomeHandbuchLinks(cfg) {
   }
 
   applyHomeWelcomeLinks(cfg);
+}
+
+function applyPmHint(cfg) {
+  const hint = cfg?.hint;
+  const banner = document.getElementById('pm-hint-banner');
+  if (banner) {
+    if (hint?.banner && hint?.text) {
+      banner.textContent = hint.text;
+      banner.classList.add('visible');
+    } else {
+      banner.textContent = '';
+      banner.classList.remove('visible');
+    }
+  }
+  if (hint?.title && hint?.text) {
+    document.title = `paper.manager — ${hint.text}`;
+  } else {
+    document.title = 'paper.manager';
+  }
 }
 
 function applyHomeWelcomeLinks(cfg) {
@@ -1606,12 +1639,14 @@ async function init() {
   // Sidebar Paperless-Link — request-aware via /api/config
   fetch(`${API_BASE}/config`).then(r=>r.json()).then(cfg => {
     setPmConfig(cfg);
+    applyPmHint(cfg);
     applyPaperlessLinks(cfg.paperless_url || effectivePaperlessBase());
   }).catch(()=>{});
   // Config zuerst laden — pending_mode direkt in DOM schreiben
   try {
     const cfg = await _checkAuth(await fetch(`${API_BASE}/config`)).json();
     setPmConfig(cfg);
+    applyPmHint(cfg);
     applyPaperlessLinks(cfg.paperless_url || effectivePaperlessBase());
     if (cfg.versions) {
       applyVersionDisplay(cfg.versions, cfg.ollama_models);
