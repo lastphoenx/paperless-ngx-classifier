@@ -497,7 +497,7 @@
           </div>
         </div>
         <p style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:4px">
-          Benutzerhandbuch für Review, Korrespondenten, Pipeline und Legacy-Import — direkt hier oder als Word-Export.
+          Benutzerhandbuch inline oder als Word/PDF in Paperless (wenn <code>HANDBUCH_DOC_ID</code> gesetzt).
         </p>
         <div id="home-handbook-wrap" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
@@ -1318,11 +1318,24 @@ function toggleHomeHandbook(show) {
   }
 }
 
+function applyHomeDocxLink(cfg) {
+  const link = document.getElementById('home-docx-link');
+  if (!link) return;
+  const docId = cfg?.handbuch_doc_id;
+  if (docId) {
+    link.href = paperlessDocUrl(docId);
+    link.textContent = `Anleitung in Paperless (#${docId}) ↗`;
+    link.title = 'Bedienungsanleitung in Paperless öffnen (Original .docx/.pdf)';
+  } else {
+    link.href = `${API_BASE}/docs/bedienungsanleitung.docx`;
+    link.textContent = 'Word (.docx) ↗';
+    link.title = 'Bedienungsanleitung vom Server herunterladen';
+  }
+}
+
 async function loadHomeHandbookIfNeeded() {
   const status = document.getElementById('home-handbook-status');
   const content = document.getElementById('home-handbook-content');
-  const docxLink = document.getElementById('home-docx-link');
-  if (docxLink) docxLink.href = `${API_BASE}/docs/bedienungsanleitung.docx`;
   if (_homeHandbookLoaded || !content) return;
   if (status) status.textContent = 'Lade Handbuch…';
   try {
@@ -1467,6 +1480,7 @@ async function init() {
     if (cfg.versions) {
       applyVersionDisplay(cfg.versions, cfg.ollama_models);
     }
+    applyHomeDocxLink(cfg);
     if (cfg.pending_mode) {
       // Direkt setzen ohne Umweg über updatePendingModeUI
       _qsModeActive = (cfg.pending_mode === 'always');
@@ -1560,10 +1574,9 @@ function showView(name) {
     // Backend + Pipeline Version laden
     fetch(`${API_BASE}/config`).then(r=>r.json()).then(d => {
       applyVersionDisplay(d.versions, d.ollama_models);
+      applyHomeDocxLink(d);
     }).catch(()=>{});
     loadHomeHandbookIfNeeded();
-    const docxLink = document.getElementById('home-docx-link');
-    if (docxLink) docxLink.href = `${API_BASE}/docs/bedienungsanleitung.docx`;
   }
   if (name === 'correspondents') loadCorrMap();
   if (name === 'docreview') { loadDocReview(); loadDocReviewMeta(); }

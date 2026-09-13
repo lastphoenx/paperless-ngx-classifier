@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.69"  # 2.69: /api/docs/* Handbuch MD + Docx-Download
+__version__ = "2.70"  # 2.70: HANDBUCH_DOC_ID in /api/config für Start-Tab Word-Link
 UI_VERSION = "3.22"
 
 import requests
@@ -3493,10 +3493,18 @@ def api_config(request: Request):
         return "?"
     base = "/opt/paperless-scripts"
     canonical = os.environ.get("PAPERLESS_URL", "http://localhost:8000")
+    handbuch_raw = os.environ.get("HANDBUCH_DOC_ID", "").strip()
+    handbuch_doc_id: int | None = None
+    if handbuch_raw:
+        try:
+            handbuch_doc_id = int(handbuch_raw)
+        except ValueError:
+            log.warning("HANDBUCH_DOC_ID ungültig: %r", handbuch_raw)
     return {
         "paperless_url": _effective_paperless_url(request),
         "paperless_url_config": canonical,
         "pending_mode":  _get_pending_mode(),
+        "handbuch_doc_id": handbuch_doc_id,
         "versions": {
             "ui":             UI_VERSION,
             "backend":        __version__,
