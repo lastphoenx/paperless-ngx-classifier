@@ -441,7 +441,9 @@
   <!-- PENDING VIEW -->
   <!-- HOME / LANDING PAGE -->
   <div id="view-home" style="display:none">
-    <div style="max-width:900px">
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,36%);gap:20px;align-items:start;max-width:1400px">
+
+    <div id="home-main-column">
 
       <div style="margin-bottom:32px">
         <h2 style="font-size:24px;margin-bottom:8px">paper<span style="color:var(--accent)">.</span>manager</h2>
@@ -450,6 +452,7 @@
           lokale KI, deterministisches Routing, Lernkreislauf, Swiss QR-Bill.
           100% lokal, kein Cloud-Zwang, keine API-Kosten.
         </p>
+        <p id="home-welcome-links" style="color:var(--muted);font-size:13px;line-height:1.85;margin-top:14px;display:none"></p>
       </div>
 
       <!-- Versionen -->
@@ -499,8 +502,9 @@
           </div>
         </div>
         <p style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:4px">
-          Ordner <strong>#Dokumentations/Benutzerhandbuch</strong> in Paperless — inline hier oder PDF via
-          <code>HANDBUCH_DOC_ID</code> (Proxy für IP, Paperless-Link für Domain).
+          Ordner <strong>#Dokumentations/Benutzerhandbuch</strong> in Paperless —
+          PDF-Vorschau rechts (Paperless <code>:8000</code>), inline-Markdown oder
+          <code>HANDBUCH_DOC_ID</code> in <code>.env</code>.
         </p>
         <div id="home-handbook-wrap" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
@@ -640,6 +644,24 @@
       <div style="text-align:center;padding:16px 0;color:var(--muted);font-size:11px">
         paper.manager v<span id="home-ui-version2">—</span> · Paperless-NGX · Ollama · lokal · privat
       </div>
+    </div>
+
+    <!-- Handbuch-PDF-Vorschau (Paperless :8000 — nicht paper.manager :8100) -->
+    <div id="home-handbuch-preview-panel" style="display:none;position:sticky;top:12px">
+      <div class="card" style="margin-bottom:0">
+        <div class="card-header">
+          <span class="card-title">Handbuch (PDF)</span>
+          <a id="home-handbuch-preview-open" class="btn btn-ghost" style="padding:4px 12px;font-size:11px;text-decoration:none" href="#" target="_blank" rel="noopener" title="PDF in neuem Tab">Vollbild ↗</a>
+        </div>
+        <div style="height:calc(100vh - 100px);min-height:420px;overflow:auto;border:1px solid var(--border);border-radius:6px;background:#1a1a1a">
+          <iframe id="home-handbuch-preview-frame" title="Handbuch PDF" style="width:100%;height:100%;min-height:400px;border:0" src="about:blank"></iframe>
+        </div>
+        <p style="color:var(--muted);font-size:10px;margin-top:8px;line-height:1.5">
+          Klick auf «Vollbild» → Paperless-PDF. Session von Paperless-Login nötig (<code>:8000</code>).
+        </p>
+      </div>
+    </div>
+
     </div>
   </div>
   <div id="view-pending">
@@ -1198,7 +1220,13 @@ function effectivePaperlessBase() {
 }
 function paperlessDocUrl(docId) {
   const base = (window.PAPERLESS_URL || effectivePaperlessBase()).replace(/\/$/, '');
-  return `${base}/documents/${docId}`;
+  return `${base}/documents/${docId}/details`;
+}
+function paperlessDocPreviewUrl(docId, cfg) {
+  const urls = cfg?.handbuch_urls || {};
+  if (docId && urls.pdf_preview) return urls.pdf_preview;
+  const base = (window.PAPERLESS_URL || effectivePaperlessBase()).replace(/\/$/, '');
+  return `${base}/api/documents/${docId}/preview/`;
 }
 function paperlessCorrUrl(plId) {
   return `${effectivePaperlessBase()}/correspondents/?id=${plId}`;
@@ -1215,7 +1243,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.23';
+const UI_VERSION = '3.24';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 let _homeHandbookLoaded = false;
@@ -1326,15 +1354,17 @@ function applyHomeHandbuchLinks(cfg) {
   const pdfLink = document.getElementById('home-handbuch-pdf-link');
   const plLink = document.getElementById('home-handbuch-pl-link');
   const fallback = document.getElementById('home-docx-fallback-link');
+  const previewPanel = document.getElementById('home-handbuch-preview-panel');
+  const previewFrame = document.getElementById('home-handbuch-preview-frame');
+  const previewOpen = document.getElementById('home-handbuch-preview-open');
   const docId = cfg?.handbuch_doc_id;
   const urls = cfg?.handbuch_urls || {};
+  const pdfUrl = docId ? paperlessDocPreviewUrl(docId, cfg) : '';
 
   if (docId && pdfLink) {
-    const proxyPath = urls.pdf_proxy || `/api/proxy/document/${docId}/preview/`;
-    const proxySuffix = proxyPath.replace(/^\/api/, '');
-    pdfLink.href = `${API_BASE}${proxySuffix}`;
+    pdfLink.href = pdfUrl;
     pdfLink.textContent = `Handbuch PDF (#${docId}) ↗`;
-    pdfLink.title = 'PDF im Browser (Proxy — funktioniert auch per IP :8100)';
+    pdfLink.title = urls.pdf_preview_ip || pdfUrl;
     pdfLink.style.display = '';
   } else if (pdfLink) {
     pdfLink.style.display = 'none';
@@ -1349,6 +1379,17 @@ function applyHomeHandbuchLinks(cfg) {
     plLink.style.display = 'none';
   }
 
+  if (docId && previewPanel && previewFrame) {
+    previewFrame.src = pdfUrl;
+    previewPanel.style.display = '';
+    if (previewOpen) {
+      previewOpen.href = pdfUrl;
+      previewOpen.title = pdfUrl;
+    }
+  } else if (previewPanel) {
+    previewPanel.style.display = 'none';
+  }
+
   if (fallback) {
     if (docId) {
       fallback.style.display = 'none';
@@ -1359,6 +1400,36 @@ function applyHomeHandbuchLinks(cfg) {
       fallback.style.display = '';
     }
   }
+
+  applyHomeWelcomeLinks(cfg);
+}
+
+function applyHomeWelcomeLinks(cfg) {
+  const el = document.getElementById('home-welcome-links');
+  if (!el) return;
+  const mu = cfg?.manager_urls || {};
+  const hu = cfg?.handbuch_urls || {};
+  const docId = cfg?.handbuch_doc_id;
+  const linkParts = [];
+  if (mu.home_internal) {
+    linkParts.push(`<a href="${escapeHtml(mu.home_internal)}" target="_blank" rel="noopener" style="color:var(--accent)">${escapeHtml(mu.internal || mu.home_internal)}</a>`);
+  }
+  if (mu.home_public) {
+    linkParts.push(`<a href="${escapeHtml(mu.home_public)}" target="_blank" rel="noopener" style="color:var(--accent)">${escapeHtml((mu.public || mu.home_public).replace(/^https?:\/\//, ''))}</a>`);
+  }
+  if (docId && hu.pdf_preview_ip) {
+    linkParts.push(`<a href="${escapeHtml(hu.pdf_preview_ip)}" target="_blank" rel="noopener" style="color:var(--accent)">Handbuch PDF (IP)</a>`);
+  }
+  if (docId && hu.pdf_preview_public && hu.pdf_preview_public !== hu.pdf_preview_ip) {
+    linkParts.push(`<a href="${escapeHtml(hu.pdf_preview_public)}" target="_blank" rel="noopener" style="color:var(--accent)">Handbuch PDF (Domain)</a>`);
+  }
+  if (!linkParts.length) {
+    el.style.display = 'none';
+    return;
+  }
+  el.innerHTML = 'Review-Oberfläche für Paperless — Korrespondenten, Tags, Pipeline. '
+    + linkParts.join(' · ');
+  el.style.display = '';
 }
 
 /** @deprecated use applyHomeHandbuchLinks */

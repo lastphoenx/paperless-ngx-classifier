@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.71"  # 2.71: handbuch_urls in /api/config (PDF-Proxy + Paperless-UI, IP/Domain)
+__version__ = "2.72"  # 2.72: handbuch/manager URLs auf Paperless :8000 (kein PDF-Proxy für Handbuch)
 UI_VERSION = "3.23"
 
 import requests
@@ -233,6 +233,53 @@ def _effective_paperless_url(request: Request | None = None) -> str:
     if host_without_port in ("localhost", "127.0.0.1"):
         return canonical
     return f"{proto}://{host_without_port}"
+
+
+def _paperless_internal_base() -> str:
+    return os.environ.get(
+        "PAPERLESS_INTERNAL_URL",
+        os.environ.get("PAPERLESS_URL", "http://localhost:8000"),
+    ).rstrip("/")
+
+
+def _paperless_public_base() -> str:
+    return os.environ.get("PAPERLESS_URL", "http://localhost:8000").rstrip("/")
+
+
+def _manager_urls_config() -> dict[str, str]:
+    """Stabile paper.manager-Links (IP :8100 + Domain /corr-manager/) für Home-Willkommen."""
+    from urllib.parse import urlparse
+
+    internal = os.environ.get("PAPER_MANAGER_INTERNAL_URL", "").strip().rstrip("/")
+    if not internal:
+        parsed = urlparse(_paperless_internal_base())
+        if parsed.hostname and parsed.hostname.replace(".", "").isdigit():
+            internal = f"http://{parsed.hostname}:8100"
+
+    public = os.environ.get("PAPER_MANAGER_PUBLIC_URL", "").strip().rstrip("/")
+    out: dict[str, str] = {}
+    if internal:
+        out["internal"] = internal
+        out["home_internal"] = f"{internal}/#home"
+    if public:
+        out["public"] = f"{public}/"
+        out["home_public"] = f"{public}/#home"
+    return out
+
+
+def _handbuch_urls_for(doc_id: int, request: Request) -> dict[str, str]:
+    """Handbuch-PDF und Paperless-UI — immer auf Paperless (:8000 / Domain), nicht paper.manager."""
+    pl_current = _effective_paperless_url(request).rstrip("/")
+    pl_internal = _paperless_internal_base()
+    pl_public = _paperless_public_base()
+    return {
+        "pdf_preview": f"{pl_current}/api/documents/{doc_id}/preview/",
+        "pdf_preview_ip": f"{pl_internal}/api/documents/{doc_id}/preview/",
+        "pdf_preview_public": f"{pl_public}/api/documents/{doc_id}/preview/",
+        "paperless_ui": f"{pl_current}/documents/{doc_id}/details",
+        "paperless_ui_ip": f"{pl_internal}/documents/{doc_id}/details",
+        "paperless_ui_public": f"{pl_public}/documents/{doc_id}/details",
+    }
 
 
 def _parse_geburtsdatum(geb: str) -> tuple[int, int, int] | None:
@@ -3499,11 +3546,7 @@ def api_config(request: Request):
     if handbuch_raw:
         try:
             handbuch_doc_id = int(handbuch_raw)
-            pl_base = _effective_paperless_url(request).rstrip("/")
-            handbuch_urls = {
-                "paperless_ui": f"{pl_base}/documents/{handbuch_doc_id}",
-                "pdf_proxy": f"/api/proxy/document/{handbuch_doc_id}/preview/",
-            }
+            handbuch_urls = _handbuch_urls_for(handbuch_doc_id, request)
         except ValueError:
             log.warning("HANDBUCH_DOC_ID ungültig: %r", handbuch_raw)
     return {
@@ -3512,6 +3555,7 @@ def api_config(request: Request):
         "pending_mode":  _get_pending_mode(),
         "handbuch_doc_id": handbuch_doc_id,
         "handbuch_urls": handbuch_urls,
+        "manager_urls": _manager_urls_config(),
         "versions": {
             "ui":             UI_VERSION,
             "backend":        __version__,

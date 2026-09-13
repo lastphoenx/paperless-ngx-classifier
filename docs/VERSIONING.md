@@ -67,8 +67,8 @@ Sidebar: `UI v… | be v… | pipe v…` — Home-Tab: zusätzlich **pre OCR / p
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.23 | Handbuch PDF-Proxy (IP) + Paperless-Link (Domain) |
-| BE | 2.71 | handbuch_urls in /api/config |
+| UI | 3.24 | Handbuch PDF auf Paperless :8000, Vorschau rechts, Willkommen-Links |
+| BE | 2.72 | handbuch_urls + manager_urls (IP/Domain, kein Handbuch-Proxy) |
 | Pipe | 12.82 | Identifikatoren: SWIFT nur mit Bank-Kontext, Tel nur gelabelt |
 | Pre OCR | 1.6 | ocrmypdf + QR-Lock (unverändert) |
 | Pre QR | 1.0 | Versionskennzeichnung init |
