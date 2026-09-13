@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>paper.manager</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon" sizes="any">
+<link rel="shortcut icon" href="/favicon.ico">
 <style>
   :root {
     --bg:        #0f1117;
@@ -654,7 +656,7 @@
           <a id="home-handbuch-preview-open" class="btn btn-ghost" style="padding:4px 12px;font-size:11px;text-decoration:none" href="#" target="_blank" rel="noopener" title="PDF in neuem Tab">Vollbild ↗</a>
         </div>
         <div style="height:calc(100vh - 88px);min-height:520px;overflow:auto;border:1px solid var(--border);border-radius:6px;background:#1a1a1a">
-          <iframe id="home-handbuch-preview-frame" title="Handbuch PDF" style="width:100%;height:100%;min-height:500px;border:0" src="about:blank"></iframe>
+          <iframe id="home-handbuch-preview-frame" title="Handbuch PDF" referrerpolicy="same-origin" style="width:100%;height:100%;min-height:500px;border:0" src="about:blank"></iframe>
         </div>
         <p style="color:var(--muted);font-size:10px;margin-top:8px;line-height:1.5">
           Eingebettet: Proxy auf paper.manager (Same-Origin). «Vollbild» → Paperless-PDF direkt.
@@ -1271,7 +1273,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.25';
+const UI_VERSION = '3.26';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 let _homeHandbookLoaded = false;

@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.75"  # 2.75: deploy kopiert url_links.py (Fix Service-Start)
-UI_VERSION = "3.25"
+__version__ = "2.76"  # 2.76: Paperless-favicon (/favicon.ico)
+UI_VERSION = "3.26"
 
 import requests
 from iban_utils import validate_iban
@@ -302,8 +302,8 @@ async def require_paperless_session(request: Request, call_next):
     paperless_internal = os.environ.get("PAPERLESS_INTERNAL_URL",
                          os.environ.get("PAPERLESS_URL", "http://localhost:8000"))
 
-    # Health + HTML-Shell ohne Auth — APIs bleiben geschützt
-    if path == "/health" or path in ("/", ""):
+    # Health, Favicon, HTML-Shell ohne Auth — APIs bleiben geschützt
+    if path == "/health" or path == "/favicon.ico" or path in ("/", ""):
         return await call_next(request)
 
     # API-Calls (inkl. /api/proxy/*): Token oder Session prüfen
@@ -4583,6 +4583,8 @@ def api_korr_typen():
 
 # HTML UI wird aus separater Datei geladen (beim Start gecacht — Deploy = Service-Restart)
 _UI_FILE = Path(__file__).parent / "paper_manager_ui.html"
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+_FAVICON_FILE = _STATIC_DIR / "favicon.ico"
 _UI_FALLBACK = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>paper.manager</title>
 <style>body{background:#0f1117;color:#e2e8f0;font-family:sans-serif;
@@ -4668,6 +4670,14 @@ def proxy_document_thumb(doc_id: int):
         raise
     except Exception as e:
         raise HTTPException(502, f"Proxy-Fehler: {e}")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    """Paperless-NGX Favicon (offiziell, static/favicon.ico)."""
+    if not _FAVICON_FILE.is_file():
+        raise HTTPException(404, "favicon.ico fehlt — deploy static/")
+    return FileResponse(_FAVICON_FILE, media_type="image/x-icon")
 
 
 @app.get("/", response_class=HTMLResponse)

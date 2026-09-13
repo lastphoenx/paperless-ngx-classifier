@@ -67,8 +67,8 @@ Sidebar: `UI v… | be v… | pipe v…` — Home-Tab: zusätzlich **pre OCR / p
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.25 | PmLinks zentral; Handbuch-iframe via Proxy; breitere Vorschau |
-| BE | 2.75 | deploy-to-ct121: url_links.py mitdeployen |
+| UI | 3.26 | Paperless-Favicon (/favicon.ico) |
+| BE | 2.76 | favicon-Route + static/ deploy |
 | Pipe | 12.82 | Identifikatoren: SWIFT nur mit Bank-Kontext, Tel nur gelabelt |
 | Pre OCR | 1.6 | ocrmypdf + QR-Lock (unverändert) |
 | Pre QR | 1.0 | Versionskennzeichnung init |

@@ -82,6 +82,12 @@ for f in "${FILES[@]}"; do
 done
 
 mkdir -p "$TARGET/docs"
+mkdir -p "$TARGET/static"
+if [[ -f "$REPO_DIR/static/favicon.ico" ]]; then
+  cp -v "$REPO_DIR/static/favicon.ico" "$TARGET/static/favicon.ico"
+else
+  echo "==> Hinweis: $REPO_DIR/static/favicon.ico fehlt"
+fi
 for df in docs/Benutzerhandbuch_paper_manager.md docs/Bedienungsanleitung_paper_manager.docx; do
   src="$REPO_DIR/$df"
   dest_name="$(basename "$df")"
