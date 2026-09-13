@@ -4,23 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>paper.manager</title>
-<script>
-(function () {
-  var prefix = window.location.pathname.startsWith('/corr-manager') ? '/corr-manager' : '';
-  window.PM_FAVICON = prefix + '/favicon.ico';
-})();
-</script>
-<link rel="icon" id="pm-favicon" href="/favicon.ico" type="image/x-icon" sizes="any">
-<link rel="shortcut icon" id="pm-favicon-shortcut" href="/favicon.ico">
-<script>
-(function () {
-  var href = window.PM_FAVICON || '/favicon.ico';
-  var icon = document.getElementById('pm-favicon');
-  var shortcut = document.getElementById('pm-favicon-shortcut');
-  if (icon) icon.href = href;
-  if (shortcut) shortcut.href = href;
-})();
-</script>
+<link rel="icon" href="__PM_FAVICON_HREF__" type="image/x-icon" sizes="any">
+<link rel="shortcut icon" href="__PM_FAVICON_HREF__">
 <style>
   :root {
     --bg:        #0f1117;
@@ -1291,7 +1276,7 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.27';
+const UI_VERSION = '3.28';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 let _homeHandbookLoaded = false;

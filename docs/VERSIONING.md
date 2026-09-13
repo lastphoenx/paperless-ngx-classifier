@@ -67,8 +67,8 @@ Sidebar: `UI v… | be v… | pipe v…` — Home-Tab: zusätzlich **pre OCR / p
 
 | Komponente | Version | Kurz |
 |---|---|---|
-| UI | 3.27 | Start-Willkommen mit IP+Domain+Handbuch; favicon corr-manager |
-| BE | 2.77 | LAN-IP für Link-Liste (ohne extra Env) |
+| UI | 3.28 | Favicon data-URI (IP + Domain, kein Pfad-Problem) |
+| BE | 2.78 | favicon in HTML eingebettet beim Ausliefern |
 | Pipe | 12.82 | Identifikatoren: SWIFT nur mit Bank-Kontext, Tel nur gelabelt |
 | Pre OCR | 1.6 | ocrmypdf + QR-Lock (unverändert) |
 | Pre QR | 1.0 | Versionskennzeichnung init |

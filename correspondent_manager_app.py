@@ -20,6 +20,7 @@ import json
 import os
 import re
 import asyncio
+import base64
 import functools
 import fcntl
 import logging
@@ -32,8 +33,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.77"  # 2.77: LAN-IP für Links; favicon-Pfad corr-manager
-UI_VERSION = "3.27"
+__version__ = "2.78"  # 2.78: favicon data-URI eingebettet (IP + Domain)
+UI_VERSION = "3.28"
 
 import requests
 from iban_utils import validate_iban
@@ -4585,6 +4586,30 @@ def api_korr_typen():
 _UI_FILE = Path(__file__).parent / "paper_manager_ui.html"
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 _FAVICON_FILE = _STATIC_DIR / "favicon.ico"
+_FAVICON_CACHE: tuple[float, str] | None = None
+
+
+def _favicon_href() -> str:
+    """Data-URI — funktioniert per IP und /corr-manager/ ohne Extra-Request."""
+    global _FAVICON_CACHE
+    if not _FAVICON_FILE.is_file():
+        return "/favicon.ico"
+    mtime = _FAVICON_FILE.stat().st_mtime
+    if _FAVICON_CACHE and _FAVICON_CACHE[0] == mtime:
+        return _FAVICON_CACHE[1]
+    b64 = base64.b64encode(_FAVICON_FILE.read_bytes()).decode("ascii")
+    href = f"data:image/x-icon;base64,{b64}"
+    _FAVICON_CACHE = (mtime, href)
+    return href
+
+
+def _load_ui_html() -> str:
+    if _UI_FILE.exists():
+        html = _UI_FILE.read_text(encoding="utf-8")
+        return html.replace("__PM_FAVICON_HREF__", _favicon_href())
+    return _UI_FALLBACK
+
+
 _UI_FALLBACK = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>paper.manager</title>
 <style>body{background:#0f1117;color:#e2e8f0;font-family:sans-serif;
@@ -4597,12 +4622,6 @@ h2{color:#f87171}code{background:#1e293b;padding:4px 8px;border-radius:4px}
 <code>/opt/paperless-scripts/paper_manager_ui.html</code>
 <p>Bitte deployen und Service neu starten.</p>
 </div></body></html>"""
-
-
-def _load_ui_html() -> str:
-    if _UI_FILE.exists():
-        return _UI_FILE.read_text(encoding="utf-8")
-    return _UI_FALLBACK
 
 
 _UI_HTML = _load_ui_html()  # Fallback; Live-Route lädt Datei bei jedem Request
