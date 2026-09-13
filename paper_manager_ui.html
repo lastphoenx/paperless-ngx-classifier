@@ -1211,13 +1211,20 @@ function applyPaperlessLinks(url) {
     btn.title = base;
   });
 }
-const UI_VERSION = '3.21';
+const UI_VERSION = '3.22';
 const WORKFLOW_TAGS = new Set(['pending_review', 'pending_new_correspondent', 'pending_qs', 'pending_brillenpass', 'pending_htr_decision']);
 
 let _homeHandbookLoaded = false;
 
 function escapeHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function slugifyHeading(s) {
+  return String(s).toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function renderHandbookMarkdown(md) {
@@ -1229,12 +1236,20 @@ function renderHandbookMarkdown(md) {
     return `\x00BLOCK${id}\x00`;
   });
   t = escapeHtml(t);
-  t = t.replace(/^###### (.+)$/gm, '<h6>$1</h6>');
-  t = t.replace(/^##### (.+)$/gm, '<h5>$1</h5>');
-  t = t.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-  t = t.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  t = t.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  t = t.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  const _headingIds = new Map();
+  function withId(tag, text) {
+    let slug = slugifyHeading(text) || tag;
+    const n = _headingIds.get(slug) || 0;
+    _headingIds.set(slug, n + 1);
+    if (n > 0) slug = `${slug}-${n + 1}`;
+    return `<${tag} id="${slug}">${text}</${tag}>`;
+  }
+  t = t.replace(/^###### (.+)$/gm, (_, txt) => withId('h6', txt));
+  t = t.replace(/^##### (.+)$/gm, (_, txt) => withId('h5', txt));
+  t = t.replace(/^#### (.+)$/gm, (_, txt) => withId('h4', txt));
+  t = t.replace(/^### (.+)$/gm, (_, txt) => withId('h3', txt));
+  t = t.replace(/^## (.+)$/gm, (_, txt) => withId('h2', txt));
+  t = t.replace(/^# (.+)$/gm, (_, txt) => withId('h1', txt));
   t = t.replace(/^&gt; (.+)$/gm, '<blockquote><p>$1</p></blockquote>');
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -1285,7 +1300,10 @@ function renderHandbookMarkdown(md) {
   if (inUl) out += '</ul>';
   if (inOl) out += '</ol>';
   if (inTable) flushTable();
-  blocks.forEach((b, i) => { out = out.replace(`\x00BLOCK${i}\x00`, b); });
+  // Funktion als Replacer (nicht String!) — sonst interpretiert String.replace()
+  // $-Sequenzen im Code (z.B. "$'" in einer Bash-Variable) als Ersetzungsmuster
+  // und dupliziert den Rest des Dokuments in den Codeblock hinein.
+  blocks.forEach((b, i) => { out = out.replace(`\x00BLOCK${i}\x00`, () => b); });
   return out;
 }
 
@@ -1312,6 +1330,15 @@ async function loadHomeHandbookIfNeeded() {
     if (!r.ok) throw new Error(r.status === 404 ? 'Handbuch-Datei fehlt auf dem Server' : 'HTTP ' + r.status);
     const data = await r.json();
     content.innerHTML = renderHandbookMarkdown(data.content || '');
+    // Inhaltsverzeichnis-Links (#anchor) scrollen innerhalb des Handbuchs statt
+    // die App-Hash-Navigation (VALID_VIEWS) auszulösen und den Tab zu wechseln.
+    content.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const target = document.getElementById(decodeURIComponent(a.getAttribute('href').slice(1)));
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
     if (status) status.textContent = data.filename || 'Benutzerhandbuch';
     _homeHandbookLoaded = true;
   } catch (e) {

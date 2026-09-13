@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "2.69"  # 2.69: /api/docs/* Handbuch MD + Docx-Download
-UI_VERSION = "3.21"
+UI_VERSION = "3.22"
 
 import requests
 from iban_utils import validate_iban
