@@ -24,6 +24,23 @@ from urllib.parse import urlparse
 from starlette.requests import Request
 
 
+def _server_lan_ip() -> str | None:
+    """LAN-IP des Hosts (CT121) — für stabile IP-Links auch bei Domain-Zugriff."""
+    try:
+        import socket
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    return None
+
+
 def _request_host_ip(request: Request) -> str | None:
     host = (request.headers.get("host") or "").split(":")[0]
     if host.replace(".", "").isdigit():
@@ -62,6 +79,15 @@ def paperless_server_base() -> str:
     return "http://localhost:8000"
 
 
+def paperless_lan_base(request: Request) -> str | None:
+    """Paperless per LAN-IP (:8000) — Request-IP oder Server-LAN-IP."""
+    if ip_base := paperless_browser_ip_base(request):
+        return ip_base
+    if lan := _server_lan_ip():
+        return f"http://{lan}:8000"
+    return None
+
+
 def paperless_browser_ip_base(request: Request) -> str | None:
     """Paperless per LAN-IP — nur wenn der Client per IP auf paper.manager zugreift."""
     ip = _request_host_ip(request)
@@ -86,13 +112,13 @@ def request_manager_origin(request: Request) -> str:
 
 
 def manager_urls_config(request: Request) -> dict[str, str]:
-    """Domain aus PAPERLESS_URL; IP aus Request (kein extra Env)."""
+    """Domain aus PAPERLESS_URL; IP aus Request oder Server-LAN-IP."""
     pub = paperless_public_base()
     out: dict[str, str] = {
         "public": f"{pub}/corr-manager/",
         "home_public": f"{pub}/corr-manager/#home",
     }
-    ip = _request_host_ip(request)
+    ip = _request_host_ip(request) or _server_lan_ip()
     if ip:
         internal = f"http://{ip}:8100"
         out["internal"] = internal
@@ -103,7 +129,7 @@ def manager_urls_config(request: Request) -> dict[str, str]:
 def document_urls(doc_id: int, request: Request) -> dict[str, Any]:
     pl_current = effective_paperless_url(request).rstrip("/")
     pl_pub = paperless_public_base()
-    pl_ip = paperless_browser_ip_base(request)
+    pl_ip = paperless_lan_base(request)
     api_prefix = request_api_prefix(request)
     mgr_origin = request_manager_origin(request)
     proxy_path = f"{api_prefix}/proxy/document/{doc_id}/preview/"

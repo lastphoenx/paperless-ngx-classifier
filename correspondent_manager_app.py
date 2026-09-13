@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.76"  # 2.76: Paperless-favicon (/favicon.ico)
-UI_VERSION = "3.26"
+__version__ = "2.77"  # 2.77: LAN-IP für Links; favicon-Pfad corr-manager
+UI_VERSION = "3.27"
 
 import requests
 from iban_utils import validate_iban
