@@ -32,8 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-__version__ = "2.74"  # 2.74: url_links nur PAPERLESS_URL/INTERNAL/API — kein PAPER_MANAGER_* URL
-UI_VERSION = "3.23"
+__version__ = "2.75"  # 2.75: deploy kopiert url_links.py (Fix Service-Start)
+UI_VERSION = "3.25"
 
 import requests
 from iban_utils import validate_iban

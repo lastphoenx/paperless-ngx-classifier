@@ -31,6 +31,7 @@ done
 
 FILES=(
   correspondent_manager_app.py
+  url_links.py
   paper_manager_ui.html
   post_consume.py
   post_consume_runner.py
