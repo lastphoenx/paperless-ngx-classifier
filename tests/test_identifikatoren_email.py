@@ -90,5 +90,109 @@ def test_normalize_email_backend():
         "uid": [],
         "iban": [],
         "telefon": [],
+        "website": [],
     })
     assert out["email"] == ["kontakt@firma.ch"]
+
+
+def test_match_by_website():
+    corr_map = {
+        "eintraege": [
+            {
+                "name": "Betty Bossi",
+                "match": ["betty bossi"],
+                "identifikatoren": {"website": ["bettybossi.ch"]},
+            },
+            {
+                "name": "JUMBO",
+                "identifikatoren": {"uid": ["CHE-116.311.185"]},
+            },
+        ]
+    }
+    text = "Rechnung\nwww.bettybossi.ch\nCHE-116.311.185 MWST"
+    entry, grund = pc._match_correspondent_by_identifikatoren(
+        corr_map, text, absender="Betty Bossi",
+    )
+    assert entry["name"] == "Betty Bossi"
+    assert "Website" in grund
+    assert entry["name"] == "Betty Bossi"
+
+
+def test_uid_loses_to_vision_absender():
+    corr_map = {
+        "eintraege": [
+            {
+                "name": "JUMBO",
+                "match": ["jumbo"],
+                "identifikatoren": {"uid": ["CHE-116.311.185"]},
+            },
+            {
+                "name": "Betty Bossi",
+                "match": ["betty bossi"],
+            },
+        ]
+    }
+    text = "CHE-116.311.185 MWST\nSlush Maschine"
+    entry, grund = pc._match_correspondent_by_identifikatoren(
+        corr_map, text, absender="Betty Bossi",
+        vision_meta={"logo_vorhanden": True},
+    )
+    assert entry["name"] == "Betty Bossi"
+    assert "Logo/Absender" in grund
+
+
+def test_shared_uid_weak_tie():
+    coop_uid = "CHE-116.311.185"
+    corr_map = {
+        "eintraege": [
+            {"name": "Coop", "identifikatoren": {"uid": [coop_uid]}},
+            {"name": "JUMBO", "identifikatoren": {"uid": [coop_uid]}},
+        ]
+    }
+    text = f"Rechnung {coop_uid} MWST"
+    entry, grund = pc._match_correspondent_by_identifikatoren(corr_map, text)
+    assert entry is None
+    assert grund == ""
+
+
+def test_multi_signal_beats_uid_alone():
+    corr_map = {
+        "eintraege": [
+            {
+                "name": "Betty Bossi",
+                "match": ["betty bossi"],
+                "identifikatoren": {"website": ["bettybossi.ch"]},
+            },
+            {
+                "name": "JUMBO",
+                "identifikatoren": {"uid": ["CHE-116.311.185"]},
+            },
+        ]
+    }
+    text = "www.bettybossi.ch\nCHE-116.311.185"
+    entry, grund = pc._match_correspondent_by_identifikatoren(
+        corr_map, text, absender="Betty Bossi", vision_meta={"logo_vorhanden": True},
+    )
+    assert entry["name"] == "Betty Bossi"
+    assert "Website" in grund
+    assert "Logo/Absender" in grund
+
+
+def test_extract_website_vorschlag():
+    text = "Kontakt: www.bettybossi.ch\n"
+    vorschlag = pc._extract_identifikatoren_vorschlag(text)
+    assert "bettybossi.ch" in vorschlag["website"]
+
+
+def test_normalize_website_backend():
+    from correspondent_manager_app import _normalize_identifikatoren  # noqa: E402
+
+    out = _normalize_identifikatoren({
+        "website": ["https://www.BettyBossi.ch/shop", "www.bettybossi.ch"],
+        "uid": [],
+        "iban": [],
+        "swift": [],
+        "email": [],
+        "telefon": [],
+    })
+    assert out["website"] == ["bettybossi.ch"]

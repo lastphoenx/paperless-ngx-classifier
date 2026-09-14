@@ -2255,7 +2255,7 @@ function renderPanelNeu(entry, i, docContent, docIds) {
   const e = entry.vorgeschlagener_eintrag || {};
   const varianten = e.varianten || [];
   const match     = e.match || [];
-  const idents    = e.identifikatoren || {uid: [], iban: [], swift: [], email: [], telefon: []};
+  const idents    = e.identifikatoren || {uid: [], iban: [], swift: [], email: [], telefon: [], website: []};
   const kuerzelVorschlag = e.kuerzel || suggestKuerzel(e.name || entry.llm_raw || '');
   const korrTypen = allKorrTypen.length ? allKorrTypen : ['Behörde','Bank','Versicherung','Arzt','Arbeitgeber','Kundenservice','Verein','Online-Shop','Händler','Handwerk','Telekommunikation','Energie','Transport','Sonstiges'];
   return `
@@ -2352,6 +2352,13 @@ function renderPanelNeu(entry, i, docContent, docIds) {
         <div class="tags-input" id="tags-review-tel" data-tags='${JSON.stringify(idents.telefon||[])}'>
           ${(idents.telefon||[]).map(v => tagChip(v, 'tags-review-tel', '#60a5fa', 'rgba(59,130,246,.15)')).join('')}
           <input type="text" placeholder="+41-31-358 64 33" onkeydown="addTag(event,'tags-review-tel')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Website / Internetseite</label>
+        <div class="tags-input" id="tags-review-website" data-tags='${JSON.stringify(idents.website||[])}'>
+          ${(idents.website||[]).map(v => tagChip(v, 'tags-review-website', '#34d399', 'rgba(52,211,153,.15)')).join('')}
+          <input type="text" placeholder="www.firma.ch" onkeydown="addTag(event,'tags-review-website')">
         </div>
       </div>
       <div class="field-group">
@@ -2668,6 +2675,7 @@ async function submitReview(index, action) {
         swift:   getTagsFromContainer('tags-review-swift'),
         email:   getTagsFromContainer('tags-review-email'),
         telefon: getTagsFromContainer('tags-review-tel'),
+        website: getTagsFromContainer('tags-review-website'),
       };
       payload.typische_ordner = getTagsFromContainer('tags-ordner');
       payload.notiz           = document.getElementById('f-notiz')?.value;
@@ -2853,6 +2861,12 @@ async function openCorrCreate() {
         </div>
       </div>
       <div class="field-group">
+        <label>Website / Internetseite</label>
+        <div class="tags-input" id="tags-cf-website" data-tags='[]'>
+          <input type="text" placeholder="www.firma.ch" onkeydown="addTag(event,'tags-cf-website')">
+        </div>
+      </div>
+      <div class="field-group">
         <label>Typische Ordner</label>
         <div class="tags-input" id="tags-cf-ordner" data-tags='[]'>
           <select id="cf-ordner-select" onchange="addTagDirect('tags-cf-ordner',this.value);this.value=''">
@@ -2944,6 +2958,7 @@ async function submitCorrCreate() {
     swift:   getTagsFromContainer('tags-cf-swift'),
     email:   getTagsFromContainer('tags-cf-email'),
     telefon: getTagsFromContainer('tags-cf-tel'),
+    website: getTagsFromContainer('tags-cf-website'),
   };
 
   if (!name) {
@@ -3094,7 +3109,8 @@ function getFilteredCorrespondents(q) {
     (e.identifikatoren?.uid||[]).some(v => v.toLowerCase().includes(lq)) ||
     (e.identifikatoren?.iban||[]).some(v => v.toLowerCase().includes(lq)) ||
     (e.identifikatoren?.email||[]).some(v => v.toLowerCase().includes(lq)) ||
-    (e.identifikatoren?.telefon||[]).some(v => v.toLowerCase().includes(lq))
+    (e.identifikatoren?.telefon||[]).some(v => v.toLowerCase().includes(lq)) ||
+    (e.identifikatoren?.website||[]).some(v => v.toLowerCase().includes(lq))
   );
 }
 
@@ -3170,6 +3186,7 @@ function renderCorrMap(eintraege) {
           (id.swift||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(251,191,36,.15);color:#fbbf24;margin-right:4px" title="SWIFT">SWIFT ${u}</span>`));
           (id.email||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(244,114,182,.15);color:#f472b6;margin-right:4px" title="E-Mail">✉ ${u}</span>`));
           (id.telefon||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(59,130,246,.15);color:#60a5fa;margin-right:4px" title="Telefon">☎ ${u}</span>`));
+          (id.website||[]).forEach(u => rows.push(`<span class="badge" style="background:rgba(52,211,153,.15);color:#34d399;margin-right:4px" title="Website">🌐 ${u}</span>`));
           return rows.length ? `<div style="margin-bottom:8px"><span style="color:var(--muted);font-size:11px">IDENTIFIKATOREN: </span>${rows.join('')}</div>` : '';
         })()}
         <div>
@@ -3255,7 +3272,7 @@ function toggleCorrEdit(idx, entry) {
         </div>
       </div>
       <div class="field-group" style="padding-top:8px;border-top:1px dashed var(--border)">
-        <label style="font-size:11px;color:var(--muted)">IDENTIFIKATOREN — deterministische Zuordnung (UID &gt; IBAN &gt; SWIFT &gt; E-Mail &gt; Telefon)</label>
+        <label style="font-size:11px;color:var(--muted)">IDENTIFIKATOREN — Scoring (Logo/Absender, Website, UID, IBAN, … summieren; Gruppen-UID schwach)</label>
       </div>
       <div class="field-group">
         <label>UID / MWST-Nr. (CHE-…)</label>
@@ -3290,6 +3307,13 @@ function toggleCorrEdit(idx, entry) {
         <div class="tags-input" id="ce-tel-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).telefon||[])}'>
           ${((entry.identifikatoren||{}).telefon||[]).map(v => tagChip(v, `ce-tel-${idx}`, '#60a5fa', 'rgba(59,130,246,.15)')).join('')}
           <input type="text" placeholder="+41-31-358 64 33" onkeydown="addTag(event,'ce-tel-${idx}')">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Website / Internetseite</label>
+        <div class="tags-input" id="ce-website-${idx}" data-tags='${JSON.stringify((entry.identifikatoren||{}).website||[])}'>
+          ${((entry.identifikatoren||{}).website||[]).map(v => tagChip(v, `ce-website-${idx}`, '#34d399', 'rgba(52,211,153,.15)')).join('')}
+          <input type="text" placeholder="www.firma.ch" onkeydown="addTag(event,'ce-website-${idx}')">
         </div>
       </div>
       <div class="field-group">
@@ -3684,7 +3708,7 @@ function collectHtrOverrides(idx) {
 }
 
 async function saveCorrEdit(idx, nameParam) {
-  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-swift-${idx}`, `ce-email-${idx}`, `ce-tel-${idx}`,
+  flushTagInputs([`ce-var-${idx}`, `ce-match-${idx}`, `ce-uid-${idx}`, `ce-iban-${idx}`, `ce-swift-${idx}`, `ce-email-${idx}`, `ce-tel-${idx}`, `ce-website-${idx}`,
                   `ce-nvm-${idx}`, `ce-ord-${idx}`, `ce-bp-begriffe-${idx}`,
                   `ce-fixtags-${idx}`, `ce-verbdt-${idx}`, `ce-verbord-${idx}`, `ce-verbtag-${idx}`]);
   const name = nameParam || document.getElementById(`corr-edit-${idx}`)?.dataset?.name;
@@ -3713,6 +3737,7 @@ async function saveCorrEdit(idx, nameParam) {
       swift:   getTagsFromContainer(`ce-swift-${idx}`),
       email:   getTagsFromContainer(`ce-email-${idx}`),
       telefon: getTagsFromContainer(`ce-tel-${idx}`),
+      website: getTagsFromContainer(`ce-website-${idx}`),
     },
     extraktion_muster:      collectExtraktionsMuster(idx),
     erwartungen: {

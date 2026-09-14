@@ -458,6 +458,15 @@ def _norm_corr_email(raw: str) -> str:
     return str(raw or "").strip().lower()
 
 
+def _norm_corr_website(raw: str) -> str:
+    """www.bettybossi.ch → bettybossi.ch (Vergleich)."""
+    s = str(raw or "").strip().lower()
+    s = re.sub(r"^https?://", "", s)
+    s = re.sub(r"^www\.", "", s)
+    s = s.split("/")[0].split("?")[0].split("#")[0]
+    return s
+
+
 def _household_emails() -> set[str]:
     """Empfänger-E-Mails aus family.json — nicht als Korrespondent-Identifikator."""
     out: set[str] = set()
@@ -499,6 +508,13 @@ _CORR_UID_RE = re.compile(
     r"CHE[-\s.]?\d{3}[-\s.]?\d{3}[-\s.]?\d{3}(?:\s*MWST)?",
     re.IGNORECASE,
 )
+_CORR_WEBSITE_RE = re.compile(
+    r"(?:https?://)?(?:www\.)?([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)",
+    re.IGNORECASE,
+)
+_CORR_WEBSITE_IGNORE = frozenset({
+    "example.com", "example.org", "sentry.io", "localhost",
+})
 
 
 def _extract_corr_swifts_from_text(text: str) -> set[str]:
@@ -531,6 +547,27 @@ def _extract_corr_uids_from_text(text: str) -> set[str]:
         if n:
             found.add(n)
     return found
+
+
+def _extract_corr_websites_from_text(text: str) -> set[str]:
+    found: set[str] = set()
+    for m in _CORR_WEBSITE_RE.findall(text or ""):
+        n = _norm_corr_website(m)
+        if n and n not in _CORR_WEBSITE_IGNORE and "." in n:
+            found.add(n)
+    return found
+
+
+def _build_shared_uid_set(corr_map: dict) -> set[str]:
+    """UIDs die bei mehreren Korrespondenten hinterlegt sind (z. B. Coop-Gruppe)."""
+    counts: dict[str, int] = {}
+    for entry in corr_map.get("eintraege", []):
+        ident = entry.get("identifikatoren") or {}
+        for uid in ident.get("uid", []) or []:
+            n = _norm_corr_uid(uid)
+            if n:
+                counts[n] = counts.get(n, 0) + 1
+    return {u for u, c in counts.items() if c > 1}
 
 
 def _extract_corr_ibans_from_text(text: str) -> set[str]:
@@ -592,86 +629,116 @@ def _corr_phone_in_text(phone_norm: str, digit_stream: str) -> bool:
     return phone_norm in digit_stream
 
 
+# Gewichtung mehrerer Signale — kein starres UID-first; Logo/Absender + Website + UID summieren.
+_IDENT_SCORE = {
+    "logo_absender": 45,
+    "website":     40,
+    "uid":         35,
+    "iban":        30,
+    "swift":       25,
+    "email":       25,
+    "telefon":     20,
+    "uid_shared":   8,   # Gruppen-CHE (Coop-Konzern) — schwaches Signal
+}
+_IDENT_MIN_SCORE = 20
+_IDENT_MIN_MARGIN = 12
+
+
 def _match_correspondent_by_identifikatoren(
     corr_map: dict,
     ocr_text: str,
     *,
     qr_meta: dict | None = None,
     vision_meta: dict | None = None,
+    absender: str = "",
 ) -> tuple[dict | None, str]:
-    """Deterministischer Korrespondent-Match: UID > IBAN > SWIFT > E-Mail > Telefon (nur eindeutig)."""
+    """Korrespondent per Signal-Scoring (Logo/Absender, Website, UID, IBAN, …).
+
+    Mehrere Treffer pro Eintrag werden addiert; Gewinner nur bei klarer Führung.
+    Geteilte Gruppen-UID zählt schwach — verliert gegen Logo/Website des richtigen Markenauftritts.
+    """
     text = _corr_document_search_text(ocr_text, qr_meta, vision_meta)
-    if not text.strip():
+    if not text.strip() and not absender:
         return None, ""
+    doc_websites = _extract_corr_websites_from_text(text)
     doc_uids = _extract_corr_uids_from_text(text)
     doc_ibans = _extract_corr_ibans_from_text(text)
     doc_swifts = _extract_corr_swifts_from_text(text)
     doc_emails = {_norm_corr_email(e) for e in _extract_corr_emails_from_text(text)}
     digit_stream = re.sub(r"\D", "", text)
+    shared_uids = _build_shared_uid_set(corr_map)
 
-    uid_hits: list[dict] = []
-    iban_hits: list[dict] = []
-    swift_hits: list[dict] = []
-    email_hits: list[dict] = []
-    tel_hits: list[dict] = []
+    # name → {entry, signals: list[str], total: int}
+    scores: dict[str, dict] = {}
+
+    def _add(entry: dict, signal: str, points: int) -> None:
+        if points <= 0:
+            return
+        key = entry["name"]
+        bucket = scores.setdefault(key, {"entry": entry, "signals": [], "total": 0})
+        bucket["signals"].append(signal)
+        bucket["total"] += points
+
+    if absender:
+        name_entry = _resolve_corr_entry(corr_map, absender)
+        if name_entry:
+            pts = _IDENT_SCORE["logo_absender"]
+            if vision_meta and vision_meta.get("logo_vorhanden"):
+                pts += 5
+            _add(name_entry, "Logo/Absender", pts)
 
     for entry in corr_map.get("eintraege", []):
         if _is_corr_platzhalter(entry):
             continue
         ident = entry.get("identifikatoren") or {}
+        for site in ident.get("website", []) or []:
+            if _norm_corr_website(site) in doc_websites:
+                _add(entry, "Website", _IDENT_SCORE["website"])
+                break
         for uid in ident.get("uid", []) or []:
-            if _norm_corr_uid(uid) in doc_uids:
-                uid_hits.append(entry)
+            n = _norm_corr_uid(uid)
+            if n in doc_uids:
+                key = "uid_shared" if n in shared_uids else "uid"
+                _add(entry, "UID", _IDENT_SCORE[key])
                 break
         for iban in ident.get("iban", []) or []:
             if _norm_corr_iban(iban) in doc_ibans:
-                iban_hits.append(entry)
+                _add(entry, "IBAN", _IDENT_SCORE["iban"])
                 break
         for sw in ident.get("swift", []) or []:
             n = _norm_corr_swift(sw)
             if n and n in doc_swifts:
-                swift_hits.append(entry)
+                _add(entry, "SWIFT", _IDENT_SCORE["swift"])
                 break
         for em in ident.get("email", []) or []:
             if _norm_corr_email(em) in doc_emails:
-                email_hits.append(entry)
+                _add(entry, "E-Mail", _IDENT_SCORE["email"])
                 break
         for tel in ident.get("telefon", []) or []:
             if _corr_phone_in_text(_norm_corr_telefon(tel), digit_stream):
-                tel_hits.append(entry)
+                _add(entry, "Telefon", _IDENT_SCORE["telefon"])
                 break
 
-    if len(uid_hits) == 1:
-        return uid_hits[0], "UID"
-    if len(uid_hits) > 1:
-        log.warning("Identifikator UID: mehrdeutig (%d Treffer)", len(uid_hits))
+    if not scores:
         return None, ""
 
-    if len(iban_hits) == 1:
-        return iban_hits[0], "IBAN"
-    if len(iban_hits) > 1:
-        log.warning("Identifikator IBAN: mehrdeutig (%d Treffer)", len(iban_hits))
+    ranked = sorted(scores.values(), key=lambda x: x["total"], reverse=True)
+    best = ranked[0]
+    second = ranked[1]["total"] if len(ranked) > 1 else 0
+
+    if best["total"] < _IDENT_MIN_SCORE:
+        return None, ""
+    if len(ranked) > 1 and best["total"] - second < _IDENT_MIN_MARGIN:
+        names = ", ".join(f"{s['entry']['name']}={s['total']}" for s in ranked[:3])
+        log.warning("Identifikator-Scoring: mehrdeutig (%s)", names)
         return None, ""
 
-    if len(swift_hits) == 1:
-        return swift_hits[0], "SWIFT"
-    if len(swift_hits) > 1:
-        log.warning("Identifikator SWIFT: mehrdeutig (%d Treffer)", len(swift_hits))
-        return None, ""
-
-    if len(email_hits) == 1:
-        return email_hits[0], "E-Mail"
-    if len(email_hits) > 1:
-        log.warning("Identifikator E-Mail: mehrdeutig (%d Treffer)", len(email_hits))
-        return None, ""
-
-    if len(tel_hits) == 1:
-        return tel_hits[0], "Telefon"
-    if len(tel_hits) > 1:
-        log.warning("Identifikator Telefon: mehrdeutig (%d Treffer)", len(tel_hits))
-        return None, ""
-
-    return None, ""
+    grund = "+".join(dict.fromkeys(best["signals"]))
+    log.info(
+        "Identifikator-Scoring: '%s' → %d (%s)",
+        best["entry"]["name"], best["total"], grund,
+    )
+    return best["entry"], grund
 
 
 def _format_iban_display(compact: str) -> str:
@@ -687,17 +754,19 @@ def _extract_identifikatoren_vorschlag(
     qr_meta: dict | None = None,
     vision_meta: dict | None = None,
 ) -> dict:
-    """UID/IBAN/SWIFT/E-Mail/Telefon aus Dokument für Korrespondenten-Review-Vorschlag."""
+    """UID/IBAN/SWIFT/E-Mail/Telefon/Website aus Dokument für Korrespondenten-Review-Vorschlag."""
     text = _corr_document_search_text(ocr_text, qr_meta, vision_meta)
     uid_out: list[str] = []
     iban_out: list[str] = []
     swift_out: list[str] = []
     email_out: list[str] = []
     tel_out: list[str] = []
+    website_out: list[str] = []
     tel_seen: set[str] = set()
     iban_seen: set[str] = set()
     swift_seen: set[str] = set()
     email_seen: set[str] = set()
+    website_seen: set[str] = set()
 
     uid_seen: set[str] = set()
     for m in _CORR_UID_RE.findall(text):
@@ -736,6 +805,11 @@ def _extract_identifikatoren_vorschlag(
             email_seen.add(n)
             email_out.append(n)
 
+    for site in _extract_corr_websites_from_text(text):
+        if site not in website_seen:
+            website_seen.add(site)
+            website_out.append(site)
+
     uid_digits = {re.sub(r"\D", "", u) for u in uid_seen}
 
     for t in extract_phones_from_text(text, max_results=3, labeled_only=True):
@@ -753,6 +827,7 @@ def _extract_identifikatoren_vorschlag(
         "swift": swift_out[:2],
         "email": email_out[:3],
         "telefon": tel_out[:3],
+        "website": website_out[:3],
     }
 
 
@@ -3633,7 +3708,9 @@ def _build_pending_entry(aktion: str, raw_name: str, document_id: int,
                           identifikatoren: dict | None = None) -> dict:
     """Pending-Eintrag im Schema von pending_correspondents.jsonl aufbauen."""
     import time as _time
-    idents = identifikatoren or {"uid": [], "iban": [], "swift": [], "email": [], "telefon": []}
+    idents = identifikatoren or {
+        "uid": [], "iban": [], "swift": [], "email": [], "telefon": [], "website": [],
+    }
     vorschlag = {
         "name": raw_name,
         "varianten": [],
@@ -3738,11 +3815,11 @@ def resolve_correspondent_canonical(
         identifikatoren=_extract_identifikatoren_vorschlag(ocr_text, qr_meta, vision_meta),
     )
     idents = pending_entry.get("vorgeschlagener_eintrag", {}).get("identifikatoren", {})
-    if any(idents.get(k) for k in ("uid", "iban", "swift", "email", "telefon")):
+    if any(idents.get(k) for k in ("uid", "iban", "swift", "email", "telefon", "website")):
         log.info(
-            "Identifikatoren-Vorschlag für '%s': uid=%s iban=%s swift=%s email=%s tel=%s",
+            "Identifikatoren-Vorschlag für '%s': uid=%s iban=%s swift=%s email=%s tel=%s web=%s",
             raw_name, idents.get("uid"), idents.get("iban"), idents.get("swift"),
-            idents.get("email"), idents.get("telefon"),
+            idents.get("email"), idents.get("telefon"), idents.get("website"),
         )
     _append_pending_corr(pending_entry)
 
@@ -4121,8 +4198,11 @@ def main():
     corr_map_htr = _load_corr_map()
     _early_corr, _early_ident = _match_correspondent_by_identifikatoren(
         corr_map_htr, ocr_text, qr_meta=qr_meta, vision_meta=vision_meta,
+        absender=(vision_meta or {}).get("absender", "") or "",
     )
-    _early_corr_htr = _early_corr if _early_ident in ("UID", "IBAN", "E-Mail") else None
+    _early_corr_htr = _early_corr if _early_ident and any(
+        s in _early_ident for s in ("Logo/Absender", "Website", "IBAN", "E-Mail")
+    ) else None
     _htr_pre_resolution = decide_htr_action(
         vision_meta,
         ocr_text,
@@ -4276,6 +4356,7 @@ def main():
     if not pre_decision:
         _corr_entry, _ident_grund = _match_correspondent_by_identifikatoren(
             corr_map, ocr_text, qr_meta=qr_meta, vision_meta=vision_meta,
+            absender=vision_absender,
         )
         if _corr_entry:
             log.info(
@@ -4495,22 +4576,39 @@ def main():
     log.info("Begründung: %s", decision.get("begruendung", ""))
     write_audit_entry(document_id, "sanitized", decision)
 
-    # Identifikator-Match: Korrespondent setzen (UID/IBAN überschreibt LLM)
+    # Identifikator-Scoring: LLM nur überschreiben wenn Scoring klar führt (nicht UID-alone vs Logo)
     if _corr_entry and _ident_grund:
         existing = (decision.get("korrespondent") or "").strip()
-        if _ident_grund in ("UID", "IBAN", "SWIFT", "E-Mail") or not existing:
+        llm_entry = _resolve_corr_entry(corr_map, existing) if existing else None
+        scoring_wins = (
+            not llm_entry
+            or llm_entry["name"].lower() == _corr_entry["name"].lower()
+            or "Logo/Absender" in _ident_grund
+            or "Website" in _ident_grund
+            or "IBAN" in _ident_grund
+            or "+" in _ident_grund
+        )
+        if llm_entry and llm_entry["name"] != _corr_entry["name"] and not scoring_wins:
+            log.info(
+                "Scoring-Override unterdrückt: LLM '%s' behalten (Scoring '%s' via %s)",
+                existing, _corr_entry["name"], _ident_grund,
+            )
+            decision["korrespondent"] = llm_entry["name"]
+        else:
             if existing and existing.lower() != _corr_entry["name"].lower():
                 log.info(
-                    "Korrespondent überschrieben: LLM '%s' → Identifikator %s '%s'",
-                    existing, _ident_grund, _corr_entry["name"],
+                    "Korrespondent überschrieben: LLM '%s' → Scoring '%s' (%s)",
+                    existing, _corr_entry["name"], _ident_grund,
                 )
             decision["korrespondent"] = _corr_entry["name"]
             begr = (decision.get("begruendung") or "").strip()
-            id_note = f"Korrespondent via {_ident_grund}: {_corr_entry['name']}"
+            id_note = f"Korrespondent via Scoring ({_ident_grund}): {_corr_entry['name']}"
             decision["begruendung"] = f"{begr}\n{id_note}".strip() if begr else id_note
-            if _ident_grund in ("UID", "IBAN", "SWIFT", "E-Mail") and decision.get("confidence") in ("tief", "mittel"):
+            if decision.get("confidence") in ("tief", "mittel") and (
+                "Logo/Absender" in _ident_grund or "Website" in _ident_grund or "+" in _ident_grund
+            ):
                 decision["confidence"] = "hoch"
-                log.info("Confidence → hoch (Identifikator %s)", _ident_grund)
+                log.info("Confidence → hoch (Scoring %s)", _ident_grund)
             elif _ident_grund == "Telefon" and decision.get("confidence") == "tief":
                 decision["confidence"] = "mittel"
 

@@ -388,7 +388,7 @@ class ReviewDecision(BaseModel):
     reviewed_by:             Optional[str]       = "admin"
     extraktion_muster:       Optional[dict]      = None   # {feldname: ExtraktionsMuster}
     erwartungen:             Optional[dict]      = None   # {hat_qr_rechnung: bool, ...}
-    identifikatoren:         Optional[dict]      = None   # {uid, iban, swift, email, telefon}
+    identifikatoren:         Optional[dict]      = None   # {uid, iban, swift, email, telefon, website}
 
 
 # ══════════════════════════════════════════════
@@ -470,11 +470,12 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
     all_names:    set  = set()
     all_matches:  dict = {}
     all_varianten: dict = {}
-    all_uids:     dict = {}
-    all_ibans:    dict = {}
-    all_emails:   dict = {}
-    all_swifts:   dict = {}
-    all_telefone: dict = {}
+    all_uids:      dict = {}
+    all_ibans:     dict = {}
+    all_emails:    dict = {}
+    all_swifts:    dict = {}
+    all_telefone:  dict = {}
+    all_websites:  dict = {}
     for e in corr_map.get("eintraege", []):
         if e["name"] == (exclude_name or ""):
             continue
@@ -504,6 +505,10 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
             n = _norm_corr_telefon(tel)
             if n:
                 all_telefone[n] = e["name"]
+        for site in ident.get("website", []) or []:
+            n = _norm_corr_website(site)
+            if n:
+                all_websites[n] = e["name"]
     return {
         "names":     all_names,
         "matches":   all_matches,
@@ -513,6 +518,7 @@ def _build_validation_index(corr_map: dict, exclude_name: str = None) -> dict:
         "emails":    all_emails,
         "swifts":    all_swifts,
         "telefone":  all_telefone,
+        "websites":  all_websites,
     }
 
 
@@ -594,7 +600,10 @@ def _validate_correspondent_entry(
     for uid in ident.get("uid", []):
         n = _norm_corr_uid(uid)
         if n in idx["uids"]:
-            errors.append(f"UID '{uid}' bereits bei '{idx['uids'][n]}'")
+            warnings.append(
+                f"UID '{uid}' bereits bei '{idx['uids'][n]}' "
+                f"— Gruppen-UID (z. B. Coop) wird beim Matching nicht allein entschieden"
+            )
     for iban in ident.get("iban", []):
         n = _norm_corr_iban(iban)
         if n in idx["ibans"]:
@@ -613,10 +622,14 @@ def _validate_correspondent_entry(
         n = _norm_corr_telefon(tel)
         if n in idx["telefone"]:
             warnings.append(f"Telefon '{tel}' bereits bei '{idx['telefone'][n]}'")
+    for site in ident.get("website", []):
+        n = _norm_corr_website(site)
+        if n in idx["websites"]:
+            warnings.append(f"Website '{site}' bereits bei '{idx['websites'][n]}'")
 
     for label, lst in [("uid", ident.get("uid", [])), ("iban", ident.get("iban", [])),
                         ("swift", ident.get("swift", [])), ("email", ident.get("email", [])),
-                        ("telefon", ident.get("telefon", []))]:
+                        ("telefon", ident.get("telefon", [])), ("website", ident.get("website", []))]:
         seen_id: set[str] = set()
         for item in lst:
             if label == "uid":
@@ -631,6 +644,10 @@ def _validate_correspondent_entry(
                     errors.append(f"Ungültiger SWIFT/BIC: '{item}'")
             elif label == "email":
                 norm = _norm_corr_email(item)
+            elif label == "website":
+                norm = _norm_corr_website(item)
+                if not norm or "." not in norm:
+                    errors.append(f"Ungültige Website: '{item}'")
             else:
                 norm = _norm_corr_telefon(item)
             if norm in seen_id:
@@ -679,16 +696,25 @@ def _norm_corr_email(raw: str) -> str:
     return str(raw or "").strip().lower()
 
 
+def _norm_corr_website(raw: str) -> str:
+    s = str(raw or "").strip().lower()
+    s = re.sub(r"^https?://", "", s)
+    s = re.sub(r"^www\.", "", s)
+    s = s.split("/")[0].split("?")[0].split("#")[0]
+    return s
+
+
 def _normalize_identifikatoren(raw) -> dict:
-    """UID/IBAN/SWIFT/E-Mail/Telefon-Listen normalisieren (Anzeigeformat behalten)."""
+    """UID/IBAN/SWIFT/E-Mail/Telefon/Website-Listen normalisieren (Anzeigeformat behalten)."""
     if not raw or not isinstance(raw, dict):
-        return {"uid": [], "iban": [], "swift": [], "email": [], "telefon": []}
+        return {"uid": [], "iban": [], "swift": [], "email": [], "telefon": [], "website": []}
     uid_seen: set[str] = set()
     iban_seen: set[str] = set()
     swift_seen: set[str] = set()
     email_seen: set[str] = set()
     tel_seen: set[str] = set()
-    uids, ibans, swifts, emails, tels = [], [], [], [], []
+    website_seen: set[str] = set()
+    uids, ibans, swifts, emails, tels, websites = [], [], [], [], [], []
     for item in raw.get("uid") or []:
         s = str(item).strip()
         n = _norm_corr_uid(s)
@@ -719,7 +745,16 @@ def _normalize_identifikatoren(raw) -> dict:
         if s and n and n not in tel_seen:
             tel_seen.add(n)
             tels.append(s)
-    return {"uid": uids, "iban": ibans, "swift": swifts, "email": emails, "telefon": tels}
+    for item in raw.get("website") or []:
+        s = str(item).strip()
+        n = _norm_corr_website(s)
+        if s and n and "." in n and n not in website_seen:
+            website_seen.add(n)
+            websites.append(n)
+    return {
+        "uid": uids, "iban": ibans, "swift": swifts, "email": emails,
+        "telefon": tels, "website": websites,
+    }
 
 
 def _normalize_brillenpass(raw) -> dict:
@@ -3378,7 +3413,9 @@ def api_edit_correspondent(name: str, body: dict = Body(...)):
     entry.setdefault("nicht_verwechseln_mit", [])
     entry.setdefault("beziehungen", [])
     entry.setdefault("kuerzel", "")
-    entry.setdefault("identifikatoren", {"uid": [], "iban": [], "swift": [], "email": [], "telefon": []})
+    entry.setdefault("identifikatoren", {
+        "uid": [], "iban": [], "swift": [], "email": [], "telefon": [], "website": [],
+    })
     entry.setdefault("htr_profile_mode", "use_document_type")
     entry.setdefault("htr_profiles_by_document_type", {})
     entry.setdefault("platzhalter", False)
