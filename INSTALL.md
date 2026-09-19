@@ -402,10 +402,77 @@ systemctl enable --now paperless-backup.timer
 
 ## Schritt 9 — nginx Reverse Proxy (optional)
 
-paper.manager ist auf Port 8100 erreichbar. Für HTTPS + Authentik Forward Auth:
+### 9.1 Paperless-NGX selbst (Domain + HTTPS + WebSocket!)
+
+Paperless läuft intern auf Port 8000. Für Domain-Zugriff **muss** die WebSocket-Route
+(`/ws/status/`, Live-Task-Status/Vorschau-Updates) explizit mit Upgrade-Headern
+proxied werden — sonst schlägt `wss://…/ws/status/` fehl **und** Vorschaubilder/„Views“
+bleiben leer, weil Anfragen nicht sauber beim Paperless-Container ankommen:
 
 ```nginx
 # In nginx.conf / conf.d/paperless.conf:
+server {
+    listen 443 ssl http2;
+    server_name paperless.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/paperless.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/paperless.example.com/privkey.pem;
+
+    client_max_body_size 200M;   # grosse PDFs/Scans
+
+    # WebSocket — MUSS vor der generischen location / stehen
+    location /ws/ {
+        proxy_pass http://192.168.x.x:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;   # WS-Verbindung offen halten
+    }
+
+    location / {
+        proxy_pass http://192.168.x.x:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300;
+    }
+
+    # paper.manager — siehe 9.2
+    # location /corr-manager/ { … }
+}
+
+server {
+    listen 80;
+    server_name paperless.example.com;
+    return 301 https://$host$request_uri;
+}
+```
+
+`.env` (Paperless-Host) muss zur Domain passen — siehe `.env.example`:
+
+```bash
+PAPERLESS_URL=https://paperless.example.com
+PAPERLESS_CSRF_TRUSTED_ORIGINS=https://paperless.example.com
+```
+
+> **Login/Authentik für Paperless selbst läuft über OIDC** (`PAPERLESS_SOCIALACCOUNT_PROVIDERS`
+> in `.env.example`, allauth) — **kein** nginx `auth_request`/Forward-Auth nötig und auch
+> kein Authentik **Proxy Provider** vor dieser Domain. Forward-Auth/Proxy Provider ist nur
+> für `/corr-manager/` (9.2) relevant, weil paper.manager kein eigenes Login-Formular hat.
+> Ein Proxy Provider vor der Haupt-Domain ist eine typische Ursache für die 404/WebSocket-
+> Probleme unten.
+
+### 9.2 paper.manager (`/corr-manager/`) — Authentik Forward Auth
+
+paper.manager ist auf Port 8100 erreichbar. Für HTTPS + Authentik Forward Auth:
+
+```nginx
+# Innerhalb desselben server{}-Blocks wie 9.1:
 location /corr-manager/ {
     # Authentik Forward Auth
     auth_request /outpost.goauthentik.io/auth/nginx;
@@ -426,6 +493,46 @@ location /corr-manager/ {
 > **Dokumenten-Vorschau:** `/api/proxy/document/{id}/preview/` und `/thumb/` erfordern
 > dieselbe Session oder `PAPER_MANAGER_TOKEN` wie alle anderen `/api/*`-Routen (ab BE 2.60).
 > Ohne Login: `401` — kein anonymer PDF-Zugriff per Doc-ID.
+
+### 9.3 Test & Reload
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### 9.4 Diagnose: 404 auf `/thumb/` und/oder `wss://…/ws/status/` schlägt fehl
+
+```bash
+# 1. Läuft Paperless direkt (ohne Proxy) sauber? (200 mit gültiger Session/Token erwartet)
+curl -sI -H "Cookie: sessionid=<paperless-session>" http://192.168.x.x:8000/api/documents/1/thumb/
+
+# 2. Kommt die Anfrage über den Proxy überhaupt bei Paperless an?
+sudo tail -f /var/log/nginx/access.log | grep thumb
+docker compose logs -f webserver | grep -i thumb
+
+# 3. WebSocket-Handshake direkt gegen Paperless (auf dem Host, ohne Proxy)
+sudo apt install -y websocat   # Alternative: npm i -g wscat
+websocat ws://192.168.x.x:8000/ws/status/
+
+# 4. WebSocket über den Proxy/Domain
+websocat wss://paperless.example.com/ws/status/
+
+# 5. Ist die nginx-Konfig tatsächlich aktiv (kein alter/anderer server-Block greift zuerst)?
+sudo nginx -T | grep -A30 "server_name paperless"
+
+# 6. Läuft zusätzlich ein Authentik-Outpost/Proxy-Provider VOR nginx?
+docker ps | grep -i authentik
+docker logs -f <authentik-proxy-outpost-container> --tail 100
+```
+
+| Ursache | Erkennungsmerkmal | Fix |
+|---|---|---|
+| `location /ws/` fehlt oder ohne `Upgrade`/`Connection`-Header | `wss://…/ws/status/` „bad response from server" | Block wie in 9.1 ergänzen, **vor** `location /` |
+| `location /` zeigt auf falschen Upstream/Port (z. B. paper.manager :8100 statt Paperless :8000) | 404 auf **allen** nativen `/api/...`-Pfaden, nicht nur `/thumb/` | `proxy_pass`-Ziel/Port prüfen |
+| Authentik läuft als **Proxy Provider** (voller Reverse-Proxy) statt nur OIDC-Login vor der Haupt-Domain | 404/401 uneinheitlich, auch bei gültigem Paperless-Login | In Authentik: Provider-Typ für diese Domain prüfen — native Paperless-UI braucht nur **OIDC**, keinen Proxy Provider |
+| `client_max_body_size`/Timeout zu knapp | Upload/Vorschau bricht bei grossen PDFs ab | `client_max_body_size 200M;`, `proxy_read_timeout` erhöhen |
+| Trailing Slash bei `proxy_pass` falsch gesetzt | Pfad-Präfix wird verstümmelt → 404 auf Unterpfaden | `location /`: **kein** Trailing Slash im `proxy_pass`-Ziel; `location /corr-manager/`: **mit** Trailing Slash (Prefix-Strip) |
 
 ---
 
