@@ -1,0 +1,22 @@
+# CT 121: nach Boot DHCP auf eth0 nachholen, dann NFS remount.
+# Voraussetzung: /usr/local/sbin/dhcp-watch.sh (Host) und paperless-nfs-remount.sh (aus Repo).
+#
+# Install (auf Paperless-Host, aus Git-Clone):
+#   REPO=/opt/paperless-ngx-classifier
+#   install -m 755 "$REPO/scripts/paperless-nfs-remount.sh" /usr/local/sbin/paperless-nfs-remount.sh
+#   cp "$REPO/scripts/dhcp-retry.service.example" /etc/systemd/system/dhcp-retry.service
+#   systemctl daemon-reload
+#   systemctl enable --now dhcp-retry.service
+
+[Unit]
+Description=Retry DHCP on eth0, then NFS for Paperless media
+After=networking.service
+Wants=networking.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'ok=0; for i in $(seq 1 12); do /usr/local/sbin/dhcp-watch.sh && ok=1 && break; sleep 10; done; /usr/local/sbin/paperless-nfs-remount.sh; test "$ok" = 1'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

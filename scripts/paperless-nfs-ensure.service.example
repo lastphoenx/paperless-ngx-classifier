@@ -1,0 +1,11 @@
+# Periodisch NFS nachmounten, falls beim Boot noch nicht da (spätes Netz/NAS).
+# Install siehe docs/NFS_BOOT_RESILIENCE.md und paperless-nfs-ensure.timer.example
+
+[Unit]
+Description=Mount Paperless NFS if missing (late network/NAS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/paperless-nfs-remount.sh

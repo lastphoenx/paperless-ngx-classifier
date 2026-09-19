@@ -461,6 +461,7 @@ docker compose logs -f webserver | grep "post_consume\|pre_consume"
 | paper.manager nicht erreichbar | Service nicht gestartet | `systemctl status correspondent-manager` |
 | 401 bei API-Calls | Session/URL-Mismatch oder Token | Ab BE 2.35: Zugriff per IP → Session gegen `http://<IP>:8000`. Sonst `PAPER_MANAGER_TOKEN` oder Paperless neu einloggen. `.env`: `PAPERLESS_URL` + `PAPERLESS_INTERNAL_URL` prüfen |
 | Thumbnail/PDF leer im Dokument-Review (IP-Zugriff) | Direkte Paperless-URLs ohne Session | ab v2.8: Proxy-Endpoints; `PAPERLESS_TOKEN` in `.env` und Service-Env |
+| Thumb/Viewer **404** in Paperless-UI, Dokumentenliste ok | NFS-Mount `/mnt/paperless-media` fehlt nach Reboot (`nofail`) | `mount -a -O _netdev`, Webserver neu starten; Host: `scripts/paperless-nfs-remount.sh` + `*.service.example` / `*.timer.example` — [docs/NFS_BOOT_RESILIENCE.md](docs/NFS_BOOT_RESILIENCE.md) |
 | Titel-Kollisionen / falscher Ordner im Dateinamen | Bug in `_make_unique_titel` (bis pipe 12.14) | `post_consume.py` ≥ 12.15 deployen |
 | Routing funktioniert nicht (Kennzeichen/Arbeitgeber/Bank) | family.json leer oder Beziehung fehlt | paper.manager → Familie → Fahrzeuge / Beziehungen prüfen |
 | Kennzeichen erkannt, falsches Routing in `Person/Auto` | `routing_ordner: true` auf Versicherungs-Kennzeichen | Familie → Fahrzeuge: «Ordner auto» aus |

@@ -1,0 +1,20 @@
+# Alle 5 Minuten paperless-nfs-ensure.service auslösen.
+#
+# Install (auf Paperless-Host):
+#   REPO=/opt/paperless-ngx-classifier
+#   install -m 755 "$REPO/scripts/paperless-nfs-remount.sh" /usr/local/sbin/paperless-nfs-remount.sh
+#   cp "$REPO/scripts/paperless-nfs-ensure.service.example" /etc/systemd/system/paperless-nfs-ensure.service
+#   cp "$REPO/scripts/paperless-nfs-ensure.timer.example" /etc/systemd/system/paperless-nfs-ensure.timer
+#   systemctl daemon-reload
+#   systemctl enable --now paperless-nfs-ensure.timer
+
+[Unit]
+Description=Retry Paperless NFS mount every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
