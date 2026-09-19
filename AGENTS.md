@@ -28,13 +28,54 @@ git push origin main     # nur wenn Nutzer pushen verlangt
 
 ### Deploy (nur Betreiber — Agent führt nicht aus)
 
-Siehe `docs/DEVELOPER.md` § Deploy und `scripts/deploy-to-ct121.sh`.
+**Host:** Proxmox CT 121 (`paperless`). **Agent:** keine SSH — nur Befehle liefern.
+
+| Pfad | Inhalt |
+|------|--------|
+| `/opt/paperless-ngx-classifier` | Git-Clone (pull + `deploy-to-ct121.sh`) |
+| `/opt/paperless-scripts` | Live-Code (UI, `post_consume`, corr-manager-App) |
+| `/opt/paperless` | Paperless `docker-compose.yml`, `.env` |
+| `/usr/local/sbin/paperless-nfs-remount.sh` | NFS-Boot ( **nicht** Teil von `deploy-to-ct121.sh`) |
+
+#### Standard (Pipeline + paper.manager + Paperless-Container)
 
 ```bash
-cd <REPO_CLONE_ON_SERVER> && git pull origin main && ./scripts/deploy-to-ct121.sh
+cd /opt/paperless-ngx-classifier
+git pull origin main
+./scripts/deploy-to-ct121.sh
 ```
 
-Optional: `./scripts/deploy-to-ct121.sh --no-docker`
+Das Skript: kopiert Dateien → `/opt/paperless-scripts` → **`systemctl restart correspondent-manager`** nur wenn der Service **active** ist (sonst keine Zeile im Log) → **`docker compose up -d --force-recreate webserver`** → `ensure-legacy-qr-deps.sh`.
+
+Nach Deploy prüfen:
+
+```bash
+systemctl is-active correspondent-manager
+curl -s -o /dev/null -w "paper.manager HTTP %{http_code}\n" http://127.0.0.1:8100/api/config
+docker compose -f /opt/paperless ps webserver
+grep POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py | head -1
+```
+
+Falls corr-manager nicht neu startete: `systemctl restart correspondent-manager`
+
+#### Varianten
+
+```bash
+# Nur Scripts + corr-manager, kein Paperless-Container-Recreate
+cd /opt/paperless-ngx-classifier && ./scripts/deploy-to-ct121.sh --no-docker
+
+# Nur kopieren, kein systemctl/docker (selten)
+./scripts/deploy-to-ct121.sh --no-restart
+```
+
+#### Nur Doku/NFS im Repo (kein App-Deploy nötig)
+
+```bash
+cd /opt/paperless-ngx-classifier && git pull origin main
+# Kein deploy-to-ct121.sh — NFS-Skripte liegen unter scripts/*.example
+```
+
+Details: `docs/DEVELOPER.md` § Deploy · NFS: `docs/NFS_BOOT_RESILIENCE.md` · privat: `doku/pve2/vm/121-paperless/`
 
 ## Shell-Skripte (`scripts/*.sh`)
 
