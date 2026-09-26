@@ -122,3 +122,10 @@ Dann Doku/Code zitieren — erst dann ändern. Detail: `.cursor/rules/urls-and-p
 
 - UI: `paper_manager_ui.html` · Backend: `correspondent_manager_app.py` · Pipeline: `post_consume.py`
 - Entwickler: `docs/DEVELOPER.md`
+
+## Dependencies & Dependabot
+
+- **Kanonisch:** `requirements-corr-manager.txt` auf `main` — keine Versionsangaben in Doku erfinden.
+- **CVE:** GitHub «Dependabot security updates» (UI) + `./scripts/dependency-audit.sh` auf CT 121 (`docs/DEVELOPER.md` §10.1).
+- **Version-PRs:** `.github/dependabot.yml` — weekly, gruppiert, semver-major per Bot aus (Majors geplant testen).
+- Nach pip-Änderung auf `main`: `git pull` + `./scripts/deploy-to-ct121.sh` auf CT 121 (siehe Deploy oben).
