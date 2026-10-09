@@ -8,12 +8,12 @@
 #   LEGACY_CONSUME_MARKERS=/legacy/
 #
 # Beispiel:
-#   ./legacy-one-batch.sh /mnt/nas-legacy/Eltern/Finanzen/Fano fano
+#   ./legacy-one-batch.sh /mnt/<familien-mount>/Finanzen/<ordner> <batch>
 #
 set -euo pipefail
 
 SRC="${1:?NAS-Quellpfad}"
-SLUG="${2:?Batch-Name z.B. fano}"
+SLUG="${2:?Batch-Name z.B. ordner}"
 CHUNK="${LEGACY_CHUNK_SIZE:-20}"
 IMPORT="${LEGACY_IMPORT_SH:-/opt/paperless-scripts/legacy-import-batch.sh}"
 CONSUME="${LEGACY_CONSUME_ROOT:-/mnt/paperless-data/consume/legacy}/$SLUG"

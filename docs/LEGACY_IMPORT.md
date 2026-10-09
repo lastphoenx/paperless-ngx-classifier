@@ -18,13 +18,13 @@ Admin → Tags → **legacy** → Zuweisungsregel: **Keine Zuweisung**.
 
 | Mount (Beispiel) | Export (pi-nas) | Zweck |
 |------------------|-----------------|--------|
-| `/mnt/paperless-media` | `:/mnt/ssd1/Paperless/media` rw | Paperless-Archiv |
-| *eltern-mount* (aus fstab) | `:/mnt/ssd1/Eltern` ro | `…/Finanzen` Legacy-Import |
+| `/mnt/paperless-media` | `:<media-export>` rw | Paperless-Archiv |
+| *familien-mount* (aus fstab) | `:<legacy-export>` ro | `…/Finanzen` Legacy-Import |
 
 Vollständig: [NAS_NFS_AND_IMPORT.md](./NAS_NFS_AND_IMPORT.md)
 
 ```bash
-grep 192.168.141.140 /etc/fstab
+grep nfs4 /etc/fstab
 findmnt -t nfs4,nfs
 touch /mnt/paperless-media/.write_test && rm /mnt/paperless-media/.write_test && echo OK
 ```
@@ -64,7 +64,7 @@ grep POST_CONSUME_VERSION /opt/paperless-scripts/post_consume.py
 ## Ablauf
 
 ```
-/mnt/nas-legacy/Eltern/Finanzen/...  →  rsync  →  consume/legacy/<batch>/
+/mnt/<familien-mount>/Finanzen/...  →  rsync  →  consume/legacy/<batch>/
   → pre_consume skip  →  Paperless index (OCR skip)  →  post_consume: Tag legacy + Storage legacy/{title}
 ```
 
@@ -76,14 +76,14 @@ Der Batch-Name (`blkb`, `steuern`, …) organisiert nur den Consume-Ordner — *
 
 ```bash
 /opt/paperless-scripts/legacy-import-batch.sh \
-  /mnt/nas-legacy/Eltern/Finanzen/BLKB blkb-smoke --limit 1
+  /mnt/<familien-mount>/Finanzen/<ordner> blkb-smoke --limit 1
 ```
 
 Warten bis `consume/legacy/blkb-smoke/` leer ist. Prüfen:
 
 ```bash
-# pi-nas — nur ssd1
-find /mnt/ssd1/Paperless/media/documents/originals/legacy -type f -mmin -30
+# pi-nas — unter dem Media-Export (Pfad aus der Betriebsdoku)
+find <media-export>/documents/originals/legacy -type f -mmin -30
 
 # Logs
 docker compose -f /opt/paperless/docker-compose.yml logs webserver --since 10m 2>&1 | \
@@ -109,8 +109,8 @@ Logs: `Legacy-Import — Pipeline übersprungen` — kein Vision/Ollama.
 | Symptom | Lösung |
 |---------|--------|
 | Pipeline läuft trotzdem | Pipe ≥ 12.30 deployen; Consume leeren; Docs löschen; neu importieren |
-| `Eltern/Finanzen` leer auf CT121 | `nas-legacy` remounten; Export `:/srv/nas` ro auf pi-nas |
-| Read-only / Webserver-Crash | Kein `/mnt/ssd1` ro-Gesamtexport; siehe ct121-nfs-fix.md |
+| `<familien-share>/Finanzen` leer auf CT121 | Legacy-Mount remounten; Export laut privater Betriebsdoku |
+| Read-only / Webserver-Crash | Kein ro-Gesamtexport des Volumes; siehe ct121-nfs-fix.md |
 | Stale file handle | `umount` + `mount -a` auf CT121 nach nfs-server restart |
 | `none/none/` statt `legacy/` | `.env` LEGACY_STORAGE_* + Pipe 12.32 + recreate webserver |
 | Migration hängt / Duplikate in consume | `legacy-migrate-all.sh --cleanup-consume`; Skip-Ordner nie unter `consume/` |
@@ -118,7 +118,7 @@ Logs: `Legacy-Import — Pipeline übersprungen` — kein Vision/Ollama.
 | OCRmyPDF trotz `SKIP_ARCHIVE=always` | In 2.20 nur bei **>50 Zeichen** pdftotext; Scans: `legacy-prepare-pdf.sh` beim copy-missing (nicht in pre_consume — sonst inotify-Requeue) |
 | Datei in Warteschlange **und** Gestartet | PDF in `consume/` während Consume geändert → Consumer legt Task doppelt an; Fix: OCR vor copy (legacy-prepare-pdf) |
 | Wie viele Dubletten erwarten? | `legacy-nas-sha256.sh all` — SHA256-Inventar NAS + Abgleich Paperless-Checksums |
-| Permission denied auf NAS | Export `no_root_squash` für `/srv/nas` ro |
+| Permission denied auf NAS | Squash- und Export-Rechte in der privaten Betriebsdoku prüfen |
 
 Neue Scans in `consume/` (ohne `legacy/`) → volle Pipeline unverändert.
 

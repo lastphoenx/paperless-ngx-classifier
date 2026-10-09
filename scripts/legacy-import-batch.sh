@@ -2,8 +2,8 @@
 # Legacy-Altbestand: NAS-Ordner → consume/legacy/<batch>/ (Tags setzt post_consume per API)
 #
 # Aufruf (auf dem Paperless-Host CT 121, nach NFS-Mount):
-#   ./scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen eltern-finanzen --limit 10
-#   ./scripts/legacy-import-batch.sh /mnt/nas-legacy/Eltern/Finanzen lohn lohn --chunk 30
+#   ./scripts/legacy-import-batch.sh /mnt/<familien-mount>/Finanzen <batch> --limit 10
+#   ./scripts/legacy-import-batch.sh /mnt/<familien-mount>/Finanzen lohn lohn --chunk 30
 #
 set -euo pipefail
 

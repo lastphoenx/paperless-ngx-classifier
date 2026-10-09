@@ -12,7 +12,7 @@
 #
 set -euo pipefail
 
-NAS_ROOT="${LEGACY_NAS_FINANZEN:-/mnt/nas-legacy/Eltern/Finanzen}"
+NAS_ROOT="${LEGACY_NAS_FINANZEN:?LEGACY_NAS_FINANZEN setzen (Mount aus der Betriebsdoku)}"
 STATE_DIR="${LEGACY_MIGRATE_STATE_DIR:-/mnt/paperless-data/legacy-migrate}"
 CONSUME_ROOT="${LEGACY_CONSUME_ROOT:-/mnt/paperless-data/consume/legacy}"
 ENV_FILE="${PAPERLESS_ENV:-/opt/paperless/.env}"
@@ -23,8 +23,8 @@ IN_FLIGHT_TSV="${LEGACY_NAS_IN_FLIGHT:-$STATE_DIR/nas-in-flight.tsv}"
 SUMMARY_FILE="${LEGACY_NAS_SHA256_SUMMARY:-$STATE_DIR/nas-sha256-summary.txt}"
 STALL_SLEEP="${LEGACY_STALL_SLEEP:-30}"
 EXCLUDE_REGEX="${EXCLUDE_REGEX:-}"
-# Standard: Moni 2015/2016 aus Migration-Plan ausschliessen (| als Trenner), z.B.:
-# EXCLUDE_REGEX='Vorsorge/Moni/2015|Vorsorge/Moni/2016'
+# Optional Unterordner aus der Inventur nehmen (| als Trenner), z.B.:
+# EXCLUDE_REGEX='Vorsorge/<person>/2015|Vorsorge/<person>/2016'
 PL_CACHE="${LEGACY_PL_CHECKSUM_CACHE:-$STATE_DIR/paperless-checksums.tsv}"
 
 CMD="${1:-summary}"

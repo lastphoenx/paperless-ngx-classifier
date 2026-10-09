@@ -14,7 +14,7 @@
 #
 set -euo pipefail
 
-NAS_ROOT="${LEGACY_NAS_FINANZEN:-/mnt/nas-legacy/Eltern/Finanzen}"
+NAS_ROOT="${LEGACY_NAS_FINANZEN:?LEGACY_NAS_FINANZEN setzen (Mount aus der Betriebsdoku)}"
 IMPORT_SH="${LEGACY_IMPORT_SH:-/opt/paperless-scripts/legacy-import-batch.sh}"
 CONSUME_ROOT="${LEGACY_CONSUME_ROOT:-/mnt/paperless-data/consume/legacy}"
 STATE_DIR="${LEGACY_MIGRATE_STATE_DIR:-/mnt/paperless-data/legacy-migrate}"

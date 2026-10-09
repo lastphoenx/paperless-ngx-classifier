@@ -39,7 +39,7 @@ paper.manager ist die Review- und Verwaltungsoberfläche für die automatische D
 |---|---|---|
 | Via Domain (empfohlen) | `https://paperless.example.app/corr-manager/` | Authentik + Paperless-Session (gleiche Domain) |
 | Paperless-Dashboard | Kein eingebauter Link — **neuer Tab:** `/corr-manager/` | Wie Domain-Zeile |
-| Via interne IP | `http://192.168.131.31:8100` | Paperless-Login auf **derselben IP** (`:8000`) |
+| Via interne IP | `http://192.168.x.x:8100` | Paperless-Login auf **derselben IP** (`:8000`) |
 
 > **Pfad:** `/corr-manager/` mit **Bindestrich** — nicht `corr.manager` (Punkt).
 

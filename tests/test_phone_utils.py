@@ -12,7 +12,7 @@ from phone_utils import (  # noqa: E402
 
 
 def test_preprocess_swiss_trunk_zero():
-    assert "+41 (0) 61" in preprocess_phone_text("Tel: +41 (0) 61 971 89 80")
+    assert "+41 (0) 61" in preprocess_phone_text("Tel: +41 (0) 61 555 00 00")
 
 
 def test_norm_phone_swiss_international():
@@ -20,14 +20,14 @@ def test_norm_phone_swiss_international():
 
 
 def test_norm_phone_swiss_with_trunk_zero():
-    assert norm_phone_for_match("+41 (0) 61 971 89 80") == "41619718980"
+    assert norm_phone_for_match("+41 (0) 61 555 00 00") == "41615550000"
 
 
 def test_extract_phone_from_label_with_trunk_zero():
-    text = "Ihre Ansprechpartnerin\nJeanette Muheim\nTel: +41 (0) 61 971 89 80\n"
+    text = "Ihre Ansprechpartnerin\nAnna Beispiel\nTel: +41 (0) 61 555 00 00\n"
     found = extract_phones_from_text(text)
     assert found
-    assert norm_phone_for_match(found[0]) == "41619718980"
+    assert norm_phone_for_match(found[0]) == "41615550000"
 
 
 def test_extract_phone_national_swiss():

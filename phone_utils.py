@@ -39,7 +39,7 @@ def preprocess_phone_text(text: str) -> str:
 
 def norm_phone_for_match(raw: str, default_region: str = "CH") -> str:
     """
-    E.164-Ziffern ohne «+» für Substring-Match im Dokument (z. B. 41619718980).
+    E.164-Ziffern ohne «+» für Substring-Match im Dokument (z. B. 41615550000).
     Fallback: bisherige CH-Heuristik wenn phonenumbers fehlt oder Parse scheitert.
     """
     s = preprocess_phone_text((raw or "").strip())

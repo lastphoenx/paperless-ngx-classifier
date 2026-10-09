@@ -1,81 +1,61 @@
-# NAS → Paperless: NFS (Ist) und Import-Pfade
+# NAS → Paperless: NFS und Import-Pfade
 
-Stand: Juni 2026 · CT 121 + pi-nas `192.168.141.140`
+CT 121 mountet das NAS per NFS. Konkrete Export-Pfade, UIDs und Squash-Optionen stehen in der privaten Betriebsdoku: [ct121-nfs-fix.md](../../../doku/pve2/vm/121-paperless/Doku/docs/ct121-nfs-fix.md).
 
-Dieses Dokument beschreibt den **tatsächlichen** NFS-Stand und wie Import-Pfade ermittelt werden — nicht den älteren Soll-Entwurf mit `:/srv/nas` → `/mnt/nas-legacy`, falls der bei euch nie so eingespielt wurde.
+Dieses Dokument beschreibt das **Muster** (zwei Mounts, Import-Pfade) — nicht den älteren Soll-Entwurf mit `:/srv/nas` → `/mnt/nas-legacy`, falls der nie so eingespielt wurde.
 
-Siehe auch: [ct121-nfs-fix.md](../../../doku/pve2/vm/121-paperless/Doku/docs/ct121-nfs-fix.md), [LEGACY_MIGRATION_PLAN.md](./LEGACY_MIGRATION_PLAN.md)
+Siehe auch: [LEGACY_MIGRATION_PLAN.md](./LEGACY_MIGRATION_PLAN.md)
+
+Platzhalter: `<NAS-IP>` = NAS, `<CT-IP>` = CT 121. Pfade und `fsid` aus der Betriebsdoku übernehmen.
 
 ---
 
-## 1. NFS Ist-Zustand
+## 1. NFS-Muster
 
-### pi-nas `192.168.141.140` — `/etc/exports` (Stand prüfen)
-
-Typisch dokumentiert:
+### pi-nas — `/etc/exports` (Form)
 
 ```text
-/mnt/ssd1/Paperless/media  192.168.131.31(rw,...,all_squash,anonuid=2003,anongid=2003,fsid=1)
-/mnt/ssd1/Eltern             192.168.131.31(ro,...,no_root_squash,fsid=2)
+<media-export>   <CT-IP>(rw,...,all_squash,anonuid=<uid>,anongid=<gid>,fsid=<n>)
+<legacy-export>  <CT-IP>(ro,...,fsid=<n>)
 ```
 
-**Hinweis:** Wenn CT 121 `:/mnt/ssd1` gemountet hat (siehe unten), muss auf pi-nas auch **`/mnt/ssd1`** (oder ein gleichwertiger Export) für `.31` freigegeben sein — sonst widersprechen exports und fstab. Nach Änderung: `exportfs -rav`.
+**Hinweis:** Wenn CT 121 das übergeordnete Volume mountet, muss dieses Volume (oder ein gleichwertiger Export) für `<CT-IP>` freigegeben sein — sonst widersprechen exports und fstab. Nach Änderung: `exportfs -rav`.
 
-### CT 121 — `/etc/fstab` (verifiziert)
+### CT 121 — `/etc/fstab` (Form)
 
 ```fstab
-192.168.141.140:/mnt/ssd1/Paperless/media  /mnt/paperless-media  nfs4  rw,...  0  0
-192.168.141.140:/mnt/ssd1                  /mnt/nas-legacy       nfs4  rw,...  0  0
+<NAS-IP>:<media-export>   /mnt/paperless-media  nfs4  rw,...  0  0
+<NAS-IP>:<legacy-export>  /mnt/nas-legacy       nfs4  rw,...  0  0
 ```
 
 | Mount auf CT 121 | NFS-Quelle | Inhalt |
 |----------------|------------|--------|
-| `/mnt/paperless-media` | `:/mnt/ssd1/Paperless/media` | Paperless-Archiv |
-| `/mnt/nas-legacy` | `:/mnt/ssd1` | **ganzes ssd1** (nur dieser Branch — kein mergerfs, kein ssd2) |
+| `/mnt/paperless-media` | Media-Export | Paperless-Archiv |
+| `/mnt/nas-legacy` | Legacy-Export | nur die freigegebenen Zweige, nicht zwingend das ganze Volume |
 
-**Auf pi-nas gibt es kein `/mnt/nas-legacy`** — das ist nur der Mountpoint-Name auf CT 121.
+**Auf dem NAS gibt es kein `/mnt/nas-legacy`** — das ist nur der Mountpoint-Name auf CT 121.
 
-### CT 121 — sichtbar unter `/mnt/nas-legacy` (verifiziert)
+Ein Mount des gesamten Volumes zeigt auf dem Client nur die in `exports` freigegebenen Unterbäume. Zusätzliche Quellen (`user-a`, `user-b`) brauchen eigene Export-Zeilen und eigene Mountpoints — ein Unterordner, den der Volume-Mount nicht zeigt, ist auf CT 121 nicht lesbar.
 
-Mount: `192.168.141.140:/mnt/ssd1` → `/mnt/nas-legacy`
-
-**Tatsächlich sichtbar** (nur exportierte/unterstützte Subtrees):
+### 1.1 user-a / user-b — NFS ergänzen
 
 ```text
-/mnt/nas-legacy/Eltern/Finanzen     ← Legacy-Import
-/mnt/nas-legacy/Paperless/…
+# /etc/exports — Form (fsid neu; Squash-Option aus der Betriebsdoku)
+<user-a-export>  <CT-IP>(ro,sync,no_subtree_check,fsid=<n>)
+<user-b-export>  <CT-IP>(ro,sync,no_subtree_check,fsid=<n>)
 ```
 
-**Nicht sichtbar** auf CT 121 (trotz `/mnt/ssd1/user-a` auf pi-nas):
-
-```text
-/mnt/nas-legacy/user-a   → No such file or directory
-/mnt/nas-legacy/user-b   → No such file or directory
-```
-
-Ursache: pi-nas `/etc/exports` exportiert typischerweise nur `…/Paperless/media` und `…/Eltern` — **nicht** `user-a`/`user-b`. Der fstab-Eintrag `:/mnt/ssd1` zeigt auf dem Client nur die freigegebenen Zweige.
-
-user-a/user-b liegen physisch unter `/mnt/ssd1/user-a`, `/mnt/ssd1/user-b` (und teils ssd2); für Import **zusätzliche Export-Zeilen** + Mount auf CT 121 nötig (siehe Abschnitt 1.1).
-
-### 1.1 user-a / user-b — NFS ergänzen (pi-nas)
-
-```text
-# /etc/exports — Beispiel (fsid neu, no_root_squash wegen 2770 user-a:user-a / user-b:user-b)
-/mnt/ssd1/user-a  192.168.131.31(ro,sync,no_subtree_check,no_root_squash,fsid=3)
-/mnt/ssd1/user-b  192.168.131.31(ro,sync,no_subtree_check,no_root_squash,fsid=4)
-```
-
-Optional mergerfs-Gesamtsicht (ssd1+ssd2): stattdessen `/srv/nas/user-a` exportieren — nur wenn gewollt.
+Optional die zusammengeführte Sicht (mehrere Platten) exportieren — nur wenn gewollt.
 
 ```bash
 exportfs -rav
 ```
 
-**CT 121** — separate Mountpoints (fstab):
+**CT 121** — eigene Mountpoints (fstab):
 
 ```fstab
-192.168.141.140:/mnt/ssd1/user-a  /mnt/nas-user-a  nfs4  ro,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
-192.168.141.140:/mnt/ssd1/user-b  /mnt/nas-user-b  nfs4  ro,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
+<NAS-IP>:<user-a-export>  /mnt/nas-user-a  nfs4  ro,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
+<NAS-IP>:<user-b-export>  /mnt/nas-user-b  nfs4  ro,nfsvers=4.2,soft,timeo=600,retrans=2,_netdev  0  0
 ```
 
 ```bash
@@ -84,24 +64,13 @@ mount -a
 ls /mnt/nas-user-a /mnt/nas-user-b | head
 ```
 
-Import dann mit `LEGACY_NAS_FINANZEN=/mnt/nas-user-a` bzw. `/mnt/nas-user-b` — **nicht** `/mnt/nas-legacy/user-a`.
+Import dann mit `LEGACY_NAS_FINANZEN=/mnt/nas-user-a` bzw. `/mnt/nas-user-b` — **nicht** über einen Unterordner, den der Volume-Mount nicht zeigt.
 
-### mergerfs vs. ssd1-Mount (wichtig)
+### mergerfs vs. einzelnes Volume
 
-Auf **pi-nas** zeigt `/srv/nas/user-a` und `/srv/nas/user-b` die **mergerfs**-Sicht (ssd1 **+** ssd2).
+Wenn das NAS eine mergerfs-Sicht über mehrere Platten hat, sieht CT 121 nur das exportierte Volume. Dateien, die nur auf einer anderen Platte liegen, fehlen im Import.
 
-CT 121 sieht nur **`/mnt/ssd1/...`** — Dateien, die **nur auf ssd2** liegen, fehlen im Import.
-
-Vor user-a/user-b auf pi-nas prüfen:
-
-```bash
-# Gibt es Inhalte nur auf ssd2?
-diff -rq /mnt/ssd1/user-a /mnt/ssd2/user-a 2>/dev/null | head
-diff -rq /mnt/ssd1/user-b /mnt/ssd2/user-b 2>/dev/null | head
-find /mnt/ssd2/user-a /mnt/ssd2/user-b -type f 2>/dev/null | wc -l
-```
-
-Falls ssd2-only Dateien relevant sind: Export `/srv/nas` (ro) **oder** Konsolidierung auf ssd1 **vor** Import — nicht blind nur ssd1-Pfad scannen.
+Vor weiteren Quellen auf dem NAS prüfen, ob Inhalte ausserhalb des exportierten Volumes liegen. Falls ja: die zusammengeführte Sicht exportieren oder vorher auf das exportierte Volume konsolidieren — nicht blind nur einen Plattenpfad scannen.
 
 ## 2. Legacy Finanzen — wie migriert (Checksum-Delta)
 
@@ -122,7 +91,7 @@ Live-Aktualisierung: nach jedem Chunk **reconcile** — nur Checksums, die Paper
 
 ```bash
 # NAS_ROOT = echter Finanzen-Pfad auf CT 121 (siehe Abschnitt 2)
-export LEGACY_NAS_FINANZEN=/mnt/…/Finanzen   # Beispiel: /mnt/eltern-nas/Finanzen
+export LEGACY_NAS_FINANZEN=/mnt/<familien-mount>/Finanzen
 export LEGACY_MIGRATE_STATE_DIR=/mnt/paperless-data/legacy-migrate
 
 /opt/paperless-scripts/legacy-nas-sha256.sh scan
@@ -135,7 +104,7 @@ tmux new -s legacy
 
 Pro Chunk: pop → `consume/legacy/queue/` → warten → reconcile.
 
-**Fertig wenn:** `missing` meldet `0 einzigartige fehlende` (Stand: 2199 Docs in Paperless, Finanzen komplett).
+**Fertig wenn:** `missing` meldet `0 einzigartige fehlende`.
 
 ### Veraltet
 
@@ -178,14 +147,12 @@ export LEGACY_CONSUME_ROOT=/mnt/paperless-data/consume/legacy
 
 user-b PDF analog: `migrate-user-b`, `consume/legacy/user-b-inbox`, optional `EXCLUDE_REGEX`.
 
-Grössen (pi-nas, mergerfs): user-a ~81 eindeutige PDFs; user-b ~94 eindeutige PDFs (+ Fotos separat entscheiden).
-
 ---
 
 ## 4. Checkliste vor jedem neuen Import
 
 0. **consume leer?** (siehe unten)
-1. pi-nas: physischer Pfad + Zählung (`/mnt/ssd1/...`, ggf. ssd2-Diff)
+1. pi-nas: physischer Pfad + Zählung (exportiertes Volume, ggf. Diff gegen weitere Platten)
 2. pi-nas: Export + `exportfs -rav` für neue Quellen (user-a/user-b)
 3. CT 121: `findmnt`, neuer Mount sichtbar (`/mnt/nas-user-a` …)
 4. CT 121: `LEGACY_NAS_FINANZEN` auf **diesen** Mount

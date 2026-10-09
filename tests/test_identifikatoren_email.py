@@ -66,10 +66,10 @@ def test_ch_phone_format_extracted():
 
 
 def test_ch_phone_with_trunk_zero_extracted():
-    text = "Tel: +41 (0) 61 971 89 80\n"
+    text = "Tel: +41 (0) 61 555 00 00\n"
     vorschlag = pc._extract_identifikatoren_vorschlag(text)
     assert vorschlag["telefon"]
-    assert pc._norm_corr_telefon(vorschlag["telefon"][0]) == "41619718980"
+    assert pc._norm_corr_telefon(vorschlag["telefon"][0]) == "41615550000"
 
 
 def test_an_recipient_filtered_even_without_family(monkeypatch):

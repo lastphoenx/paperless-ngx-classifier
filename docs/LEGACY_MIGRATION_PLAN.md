@@ -1,8 +1,8 @@
-# Legacy-Migration — Eltern/Finanzen (CT 121)
+# Legacy-Migration — Finanzen (CT 121)
 
 **Ziel:** NAS-PDFs → Paperless mit Tag `legacy`, Speicherpfad `legacy/{title}`, OCR-Index (`PAPERLESS_OCR_MODE=skip`), **ohne** Vision/LLM-Pipeline.
 
-**Quelle:** Pfad auf CT 121 zum Ordner `Finanzen` — abhängig vom NFS-Mount (siehe [NAS_NFS_AND_IMPORT.md](./NAS_NFS_AND_IMPORT.md)). Typisch bei Export `:/mnt/ssd1/Eltern`: **`/mnt/<eltern-mount>/Finanzen`**, nicht zwingend `/mnt/nas-legacy/...`.
+**Quelle:** Pfad auf CT 121 zum Ordner `Finanzen` — abhängig vom NFS-Mount (siehe [NAS_NFS_AND_IMPORT.md](./NAS_NFS_AND_IMPORT.md)). Typisch **`/mnt/<familien-mount>/Finanzen`**, nicht zwingend `/mnt/nas-legacy/...`. Konkreter Export: private Betriebsdoku.
 
 **Stand Finanzen:** Migration abgeschlossen (`missing` = 0 einzigartige fehlende, ~2199 Docs in Paperless).
 
@@ -15,7 +15,7 @@
 **Ein Befehl** in tmux — nicht `copy-missing` manuell wiederholen:
 
 ```bash
-export LEGACY_NAS_FINANZEN=/mnt/<eltern-mount>/Finanzen   # echten Pfad aus: findmnt | grep 141.140
+export LEGACY_NAS_FINANZEN=/mnt/<familien-mount>/Finanzen   # echten Pfad aus: findmnt -t nfs4
 export LEGACY_MIGRATE_STATE_DIR=/mnt/paperless-data/legacy-migrate
 
 /opt/paperless-scripts/legacy-nas-sha256.sh scan
@@ -90,7 +90,7 @@ Pfad `$NAS_SRC` = echter Mount + Unterordner (aus `findmnt` auf CT 121):
 
 ```bash
 tmux new -s legacy
-/opt/paperless-scripts/legacy-one-batch.sh "$NAS_SRC/Fano" fano
+/opt/paperless-scripts/legacy-one-batch.sh "$NAS_SRC/<ordner>" <batch>
 ```
 
 Chunk-Größe: `LEGACY_CHUNK_SIZE=20` (Standard). Script wartet zwischen Chunks, bis consume leer ist.

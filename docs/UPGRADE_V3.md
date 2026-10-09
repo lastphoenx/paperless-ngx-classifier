@@ -120,11 +120,11 @@ OLLAMA_MODEL_EMBED=bge-m3
 PAPERLESS_AI_ENABLED=true
 PAPERLESS_AI_LLM_EMBEDDING_BACKEND=ollama
 PAPERLESS_AI_LLM_EMBEDDING_MODEL=bge-m3
-PAPERLESS_AI_LLM_EMBEDDING_ENDPOINT=http://192.168.131.60:11434
+PAPERLESS_AI_LLM_EMBEDDING_ENDPOINT=http://192.168.x.x:11434
 # Generation absichtlich leer — keine Suggestions, kein Document Chat:
 PAPERLESS_AI_LLM_MODEL=
 PAPERLESS_AI_LLM_BACKEND=ollama
-PAPERLESS_AI_LLM_ENDPOINT=http://192.168.131.60:11434
+PAPERLESS_AI_LLM_ENDPOINT=http://192.168.x.x:11434
 ```
 
 Falls `PAPERLESS_AI_ENABLED=false` noch gesetzt ist → auf `true` ändern oder Zeile entfernen und neu setzen.
@@ -154,7 +154,7 @@ docker compose up -d --force-recreate webserver
 docker compose exec webserver env | grep OLLAMA_MODEL_EMBED
 
 # Embedding-API auf EVO
-curl -s http://192.168.131.60:11434/api/embeddings \
+curl -s http://192.168.x.x:11434/api/embeddings \
   -d '{"model":"bge-m3","prompt":"test"}' | head -c 80
 
 # Paperless: Settings → Application Configuration → AI aktiviert, Embedding bge-m3
