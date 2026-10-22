@@ -1,7 +1,7 @@
-fastapi>=0.141.1
-uvicorn[standard]>=0.53.0
+fastapi>=0.143.1
+uvicorn[standard]>=0.54.0
 requests>=2.34.2
-pydantic>=2.13.5
+pydantic>=2.14.1
 rapidfuzz>=3.14.6
 python-multipart>=0.0.32
 pdf2image>=1.17.0
