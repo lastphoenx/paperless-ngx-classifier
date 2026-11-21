@@ -13,5 +13,7 @@
 | [VERSIONING.md](VERSIONING.md) | UI / BE / Pipe Versionsregeln |
 | [NAS_NFS_AND_IMPORT.md](NAS_NFS_AND_IMPORT.md) | NFS-Mounts, Import-Pfade |
 | [UPGRADE_V3.md](UPGRADE_V3.md) | Paperless-NGX v3 Migration |
+| [PAPERLESS_SAVED_VIEWS.md](PAPERLESS_SAVED_VIEWS.md) | Gespeicherte Ansichten, Dashboard, Features 3.5.x |
+| [PAPERLESS_CUSTOMIZATION.md](PAPERLESS_CUSTOMIZATION.md) | Branding, nginx-Hinweis, was Paperless nicht kann |
 
 Private VM-Doku (Spiegel): `doku/pve2/vm/121-paperless/Doku/docs/`

@@ -148,7 +148,9 @@ Write-Host "Doku:" -ForegroundColor Yellow
     @{ Src = "docs\LEGACY_MIGRATION_PLAN.md"; Dst = "LEGACY_MIGRATION_PLAN.md" },
     @{ Src = "docs\LEGACY_IMPORT.md";         Dst = "LEGACY_IMPORT.md" },
     @{ Src = "docs\UPGRADE_V3.md";            Dst = "UPGRADE_V3.md" },
-    @{ Src = "docs\PAPERLESS_CUSTOMIZATION.md"; Dst = "PAPERLESS_CUSTOMIZATION.md" }
+    @{ Src = "docs\PAPERLESS_CUSTOMIZATION.md"; Dst = "PAPERLESS_CUSTOMIZATION.md" },
+    @{ Src = "docs\PAPERLESS_SAVED_VIEWS.md"; Dst = "PAPERLESS_SAVED_VIEWS.md" },
+    @{ Src = "docs\README.md"; Dst = "docs-INDEX-classifier.md" }
 ) | ForEach-Object {
     Sync-File (Join-Path $SrcRoot $_.Src) (Join-Path $DstDocs $_.Dst)
 }

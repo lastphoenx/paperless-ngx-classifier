@@ -1,19 +1,36 @@
 # Paperless-NGX v3 — Upgrade-Plan (CT 121)
 
-Upgrade von **2.20.15** → **3.1.2** mit **paperless-ngx-classifier**, paper.manager und Legacy-Pipeline.
+Upgrade von **2.20.15** → **3.x** mit **paperless-ngx-classifier**, paper.manager und Legacy-Pipeline.
 
-**Stand September 2026:**
+## Produktionsstand (Nov 2026)
+
+| Check | Status |
+|-------|--------|
+| Erst-Migration 2.20.15 → 3.1.2 | ✓ (Sep 2026) |
+| **Aktuelles Image** | `ghcr.io/paperless-ngx/paperless-ngx:3.5.1` |
+| Legacy-Import | ✓ abgeschlossen |
+| Classifier v3-API | ✓ `Accept: version=9` |
+
+**Nach 3.1.2:** Patch-Upgrades nur Image-Pin + `docker compose pull` + `--force-recreate webserver` — siehe [PAPERLESS_SAVED_VIEWS.md](./PAPERLESS_SAVED_VIEWS.md) § «Upgrade 3.1.2 → 3.5.1».
+
+**Neue Features nutzen:** Gespeicherte Ansichten, Dashboard, Workflows, Barcodes → [PAPERLESS_SAVED_VIEWS.md](./PAPERLESS_SAVED_VIEWS.md).
+
+---
+
+## Historischer Plan (2.20.15 → 3.1.2)
+
+**Stand bei Erstmigration September 2026:**
 
 | Check | Status |
 |-------|--------|
 | PBS-Backup / Snapshot CT 121 | ✓ erledigt |
 | Legacy-Import abgeschlossen | ✓ erledigt |
 | Classifier v3-Code im Repo | ✓ (pipe 12.77, be 2.63) |
-| Ziel-Image | `ghcr.io/paperless-ngx/paperless-ngx:3.1.2` |
+| Ziel-Image (damals) | `ghcr.io/paperless-ngx/paperless-ngx:3.1.2` |
 
 Offizieller Upstream-Guide: [migration-v3.md](https://github.com/paperless-ngx/paperless-ngx/blob/dev/docs/migration-v3.md)
 
-Release Notes: [3.1.2](https://github.com/paperless-ngx/paperless-ngx/releases) (Security-Fix — empfohlen statt 3.0.0)
+Release Notes: [GitHub Releases](https://github.com/paperless-ngx/paperless-ngx/releases)
 
 ---
 
@@ -49,7 +66,7 @@ cd /opt/paperless-ngx-classifier && git pull
 | `correspondent_manager_app.py` | Gleicher Accept-Header |
 | `scripts/legacy-tasks-summary.sh` | `task_type` statt `task_name` |
 | `scripts/legacy-duplicate-audit.sh` | `task_type`, Pagination |
-| `scripts/paperless-version-check.sh` | Ziel-Pin `3.1.2` |
+| `scripts/paperless-version-check.sh` | Ziel-Pin `3.5.1` (früher `3.1.2`) |
 
 ---
 

@@ -6,7 +6,7 @@
 
 **Stand Finanzen:** Migration abgeschlossen (`missing` = 0 einzigartige fehlende, ~2199 Docs in Paperless).
 
-> **Paperless-Version:** Produktion läuft **2.20.15** (compose gepinnt). Legacy **vor** Upgrade auf v3 abschliessen — siehe [UPGRADE_V3.md](./UPGRADE_V3.md).
+> **Paperless-Version:** Produktion **3.5.1** (siehe [UPGRADE_V3.md](./UPGRADE_V3.md), [PAPERLESS_SAVED_VIEWS.md](./PAPERLESS_SAVED_VIEWS.md)). Legacy-Migration ist abgeschlossen.
 
 ---
 

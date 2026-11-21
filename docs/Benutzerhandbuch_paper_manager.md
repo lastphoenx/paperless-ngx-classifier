@@ -22,6 +22,7 @@
 12. [Legacy QR-Split](#12-legacy-qr-split)
 13. [Pipeline nachholen](#13-pipeline-nachholen)
 14. [Dokumente in Paperless finden](#14-dokumente-in-paperless-finden)
+    - [Gespeicherte Ansichten und Dashboard](#14-gespeicherte-ansichten-und-suche)
 15. [Fehlerbehebung](#15-fehlerbehebung)
 16. [Schnellreferenz](#16-schnellreferenz)
 
@@ -617,6 +618,8 @@ Details Bulk-Import: [`LEGACY_IMPORT.md`](LEGACY_IMPORT.md)
 
 ## 14. Dokumente in Paperless finden
 
+### Volltext- und Schnellsuche
+
 Fertige Suchanfragen für die häufigsten Fragen an die Ablage:
 
 | Suchanfrage | Filter |
@@ -627,10 +630,35 @@ Fertige Suchanfragen für die häufigsten Fragen an die Ablage:
 | Heute gescannt | Custom Field `Gescannt am` = heute |
 | Vollautomatisch verarbeitet | Custom Field `Verarbeitung` = `auto STP` |
 | Dokumente für Person B | Custom Field `Person` = `PersonB` |
-| Steuerbelege 2025 | Tag = `Steuerrelevant` + Datum 2025 |
+| Steuerbelege 2025 | Tag `Steuerrelevant` + **Steuerjahr** `2025` (besser als Kalenderjahr) |
 | Absender X | Korrespondent = «X» |
 | Schulberichte mit HTR | Inhalt enthält `--- Handschrift (HTR) ---` |
 | Offene HTR-Entscheidung | Tag `pending_htr_decision` |
+
+### Gespeicherte Ansichten und Suche {#14-gespeicherte-ansichten-und-suche}
+
+Für wiederkehrende Listen (Zahllauf, Steuer, Personen) lohnt sich eine **gespeicherte Ansicht** in Paperless statt jedes Mal Filter neu zu bauen.
+
+**Kurzablauf**
+
+1. Filter in **Dokumente** setzen (inkl. Benutzerdefinierte Felder).
+2. **Aktuelle Ansicht speichern** → Name vergeben.
+3. **Einstellungen → Darstellung** → Ansicht für **Seitenleiste** und/oder **Dashboard** aktivieren (pro Benutzer, ab API v10).
+4. Optional: Ansicht **teilen** (Berechtigungen), damit Partner/in dieselbe Filterdefinition nutzt.
+
+**Empfohlene Ansichten für euren Haushalt**
+
+| Name | Filter (Kern) |
+|------|----------------|
+| Offene Rechnungen | `Fällig am` gesetzt, `Bezahlt am` leer; optional `Status` = Offen |
+| Fällig in 14 Tagen | `Fällig am` relativ `heute` … `in 14 days` (UI testen; seit Paperless 3.4) |
+| Steuer 2026 | Tag Steuerrelevant + `Steuerjahr` = 2026 |
+| Steuer 2026 · Person X | wie oben + `Person` |
+| Säule 3a | Tag/Dokumenttyp Säule 3a + optional `Steuerjahr` |
+
+paper.manager bleibt für **Review und Korrektur**; Paperless-Dashboard für **fertige Listen** nach der Pipeline.
+
+Ausführlich (Changelog 3.x, Barcodes, Workflows, Upgrade 3.5.1): [`PAPERLESS_SAVED_VIEWS.md`](PAPERLESS_SAVED_VIEWS.md).
 
 ---
 
@@ -719,3 +747,5 @@ EZ 26.3.26      → nicht erkannt (Einzahlung)  ✗
 | 13 | Gescannt am | Datum | Immer = heute |
 | 14 | Verarbeitung | Auswahl | `auto STP` wenn ohne Review fertig |
 | 15 | Person | Auswahl | `family.json` bei Kennzeichen-Match oder Beziehung |
+| 16 | Dok-ID | Text | Pipeline |
+| 17 | Steuerjahr | Zahl/Text | `steuerjahr.py` / Beleglogik |

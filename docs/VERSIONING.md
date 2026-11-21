@@ -1,6 +1,6 @@
 # Versionierung (paper.manager + Pipeline)
 
-**Paperless-NGX** (Docker-Image) ist unabhängig: Ziel **3.1.2** — siehe [UPGRADE_V3.md](./UPGRADE_V3.md) und `./scripts/paperless-version-check.sh`.
+**Paperless-NGX** (Docker-Image) ist unabhängig: Ziel **3.5.1** — siehe [UPGRADE_V3.md](./UPGRADE_V3.md) und `./scripts/paperless-version-check.sh`.
 
 Classifier-Versionsnummern — Sidebar (UI · be · pipe), Home-Tab inkl. **pre OCR / pre QR** (`/api/config` → `versions`).
 

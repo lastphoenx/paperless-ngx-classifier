@@ -37,8 +37,10 @@ Maintainer-Stellung (#11995): Realistische Optionen sind Fork, Browser-CSS, oder
 1. **Haushalt-Hinweise / Links / Handbuch** → **paper.manager** Start-Tab (`/#home`) — unser Code, eigenes Deploy, updates unabhängig von Paperless-Container.
 2. **Optionaler Hinweis oben / im Tab-Titel** → `PAPER_MANAGER_HINT_TEXT` + `PAPER_MANAGER_HINT_BANNER` / `PAPER_MANAGER_HINT_TITLE` in `.env` (correspondent-manager liest mit).
 3. **Paperless Branding** → `PAPERLESS_APP_TITLE` + optional Logo in `media/logo/`.
-4. **Dashboard statt Welcome-Widget** → Nutzer kann Widget wegklicken (X); stattdessen **Saved View** «Offene Rechnungen» o.ä. auf Dashboard pinnen.
+4. **Dashboard statt Welcome-Widget** → Nutzer kann Widget wegklicken (X); stattdessen **Saved View** «Offene Rechnungen» o.ä. auf Dashboard pinnen. Ab API v10: Sidebar/Dashboard **pro User** unter Einstellungen → Darstellung.
 5. **Doku-Link** → Gespeicherte Ansicht oder Lesezeichen; kein eingebauter Custom-Text im Welcome-Widget.
+
+**Anleitung (Filter-Rezepte, 3.5.x, Barcodes, Workflows):** [PAPERLESS_SAVED_VIEWS.md](./PAPERLESS_SAVED_VIEWS.md)
 
 Hinweis-Banner (paper.manager, `.env`):
 

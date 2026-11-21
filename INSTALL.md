@@ -252,6 +252,8 @@ PAPERLESS_POST_CONSUME_SCRIPT=/opt/paperless-scripts/post_consume.py
 PAPERLESS_PRE_CONSUME_SCRIPT=/opt/paperless-scripts/pre_consume.sh
 PAPERLESS_CONSUMER_POLLING=10
 PAPERLESS_CONSUMER_ENABLE_BARCODES=true
+# Optional (Paperless 3.3+): Barcode-Werte speichern und durchsuchen — siehe docs/PAPERLESS_SAVED_VIEWS.md § Barcodes
+# PAPERLESS_CONSUMER_STORE_BARCODE_VALUES=true
 PAPERLESS_TRAIN_TASK_CRON=disable
 # Ein Worker — verhindert Races bei gleichzeitigem Upload (pre/post_consume + consume/)
 PAPERLESS_TASK_WORKERS=1
